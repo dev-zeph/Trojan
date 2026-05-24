@@ -383,7 +383,7 @@ Each phase is independently shippable. Each phase ends with a concrete deliverab
   - Same vuln caught by multiple scanners → merge into one finding with multiple sources
   - Hash-based dedup using file path + line number + rule ID
 - Implement severity normalization across scanner conventions
-- Implement progress reporting in terminal (use `github.com/schollz/progressbar`)
+- Implement progress reporting in terminal — a spinner/animation per scanner showing which scan is currently running, so users aren't waiting with no feedback. Each scanner should show its name and status (running → done/failed) in real time.
 - Implement `--scanner=sast,sca` flag to run only specific scanners
 - Implement `--exclude` flag for file/directory exclusions
 - Implement `.trojan/config.yaml` for per-project configuration
