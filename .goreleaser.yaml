@@ -1,0 +1,58 @@
+version: 2
+
+before:
+  hooks:
+    # Build the UI before compiling the Go binary
+    - sh -c "cd ui && npm run build"
+
+builds:
+  - id: trojan
+    main: ./cmd/trojan/
+    binary: trojan
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+
+archives:
+  - id: trojan
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: "trojan_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: "trojan_{{ .Version }}_checksums.txt"
+
+release:
+  github:
+    owner: dev-zeph
+    name: Trojan
+  draft: false
+  prerelease: auto
+  name_template: "v{{.Version}}"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - Merge pull request
+      - Merge branch
