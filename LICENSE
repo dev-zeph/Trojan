@@ -1,0 +1,35 @@
+Business Source License 1.1
+
+Licensor: Trojan Software Solutions
+Licensed Work: Trojan
+Change Date: 2030-01-01
+Change License: MIT License
+
+Use Limitation: Production use of the Licensed Work is not permitted without
+a valid commercial license from the Licensor, except for non-commercial,
+personal, educational, or open-source projects.
+
+For commercial licensing, contact: hello@trojan.dev
+
+-----------------------------------------------------------------------------
+
+The Business Source License (this document, or the "License") is not an Open
+Source license. However, the Licensed Work will eventually be made available
+under an Open Source License, as stated in this License.
+
+License text copyright (c) 2013 MariaDB Corporation Ab, All Rights Reserved.
+"Business Source License" is a trademark of MariaDB Corporation Ab.
+
+Parameters
+
+Licensor: Trojan Software Solutions
+Licensed Work: Trojan CLI and associated source code.
+              The Licensed Work is (c) 2026 Trojan Software Solutions.
+Additional Use Grant: You may use the Licensed Work for non-commercial,
+                      personal, educational, or open-source projects free
+                      of charge.
+Change Date: January 1, 2030
+Change License: MIT License
+
+For information about alternative licensing arrangements for the Licensed
+Work, please contact hello@trojan.dev.

@@ -1,0 +1,20 @@
+# Compiled binary
+trojan
+trojan.exe
+
+# Go build cache
+/vendor/
+
+# Test output
+*.test
+*.out
+
+# UI build output
+ui/dist/
+ui/node_modules/
+
+# Trojan local data
+.trojan/
+
+# OS
+.DS_Store
