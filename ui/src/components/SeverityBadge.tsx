@@ -1,18 +1,31 @@
-import { Badge } from '@/components/ui/badge'
 import type { Severity } from '@/types'
 
-const styles: Record<Severity, string> = {
-  critical: 'bg-red-600 text-white hover:bg-red-600',
-  high: 'bg-orange-500 text-white hover:bg-orange-500',
-  medium: 'bg-yellow-500 text-white hover:bg-yellow-500',
-  low: 'bg-blue-500 text-white hover:bg-blue-500',
-  info: 'bg-gray-400 text-white hover:bg-gray-400',
+const dot: Record<Severity, string> = {
+  critical: 'bg-red-500',
+  high: 'bg-orange-400',
+  medium: 'bg-yellow-400',
+  low: 'bg-blue-400',
+  info: 'bg-gray-400',
+}
+
+const label: Record<Severity, string> = {
+  critical: 'text-red-500',
+  high: 'text-orange-400',
+  medium: 'text-yellow-500 dark:text-yellow-400',
+  low: 'text-blue-400',
+  info: 'text-gray-400',
+}
+
+export function SeverityDot({ severity }: { severity: Severity }) {
+  return (
+    <span className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 mt-1.5 ${dot[severity]}`} />
+  )
 }
 
 export function SeverityBadge({ severity }: { severity: Severity }) {
   return (
-    <Badge className={styles[severity]}>
+    <span className={`text-xs font-medium uppercase tracking-widest ${label[severity]}`}>
       {severity}
-    </Badge>
+    </span>
   )
 }

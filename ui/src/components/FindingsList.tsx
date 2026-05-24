@@ -1,7 +1,5 @@
 import { useState } from 'react'
-import { Card, CardContent } from '@/components/ui/card'
-import { SeverityBadge } from './SeverityBadge'
-import { Badge } from '@/components/ui/badge'
+import { SeverityDot, SeverityBadge } from './SeverityBadge'
 import type { Finding, Severity } from '@/types'
 
 const SEVERITIES: Severity[] = ['critical', 'high', 'medium', 'low', 'info']
@@ -24,67 +22,81 @@ export function FindingsList({ findings, onSelect }: Props) {
   })
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-10">
+
       {/* Filters */}
-      <div className="flex flex-wrap gap-2">
-        <button
-          onClick={() => setSeverityFilter('all')}
-          className={`text-xs px-3 py-1 rounded-full border transition-colors ${severityFilter === 'all' ? 'bg-foreground text-background' : 'hover:bg-muted'}`}
-        >
-          All
-        </button>
-        {SEVERITIES.map(sev => (
-          <button
-            key={sev}
-            onClick={() => setSeverityFilter(sev)}
-            className={`text-xs px-3 py-1 rounded-full border transition-colors capitalize ${severityFilter === sev ? 'bg-foreground text-background' : 'hover:bg-muted'}`}
-          >
-            {sev}
-          </button>
-        ))}
-        <div className="w-px bg-border mx-1" />
-        {scanners.map(s => (
-          <button
-            key={s}
-            onClick={() => setScannerFilter(scannerFilter === s ? 'all' : s)}
-            className={`text-xs px-3 py-1 rounded-full border transition-colors ${scannerFilter === s ? 'bg-foreground text-background' : 'hover:bg-muted'}`}
-          >
-            {s}
-          </button>
-        ))}
+      <div className="flex flex-wrap items-center gap-6 text-sm border-b border-border pb-6">
+        <div className="flex items-center gap-3">
+          <span className="text-xs uppercase tracking-widest text-muted-foreground">Severity</span>
+          <div className="flex gap-2">
+            <FilterPill active={severityFilter === 'all'} onClick={() => setSeverityFilter('all')}>All</FilterPill>
+            {SEVERITIES.map(sev => (
+              <FilterPill key={sev} active={severityFilter === sev} onClick={() => setSeverityFilter(sev)}>
+                <span className="capitalize">{sev}</span>
+              </FilterPill>
+            ))}
+          </div>
+        </div>
+
+        {scanners.length > 1 && (
+          <div className="flex items-center gap-3">
+            <span className="text-xs uppercase tracking-widest text-muted-foreground">Scanner</span>
+            <div className="flex gap-2">
+              {scanners.map(s => (
+                <FilterPill key={s} active={scannerFilter === s} onClick={() => setScannerFilter(scannerFilter === s ? 'all' : s)}>
+                  {s}
+                </FilterPill>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <span className="ml-auto text-xs text-muted-foreground">{filtered.length} result{filtered.length !== 1 ? 's' : ''}</span>
       </div>
 
-      <p className="text-sm text-muted-foreground">{filtered.length} finding(s)</p>
-
-      {/* Findings */}
-      <div className="space-y-2">
+      {/* List */}
+      <div className="divide-y divide-border">
         {filtered.map(finding => (
-          <Card
+          <button
             key={finding.ID}
-            className="cursor-pointer hover:bg-muted/50 transition-colors"
             onClick={() => onSelect(finding)}
+            className="w-full text-left py-6 flex items-start gap-4 hover:bg-muted/40 transition-colors px-2 -mx-2 rounded"
           >
-            <CardContent className="px-4 py-3 flex items-start gap-3">
+            <SeverityDot severity={finding.Severity} />
+            <div className="flex-1 min-w-0 space-y-1">
+              <p className="font-medium text-sm leading-snug">{finding.Title}</p>
+              <p className="text-xs text-muted-foreground font-mono truncate">
+                {finding.FilePath}{finding.LineNumber > 0 ? `:${finding.LineNumber}` : ''}
+              </p>
+            </div>
+            <div className="flex items-center gap-4 shrink-0">
               <SeverityBadge severity={finding.Severity} />
-              <div className="flex-1 min-w-0">
-                <p className="font-medium text-sm">{finding.Title}</p>
-                <p className="text-xs text-muted-foreground truncate mt-0.5">
-                  {finding.FilePath}{finding.LineNumber > 0 ? `:${finding.LineNumber}` : ''}
-                </p>
-              </div>
-              <Badge variant="outline" className="text-xs shrink-0">
-                {finding.Scanner}
-              </Badge>
-            </CardContent>
-          </Card>
+              <span className="text-xs text-muted-foreground">{finding.Scanner}</span>
+            </div>
+          </button>
         ))}
 
         {filtered.length === 0 && (
-          <p className="text-center text-muted-foreground py-12 text-sm">
+          <p className="py-16 text-center text-sm text-muted-foreground">
             No findings match the current filters.
           </p>
         )}
       </div>
     </div>
+  )
+}
+
+function FilterPill({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`text-xs px-3 py-1 rounded-full border transition-colors ${
+        active
+          ? 'bg-foreground text-background border-foreground'
+          : 'border-border hover:border-foreground/50 text-muted-foreground hover:text-foreground'
+      }`}
+    >
+      {children}
+    </button>
   )
 }

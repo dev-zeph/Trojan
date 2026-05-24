@@ -501,7 +501,11 @@ Each phase is independently shippable. Each phase ends with a concrete deliverab
 - Implement AI synthesis pipeline:
   - CLI sends findings to backend (only metadata, never source code — privacy promise)
   - Backend calls Claude API with finding + minimal context
-  - Returns: plain-English explanation, business impact, breach analog ID, fix suggestion
+  - Returns two paid-tier fields per finding:
+    - **Simply**: plain-English explanation of what the vulnerability means for the developer's app, why it matters, and a real-world breach with the same root cause
+    - **Actions**: numbered step-by-step list of what to do to fix it, plus an AI-generated code diff the user can apply directly
+  - UI already has locked placeholder sections for both — wire the real data in here
+  - Finding detail page shows "Simply" and "Actions" sections with a "Pro" pill when locked, and real AI content when the user is subscribed
   - CLI caches responses locally to avoid re-calling for same findings
 - Build breach database:
   - Hand-curate 50 real-world breach entries

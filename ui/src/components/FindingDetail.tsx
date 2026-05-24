@@ -1,7 +1,4 @@
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { SeverityBadge } from './SeverityBadge'
-import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
 import { resolveFinding, suppressFinding } from '@/api'
 import type { Finding } from '@/types'
 
@@ -25,73 +22,119 @@ export function FindingDetail({ finding, onBack, onAction }: Props) {
   const vsCodeUrl = `vscode://file/${finding.FilePath}:${finding.LineNumber}`
 
   return (
-    <div className="space-y-4">
+    <div className="max-w-2xl space-y-12">
+
+      {/* Back */}
       <button
         onClick={onBack}
-        className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+        className="text-xs uppercase tracking-widest text-muted-foreground hover:text-foreground transition-colors"
       >
-        ← Back to findings
+        ← Findings
       </button>
 
-      <div className="flex items-start gap-3">
+      {/* Header */}
+      <div className="space-y-4">
         <SeverityBadge severity={finding.Severity} />
-        <h2 className="text-xl font-bold leading-tight">{finding.Title}</h2>
+        <h1 className="text-3xl font-bold tracking-tight leading-tight">{finding.Title}</h1>
+        <div className="flex items-center gap-4 text-xs text-muted-foreground">
+          <span>{finding.Scanner}</span>
+          <span>·</span>
+          <span className="uppercase">{finding.Category}</span>
+          <span>·</span>
+          <span className="uppercase">{finding.Status}</span>
+        </div>
       </div>
 
-      <div className="flex flex-wrap gap-2">
-        <Badge variant="outline">{finding.Scanner}</Badge>
-        <Badge variant="outline">{finding.Category}</Badge>
-        <Badge variant="outline">{finding.Status}</Badge>
-      </div>
-
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm text-muted-foreground font-normal">Location</CardTitle>
-        </CardHeader>
-        <CardContent className="pt-0 flex items-center justify-between">
-          <code className="text-sm">
+      {/* Location */}
+      <div className="space-y-2 border-t border-border pt-8">
+        <p className="text-xs uppercase tracking-widest text-muted-foreground">Location</p>
+        <div className="flex items-center justify-between">
+          <code className="text-sm font-mono">
             {finding.FilePath}{finding.LineNumber > 0 ? `:${finding.LineNumber}` : ''}
           </code>
-          <a href={vsCodeUrl}>
-            <Button variant="outline" size="sm">Open in VS Code</Button>
+          <a
+            href={vsCodeUrl}
+            className="text-xs underline underline-offset-4 text-muted-foreground hover:text-foreground transition-colors"
+          >
+            Open in VS Code
           </a>
-        </CardContent>
-      </Card>
+        </div>
+      </div>
 
+      {/* Code snippet */}
       {finding.CodeSnippet && (
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm text-muted-foreground font-normal">Code</CardTitle>
-          </CardHeader>
-          <CardContent className="pt-0">
-            <pre className="bg-muted rounded p-3 text-sm overflow-x-auto">
-              <code>{finding.CodeSnippet}</code>
-            </pre>
-          </CardContent>
-        </Card>
+        <div className="space-y-2 border-t border-border pt-8">
+          <p className="text-xs uppercase tracking-widest text-muted-foreground">Code</p>
+          <pre className="bg-muted rounded p-4 text-xs font-mono overflow-x-auto leading-relaxed">
+            {finding.CodeSnippet}
+          </pre>
+        </div>
       )}
 
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm text-muted-foreground font-normal">What this means</CardTitle>
-        </CardHeader>
-        <CardContent className="pt-0">
-          <p className="text-sm leading-relaxed">{finding.RawMessage}</p>
-        </CardContent>
-      </Card>
+      {/* What this means */}
+      <div className="space-y-3 border-t border-border pt-8">
+        <p className="text-xs uppercase tracking-widest text-muted-foreground">What this means</p>
+        <p className="text-sm leading-relaxed text-foreground/80">{finding.RawMessage}</p>
+      </div>
 
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm text-muted-foreground font-normal">Rule</CardTitle>
-        </CardHeader>
-        <CardContent className="pt-0">
-          <code className="text-xs text-muted-foreground">{finding.RuleID}</code>
-        </CardContent>
-      </Card>
+      {/* Simply — AI plain-English explanation (paid) */}
+      <div className="space-y-4 border-t border-border pt-8">
+        <div className="flex items-center justify-between">
+          <p className="text-xs uppercase tracking-widest text-muted-foreground">Simply</p>
+          <span className="text-xs text-muted-foreground border border-border rounded-full px-2 py-0.5">Pro</span>
+        </div>
+        <div className="rounded bg-muted/50 border border-border border-dashed p-6 space-y-2 text-center">
+          <p className="text-sm text-muted-foreground leading-relaxed">
+            A plain-English explanation of this vulnerability — what it means for your app, why it matters, and a real-world breach with the same root cause.
+          </p>
+          <a
+            href="https://trojan.dev/pricing"
+            className="text-xs underline underline-offset-4 text-muted-foreground hover:text-foreground transition-colors"
+          >
+            Upgrade to Pro →
+          </a>
+        </div>
+      </div>
 
-      <div className="flex gap-2 pt-2">
-        <Button onClick={handleResolve} variant="default">Mark resolved</Button>
-        <Button onClick={handleSuppress} variant="outline">Suppress rule</Button>
+      {/* Actions — AI fix suggestions (paid) */}
+      <div className="space-y-4 border-t border-border pt-8">
+        <div className="flex items-center justify-between">
+          <p className="text-xs uppercase tracking-widest text-muted-foreground">Actions</p>
+          <span className="text-xs text-muted-foreground border border-border rounded-full px-2 py-0.5">Pro</span>
+        </div>
+        <div className="rounded bg-muted/50 border border-border border-dashed p-6 space-y-2 text-center">
+          <p className="text-sm text-muted-foreground leading-relaxed">
+            Step-by-step actions to fix this vulnerability, with an AI-generated code diff you can apply directly.
+          </p>
+          <a
+            href="https://trojan.dev/pricing"
+            className="text-xs underline underline-offset-4 text-muted-foreground hover:text-foreground transition-colors"
+          >
+            Upgrade to Pro →
+          </a>
+        </div>
+      </div>
+
+      {/* Rule */}
+      <div className="space-y-2 border-t border-border pt-8">
+        <p className="text-xs uppercase tracking-widest text-muted-foreground">Rule</p>
+        <code className="text-xs font-mono text-muted-foreground">{finding.RuleID}</code>
+      </div>
+
+      {/* Resolve / Suppress */}
+      <div className="flex gap-6 border-t border-border pt-8">
+        <button
+          onClick={handleResolve}
+          className="text-sm font-medium underline underline-offset-4 hover:text-muted-foreground transition-colors"
+        >
+          Mark resolved
+        </button>
+        <button
+          onClick={handleSuppress}
+          className="text-sm text-muted-foreground underline underline-offset-4 hover:text-foreground transition-colors"
+        >
+          Suppress rule
+        </button>
       </div>
     </div>
   )
