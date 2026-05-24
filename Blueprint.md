@@ -557,8 +557,20 @@ Each phase is independently shippable. Each phase ends with a concrete deliverab
   - Exit codes signal severity for CI pipeline gating
 - Document GitHub Actions integration with example workflow
 - Document GitLab CI integration
+- Implement MCP (Model Context Protocol) server in Trojan:
+  - Expose findings as MCP resources so AI agents (Claude, Cursor, Copilot, etc.) can read them directly
+  - Tools to expose via MCP:
+    - `get_findings` — returns all current findings with severity, file, line, message
+    - `get_finding_detail` — returns full detail for a specific finding ID
+    - `resolve_finding` — marks a finding as resolved
+    - `suppress_finding` — suppresses a finding by rule ID
+    - `run_scan` — triggers a fresh scan from within the AI agent
+  - MCP server runs alongside the existing local HTTP server on a separate port (default 7879)
+  - `trojan mcp` command starts the MCP server standalone (for AI IDE integrations)
+  - Document how to connect Claude Code, Cursor, and other MCP-compatible tools to Trojan
+  - This allows AI agents to see your security findings and suggest/apply fixes in context
 
-**Definition of done:** A dev can install Trojan, set up the pre-commit hook, and have it block commits with critical issues. CI integration works. Watch mode updates UI live.
+**Definition of done:** A dev can install Trojan, set up the pre-commit hook, and have it block commits with critical issues. CI integration works. Watch mode updates UI live. AI agents can connect via MCP and read/act on findings.
 
 **Time estimate:** 2 weeks (25-30 hours).
 
