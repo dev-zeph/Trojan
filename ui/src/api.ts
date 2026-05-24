@@ -15,3 +15,19 @@ export async function resolveFinding(id: string): Promise<void> {
 export async function suppressFinding(id: string): Promise<void> {
   await fetch(`${BASE}/findings/${id}/suppress`, { method: 'POST' })
 }
+
+export interface AuthStatus {
+  loggedIn: boolean
+  isPro: boolean
+  email?: string
+}
+
+export async function getAuthStatus(): Promise<AuthStatus> {
+  try {
+    const res = await fetch(`${BASE}/auth/status`)
+    if (!res.ok) return { loggedIn: false, isPro: false }
+    return res.json()
+  } catch {
+    return { loggedIn: false, isPro: false }
+  }
+}

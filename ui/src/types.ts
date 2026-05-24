@@ -13,6 +13,8 @@ export interface Finding {
   CodeSnippet: string
   RuleID: string
   Status: Status
+  Simply?: string
+  Actions?: string[]
 }
 
 export interface ScanResult {

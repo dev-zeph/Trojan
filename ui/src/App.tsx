@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import { Dashboard } from './components/Dashboard'
 import { FindingsList } from './components/FindingsList'
 import { FindingDetail } from './components/FindingDetail'
-import { getLatestScan } from './api'
+import { getLatestScan, getAuthStatus } from './api'
+import type { AuthStatus } from './api'
 import type { Finding, ScanResult } from './types'
 
 type View = 'dashboard' | 'findings'
@@ -25,6 +26,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null)
   const [view, setView] = useState<View>('dashboard')
   const [selected, setSelected] = useState<Finding | null>(null)
+  const [auth, setAuth] = useState<AuthStatus | null>(null)
   const { dark, toggle } = useDarkMode()
 
   async function loadScan() {
@@ -36,7 +38,10 @@ export default function App() {
     }
   }
 
-  useEffect(() => { loadScan() }, [])
+  useEffect(() => {
+    loadScan()
+    getAuthStatus().then(setAuth)
+  }, [])
 
   if (error) {
     return (
@@ -57,11 +62,47 @@ export default function App() {
   return (
     <div className="min-h-screen bg-background text-foreground">
 
+      {/* Login / upgrade banner */}
+      {auth && !auth.loggedIn && (
+        <div className="border-b border-border bg-muted/40">
+          <div className="max-w-5xl mx-auto px-8 py-2.5 flex items-center justify-between">
+            <p className="text-xs text-muted-foreground">
+              Unlock AI explanations and fix suggestions with Trojan Pro.
+            </p>
+            <a
+              href="https://trojan.dev"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs font-medium underline underline-offset-4 hover:text-muted-foreground transition-colors"
+            >
+              Log in or sign up →
+            </a>
+          </div>
+        </div>
+      )}
+      {auth?.loggedIn && !auth.isPro && (
+        <div className="border-b border-border bg-muted/40">
+          <div className="max-w-5xl mx-auto px-8 py-2.5 flex items-center justify-between">
+            <p className="text-xs text-muted-foreground">
+              You're on the free plan. Upgrade to Pro to unlock AI explanations.
+            </p>
+            <a
+              href="https://trojan.dev/pricing"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs font-medium underline underline-offset-4 hover:text-muted-foreground transition-colors"
+            >
+              Upgrade to Pro →
+            </a>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <header className="border-b border-border">
         <div className="max-w-5xl mx-auto px-8 py-5 flex items-center justify-between">
           <div className="flex items-center gap-8">
-            <span className="font-bold tracking-tight text-sm uppercase">Trojan</span>
+            <img src="/logo.png" alt="Trojan" className="h-7 w-auto" />
             {!selected && (
               <nav className="flex gap-6">
                 {(['dashboard', 'findings'] as View[]).map(v => (

@@ -511,10 +511,11 @@ Each phase is independently shippable. Each phase ends with a concrete deliverab
   - Hand-curate 50 real-world breach entries
   - Each entry: company, year, root cause (mapped to CWE), business impact, scanner category
   - Store as JSON in repo, lookup in backend
-- Implement BYOK (bring-your-own-key):
-  - User provides their own Anthropic API key
-  - Stored locally, CLI calls Claude directly
-  - Lower subscription tier ($5/mo for non-AI features)
+- AI cost management (no BYOK — platform key only):
+  - Cache all Claude responses in Supabase by rule ID — same finding never hits the API twice
+  - Rate limit AI calls per user per day to control costs
+  - Batch findings in one Claude call instead of one per finding
+  - Monitor monthly API spend and adjust model (Haiku → Sonnet) as revenue grows
 - License validation in CLI:
   - On `trojan login`, fetch subscription status
   - Gate AI features behind active subscription
@@ -653,7 +654,6 @@ Each phase is independently shippable. Each phase ends with a concrete deliverab
 - Implement customer dashboard:
   - Subscription status
   - Billing history
-  - API key management (BYOK)
   - Team management (Team tier)
   - Account settings
 
@@ -662,8 +662,7 @@ Each phase is independently shippable. Each phase ends with a concrete deliverab
 | Tier | Price | Includes |
 |------|-------|----------|
 | **Free** | $0 | Full CLI, all 5 scanners, local web UI, pre-commit hooks, basic findings list, CI integration, MIT licensed |
-| **Pro (BYOK)** | $5/mo | Everything in Free + AI explanations using your own Anthropic key |
-| **Pro** | $15/mo | Everything in Pro BYOK + AI calls included, breach storytelling, fix suggestions, PDF export, priority support |
+| **Pro** | $15/mo | Everything in Free + AI explanations (Simply + Actions), breach storytelling, fix suggestions, PDF export, priority support |
 | **Team** | $99/mo (10 seats) | Everything in Pro + team dashboard, shared suppressions, Slack/Discord notifications, cloud sync (optional), $9 per additional seat |
 | **Enterprise** | Custom | Everything in Team + SSO, SCIM, audit logs, on-prem AI option, compliance modules, SLA, dedicated support |
 
@@ -752,12 +751,12 @@ If significantly less than 15 hours/week, expect 6-8 months.
 
 | Risk | Mitigation |
 |------|-----------|
-| Devs use the free tier forever, never upgrade | Make AI tier genuinely 10x better than raw findings. BYOK option for cost-sensitive users. |
+| Devs use the free tier forever, never upgrade | Make AI tier genuinely 10x better than raw findings. Simply + Actions must feel indispensable. |
 | Open-source clones | Moat is AI synthesis backend + breach database + brand. Forks won't have those. |
 | Semgrep/Aikido releases meta-CLI | Already happened (Opengrep). Differentiation is UX, AI layer, breach storytelling. |
 | Snyk/Aikido add local CLI mode | Possible. Trojan's open-source license is the structural advantage. |
 | Scanner false-positive rates erode trust | Smart suppression UX, learning from "wontfix" decisions, AI flags low-confidence findings. |
-| LLM costs eat margins | BYOK option, aggressive local caching, possible local LLM mode (Ollama). |
+| LLM costs eat margins | Aggressive caching in Supabase (same rule never hits API twice), rate limiting per user, Claude Haiku as default model, upgrade to Sonnet as revenue grows. |
 | Cross-platform pain (Windows) | Prioritize macOS + Linux. Windows via WSL initially, native later. |
 | Solo founder bandwidth | Open-source community helps with scanner integrations, rule tuning, docs. |
 | GitHub releases own version | Likely eventually. Trojan's edge: open-source, local-first, dev-UX-focused. |

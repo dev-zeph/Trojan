@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 
+	"github.com/dev-zeph/trojan/internal/config"
 	"github.com/dev-zeph/trojan/internal/normalizer"
 )
 
@@ -35,6 +36,7 @@ func (s *Server) Start() (string, error) {
 	// API routes
 	mux.HandleFunc("/api/scans/latest", s.handleLatestScan)
 	mux.HandleFunc("/api/findings/", s.handleFindingAction)
+	mux.HandleFunc("/api/auth/status", s.handleAuthStatus)
 
 	// Serve embedded UI assets
 	uiFS, err := fs.Sub(s.uiAssets, "ui/dist")
@@ -89,6 +91,20 @@ func (s *Server) handleFindingAction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	cfg, err := config.LoadConfig()
+	if err != nil || cfg.AccessToken == "" {
+		json.NewEncoder(w).Encode(map[string]any{"loggedIn": false, "isPro": false})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]any{
+		"loggedIn": config.IsLoggedIn(),
+		"isPro":    cfg.IsPro,
+		"email":    cfg.UserEmail,
+	})
 }
 
 // findAvailablePort returns the first open port starting from the given port.

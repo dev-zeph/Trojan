@@ -16,5 +16,13 @@ ui/node_modules/
 # Trojan local data
 .trojan/
 
+# Backend
+backend/.env
+backend/node_modules/
+backend/dist/
+
+# Supabase CLI temp files
+supabase/.temp/
+
 # OS
 .DS_Store

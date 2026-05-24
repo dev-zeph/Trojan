@@ -34,4 +34,8 @@ type Finding struct {
 	CodeSnippet string   // The affected code
 	RuleID      string   // The scanner rule that triggered this
 	Status      Status   // open, resolved, suppressed
+
+	// AI synthesis fields — populated for Pro users
+	Simply  string   `json:"Simply,omitempty"`  // Plain-English explanation
+	Actions []string `json:"Actions,omitempty"` // Step-by-step fix instructions
 }

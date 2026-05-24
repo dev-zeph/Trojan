@@ -1,0 +1,22 @@
+{
+  "name": "trojan-backend",
+  "version": "1.0.0",
+  "description": "Trojan paid tier backend — auth, subscriptions, AI synthesis",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.98.0",
+    "@supabase/supabase-js": "^2.106.1",
+    "stripe": "^22.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.1",
+    "tsx": "^4.22.3",
+    "typescript": "^6.0.3"
+  }
+}

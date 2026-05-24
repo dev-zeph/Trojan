@@ -77,42 +77,61 @@ export function FindingDetail({ finding, onBack, onAction }: Props) {
         <p className="text-sm leading-relaxed text-foreground/80">{finding.RawMessage}</p>
       </div>
 
-      {/* Simply — AI plain-English explanation (paid) */}
+      {/* Simply — AI plain-English explanation */}
       <div className="space-y-4 border-t border-border pt-8">
         <div className="flex items-center justify-between">
           <p className="text-xs uppercase tracking-widest text-muted-foreground">Simply</p>
-          <span className="text-xs text-muted-foreground border border-border rounded-full px-2 py-0.5">Pro</span>
+          {!finding.Simply && (
+            <span className="text-xs text-muted-foreground border border-border rounded-full px-2 py-0.5">Pro</span>
+          )}
         </div>
-        <div className="rounded bg-muted/50 border border-border border-dashed p-6 space-y-2 text-center">
-          <p className="text-sm text-muted-foreground leading-relaxed">
-            A plain-English explanation of this vulnerability — what it means for your app, why it matters, and a real-world breach with the same root cause.
-          </p>
-          <a
-            href="https://trojan.dev/pricing"
-            className="text-xs underline underline-offset-4 text-muted-foreground hover:text-foreground transition-colors"
-          >
-            Upgrade to Pro →
-          </a>
-        </div>
+        {finding.Simply ? (
+          <p className="text-sm leading-relaxed text-foreground/80">{finding.Simply}</p>
+        ) : (
+          <div className="rounded bg-muted/50 border border-border border-dashed p-6 space-y-2 text-center">
+            <p className="text-sm text-muted-foreground leading-relaxed">
+              A plain-English explanation of this vulnerability — what it means for your app, why it matters, and a real-world breach with the same root cause.
+            </p>
+            <a
+              href="https://trojan.dev/pricing"
+              className="text-xs underline underline-offset-4 text-muted-foreground hover:text-foreground transition-colors"
+            >
+              Upgrade to Pro →
+            </a>
+          </div>
+        )}
       </div>
 
-      {/* Actions — AI fix suggestions (paid) */}
+      {/* Actions — AI fix suggestions */}
       <div className="space-y-4 border-t border-border pt-8">
         <div className="flex items-center justify-between">
           <p className="text-xs uppercase tracking-widest text-muted-foreground">Actions</p>
-          <span className="text-xs text-muted-foreground border border-border rounded-full px-2 py-0.5">Pro</span>
+          {!finding.Actions?.length && (
+            <span className="text-xs text-muted-foreground border border-border rounded-full px-2 py-0.5">Pro</span>
+          )}
         </div>
-        <div className="rounded bg-muted/50 border border-border border-dashed p-6 space-y-2 text-center">
-          <p className="text-sm text-muted-foreground leading-relaxed">
-            Step-by-step actions to fix this vulnerability, with an AI-generated code diff you can apply directly.
-          </p>
-          <a
-            href="https://trojan.dev/pricing"
-            className="text-xs underline underline-offset-4 text-muted-foreground hover:text-foreground transition-colors"
-          >
-            Upgrade to Pro →
-          </a>
-        </div>
+        {finding.Actions?.length ? (
+          <ol className="space-y-3">
+            {finding.Actions.map((action, i) => (
+              <li key={i} className="flex gap-3 text-sm leading-relaxed text-foreground/80">
+                <span className="text-xs text-muted-foreground font-mono mt-0.5 shrink-0">{i + 1}.</span>
+                <span>{action}</span>
+              </li>
+            ))}
+          </ol>
+        ) : (
+          <div className="rounded bg-muted/50 border border-border border-dashed p-6 space-y-2 text-center">
+            <p className="text-sm text-muted-foreground leading-relaxed">
+              Step-by-step actions to fix this vulnerability, with an AI-generated code diff you can apply directly.
+            </p>
+            <a
+              href="https://trojan.dev/pricing"
+              className="text-xs underline underline-offset-4 text-muted-foreground hover:text-foreground transition-colors"
+            >
+              Upgrade to Pro →
+            </a>
+          </div>
+        )}
       </div>
 
       {/* Rule */}
