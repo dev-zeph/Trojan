@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Dashboard } from './components/Dashboard'
 import { FindingsList } from './components/FindingsList'
 import { FindingDetail } from './components/FindingDetail'
-import { getLatestScan, getAuthStatus } from './api'
+import { getLatestScan, getAuthStatus, subscribeToScanEvents } from './api'
 import type { AuthStatus } from './api'
 import type { Finding, ScanResult } from './types'
 
@@ -27,6 +27,7 @@ export default function App() {
   const [view, setView] = useState<View>('dashboard')
   const [selected, setSelected] = useState<Finding | null>(null)
   const [auth, setAuth] = useState<AuthStatus | null>(null)
+  const [rescanning, setRescanning] = useState(false)
   const { dark, toggle } = useDarkMode()
 
   async function loadScan() {
@@ -41,6 +42,16 @@ export default function App() {
   useEffect(() => {
     loadScan()
     getAuthStatus().then(setAuth)
+
+    // Subscribe to --watch re-scan events. The server sends scan_complete
+    // over SSE after every file-change triggered re-scan.
+    const unsubscribe = subscribeToScanEvents(async () => {
+      setRescanning(true)
+      await loadScan()
+      setRescanning(false)
+    })
+
+    return unsubscribe
   }, [])
 
   if (error) {
@@ -133,6 +144,11 @@ export default function App() {
                   </button>
                 ))}
               </nav>
+            )}
+            {rescanning && (
+              <span className="text-xs text-muted-foreground animate-pulse">
+                Rescanning…
+              </span>
             )}
           </div>
 

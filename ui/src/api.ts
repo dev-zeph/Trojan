@@ -32,3 +32,28 @@ export async function getAuthStatus(): Promise<AuthStatus> {
     return { loggedIn: false, isPro: false }
   }
 }
+
+/**
+ * Subscribe to scan-complete events from the Go server (Server-Sent Events).
+ * Returns a cleanup function — call it when the component unmounts.
+ *
+ * The server sends `data: scan_complete\n\n` after every --watch re-scan.
+ * The caller should re-fetch /api/scans/latest in the onScanComplete callback.
+ */
+export function subscribeToScanEvents(onScanComplete: () => void): () => void {
+  const es = new EventSource(`${BASE}/events`)
+
+  es.onmessage = (e) => {
+    if (e.data === 'scan_complete') {
+      onScanComplete()
+    }
+  }
+
+  // Non-fatal: if SSE isn't available (e.g. not in --watch mode) the
+  // connection will simply not send any messages.
+  es.onerror = () => {
+    // Browsers auto-reconnect on error; nothing to do here.
+  }
+
+  return () => es.close()
+}

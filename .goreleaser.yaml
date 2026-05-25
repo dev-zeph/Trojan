@@ -39,6 +39,20 @@ archives:
 checksum:
   name_template: "trojan_{{ .Version }}_checksums.txt"
 
+# Sign the checksums file with GPG.
+# GPG_FINGERPRINT must be set in the environment (GitHub Actions secret).
+# The private key is imported in the release workflow before goreleaser runs.
+signs:
+  - artifacts: checksum
+    args:
+      - "--batch"
+      - "--local-user"
+      - "{{ .Env.GPG_FINGERPRINT }}"
+      - "--output"
+      - "${signature}"
+      - "--detach-sign"
+      - "${artifact}"
+
 release:
   github:
     owner: dev-zeph
@@ -46,6 +60,12 @@ release:
   draft: false
   prerelease: auto
   name_template: "v{{.Version}}"
+  # Binary checksums (not archive checksums) are computed and uploaded
+  # by the release workflow after goreleaser finishes. See
+  # .github/workflows/release.yml for that step.
+  extra_files:
+    - glob: dist/trojan_*_binary_checksums.txt
+    - glob: dist/trojan_*_binary_checksums.txt.sig
 
 changelog:
   sort: asc

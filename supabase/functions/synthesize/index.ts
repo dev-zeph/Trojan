@@ -1,4 +1,3 @@
-import Anthropic from 'npm:@anthropic-ai/sdk@0.36'
 import { validateToken, isPro, corsHeaders } from '../_shared/auth.ts'
 import { supabase } from '../_shared/supabase.ts'
 
@@ -39,12 +38,10 @@ Deno.serve(async (req) => {
   const cached = await getFromCache(finding.ruleId, finding.scanner)
   if (cached && cached.simply !== finding.rawMessage) return json(cached)
 
-  const anthropicKey = Deno.env.get('ANTHROPIC_API_KEY')
-  if (!anthropicKey) return json({ error: 'Service misconfigured' }, 500)
+  const deepseekKey = Deno.env.get('DEEPSEEK_API_KEY')
+  if (!deepseekKey) return json({ error: 'Service misconfigured' }, 500)
 
-  const client = new Anthropic({ apiKey: anthropicKey })
-
-  const prompt = `You are a security expert helping a developer understand and fix a vulnerability found in their code.
+  const userPrompt = `You are a security expert helping a developer understand and fix a vulnerability found in their code.
 
 Finding:
 - Title: ${finding.title}
@@ -60,14 +57,26 @@ Respond with a JSON object with exactly two fields:
 
 Respond with only valid JSON. No markdown, no extra text.`
 
-  const message = await client.messages.create({
-    model: 'claude-haiku-4-5-20251001',
-    max_tokens: 1024,
-    system: 'You are a security expert. Always respond with raw JSON only — no markdown, no code fences, no explanation outside the JSON object.',
-    messages: [{ role: 'user', content: prompt }],
+  const resp = await fetch('https://api.deepseek.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${deepseekKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: 'deepseek-chat',
+      max_tokens: 1024,
+      messages: [
+        { role: 'system', content: 'You are a security expert. Always respond with raw JSON only — no markdown, no code fences, no explanation outside the JSON object.' },
+        { role: 'user', content: userPrompt },
+      ],
+    }),
   })
 
-  const raw = message.content[0]?.type === 'text' ? message.content[0].text : ''
+  if (!resp.ok) return json({ error: `DeepSeek API error (${resp.status})` }, 500)
+
+  const completion = await resp.json()
+  const raw: string = completion.choices?.[0]?.message?.content ?? ''
 
   // Strip markdown code fences if Claude wrapped the JSON
   const text = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim()

@@ -626,6 +626,59 @@ Each phase is independently shippable. Each phase ends with a concrete deliverab
 
 ---
 
+### Phase 7 — Security Considerations (pre-launch requirements)
+
+Trojan is a security tool. Its own supply chain and distribution must be held to a higher standard than a typical CLI. These are not optional — they are pre-launch requirements that directly affect user trust and defensibility against attack.
+
+#### The real attack surface
+
+The open-source scanners (Semgrep, Trivy, Gitleaks, Checkov, Syft) are read-only by design — they cannot modify user code. They are a low-risk dependency. The actual attack surface is Trojan itself:
+
+1. **Distribution chain** — Homebrew formula, install.sh, GitHub Releases. If any of these are compromised, an attacker gets code execution on every developer who installs or updates Trojan. This is the highest-value target.
+2. **Self-update mechanism** — `trojan update` downloads and replaces the running binary. Without signature verification, this is a remote code execution vector shipped inside a security tool. Unacceptable.
+3. **Local config** — `~/.trojan/config.json` holds the auth token. If readable by other processes on the machine, that token is compromised.
+
+#### Required implementations before public launch
+
+**1. GPG binary signing (highest priority)**
+- Every GitHub Release is signed with a GPG key controlled by Trojan Software Solutions
+- The corresponding public key is embedded in the binary at build time
+- `trojan update` verifies the GPG signature of the downloaded binary before replacing itself
+- If verification fails: hard stop, no update, loud error message — never silently run an unverified binary
+- Goreleaser supports this natively; enable it in `.goreleaser.yaml`
+
+**2. Config file permissions**
+- `~/.trojan/config.json` must be written with `0600` permissions (owner read/write only)
+- No other process on the machine should be able to read auth tokens
+- One line of code; do it before any user has a token to steal
+
+**3. SLSA provenance attestations**
+- Enable SLSA level 2 provenance generation in GitHub Actions for every release
+- Creates a verifiable chain: source code → CI build → binary
+- Anyone can prove the binary came from the public repo and not a compromised build machine
+- Free to implement, high trust signal — almost no tool at this stage bothers with it
+- Being early is a meaningful differentiator with security-conscious buyers
+
+**4. Reproducible builds**
+- Go produces byte-for-byte identical binaries from the same source with consistent build flags
+- Publish the exact build command so paranoid users can compile from source and verify the hash matches the release
+- Document this in SECURITY.md
+
+#### Trust statement (publish on trojan.dev and in SECURITY.md)
+
+> Every Trojan release is GPG-signed, SLSA-attested, and reproducibly built from public source. Verify any binary independently. The self-update process verifies signatures before replacing itself — it cannot be used to silently deliver unauthorized code. Scanner tools (Semgrep, Trivy, Gitleaks, Checkov, Syft) are read-only by design and cannot modify your codebase.
+
+#### Implementation priority order
+
+| Priority | Task | Effort |
+|----------|------|--------|
+| 1 | GPG signing in goreleaser + verify in `trojan update` | Medium |
+| 2 | Config file `0600` permissions | Trivial |
+| 3 | SLSA provenance in GitHub Actions | Low |
+| 4 | Reproducible build docs + SECURITY.md | Low |
+
+---
+
 ### Phase 8 — Marketing site, payments, and completion (weeks 15-17)
 
 **Goal:** Trojan has a real home on the internet. Payment flows are polished. The product is "complete" as a v1.
