@@ -38,4 +38,8 @@ type Finding struct {
 	// AI synthesis fields — populated for Pro users
 	Simply  string   `json:"Simply,omitempty"`  // Plain-English explanation
 	Actions []string `json:"Actions,omitempty"` // Step-by-step fix instructions
+
+	// Locked is set at serve time (never persisted to disk).
+	// True when the finding is not accessible on the free plan.
+	Locked bool `json:"locked,omitempty"`
 }

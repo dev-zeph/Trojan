@@ -11,7 +11,19 @@ export async function validateToken(token: string): Promise<User | null> {
     .eq('id', user.id)
     .single()
 
-  return data as User | null
+  if (data) return data as User
+
+  // Row missing — create it with free defaults so the user isn't locked out
+  const newUser = {
+    id: user.id,
+    email: user.email ?? '',
+    github_username: user.user_metadata?.user_name ?? null,
+    stripe_customer_id: null,
+    subscription_status: 'free' as const,
+    subscription_id: null,
+  }
+  await supabase.from('users').upsert(newUser, { onConflict: 'id' })
+  return { ...newUser, created_at: new Date().toISOString() }
 }
 
 export function isPro(user: User): boolean {

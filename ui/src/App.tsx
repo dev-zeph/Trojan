@@ -97,12 +97,25 @@ export default function App() {
           </div>
         </div>
       )}
+      {auth?.loggedIn && auth.isPro && (
+        <div className="border-b border-border bg-muted/40">
+          <div className="max-w-5xl mx-auto px-8 py-2.5 flex items-center justify-between">
+            <p className="text-xs text-muted-foreground">
+              <span className="text-foreground font-medium">{auth.email}</span>
+              {' '}· You're the pro.
+            </p>
+            <span className="text-xs font-medium uppercase tracking-widest text-foreground">
+              {auth.plan ?? 'Pro'}
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* Header */}
       <header className="border-b border-border">
         <div className="max-w-5xl mx-auto px-8 py-5 flex items-center justify-between">
           <div className="flex items-center gap-8">
-            <img src="/logo.png" alt="Trojan" className="h-7 w-auto" />
+            <img src="/logo.png" alt="Trojan" className="h-14 w-auto" />
             {!selected && (
               <nav className="flex gap-6">
                 {(['dashboard', 'findings'] as View[]).map(v => (
@@ -149,6 +162,7 @@ export default function App() {
         ) : (
           <FindingsList
             findings={scan.findings}
+            lockedCount={scan.locked_count ?? 0}
             onSelect={setSelected}
           />
         )}

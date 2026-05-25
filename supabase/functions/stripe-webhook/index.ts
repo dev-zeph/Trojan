@@ -8,7 +8,6 @@ Deno.serve(async (req) => {
 
   const stripeKey = Deno.env.get('STRIPE_SECRET_KEY')
   const webhookSecret = Deno.env.get('STRIPE_WEBHOOK_SECRET')
-
   if (!stripeKey || !webhookSecret) {
     return new Response(JSON.stringify({ error: 'Service misconfigured' }), { status: 500 })
   }
@@ -27,9 +26,10 @@ Deno.serve(async (req) => {
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object as Stripe.Checkout.Session
     const userId = session.metadata?.['userId']
+    const plan = (session.metadata?.['plan'] === 'team') ? 'team' : 'pro'
     if (userId) {
       await supabase.from('users').update({
-        subscription_status: 'pro',
+        subscription_status: plan,
         subscription_id: session.subscription,
         stripe_customer_id: session.customer,
       }).eq('id', userId)
@@ -38,10 +38,24 @@ Deno.serve(async (req) => {
 
   if (event.type === 'customer.subscription.updated') {
     const sub = event.data.object as Stripe.Subscription
-    const status = sub.status === 'active' ? 'pro' : 'free'
-    await supabase.from('users')
-      .update({ subscription_status: status })
-      .eq('subscription_id', sub.id)
+    if (sub.status === 'active') {
+      // Keep whatever plan they already have (pro/team); just ensure it's not free
+      const { data: existing } = await supabase
+        .from('users')
+        .select('subscription_status')
+        .eq('subscription_id', sub.id)
+        .single()
+      const currentStatus = existing?.subscription_status
+      if (currentStatus === 'free' || !currentStatus) {
+        await supabase.from('users')
+          .update({ subscription_status: 'pro' })
+          .eq('subscription_id', sub.id)
+      }
+    } else {
+      await supabase.from('users')
+        .update({ subscription_status: 'free' })
+        .eq('subscription_id', sub.id)
+    }
   }
 
   if (event.type === 'customer.subscription.deleted') {

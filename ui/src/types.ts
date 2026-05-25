@@ -15,10 +15,12 @@ export interface Finding {
   Status: Status
   Simply?: string
   Actions?: string[]
+  locked?: boolean
 }
 
 export interface ScanResult {
   timestamp: string
   project_path: string
   findings: Finding[]
+  locked_count: number
 }

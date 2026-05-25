@@ -19,6 +19,7 @@ export async function suppressFinding(id: string): Promise<void> {
 export interface AuthStatus {
   loggedIn: boolean
   isPro: boolean
+  plan?: string
   email?: string
 }
 

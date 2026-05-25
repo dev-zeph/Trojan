@@ -83,8 +83,10 @@ export function Dashboard({ scan, onViewFindings, onSelectFinding }: Props) {
             {preview.map(finding => (
               <button
                 key={finding.ID}
-                onClick={() => onSelectFinding(finding)}
-                className="w-full text-left py-5 flex items-start gap-4 hover:bg-muted/40 transition-colors px-2 -mx-2 rounded"
+                onClick={finding.locked ? undefined : () => onSelectFinding(finding)}
+                className={`w-full text-left py-5 flex items-start gap-4 px-2 -mx-2 rounded transition-colors ${
+                  finding.locked ? 'opacity-40 cursor-default select-none' : 'hover:bg-muted/40'
+                }`}
               >
                 <SeverityDot severity={finding.Severity} />
                 <div className="flex-1 min-w-0 space-y-1">
@@ -96,6 +98,11 @@ export function Dashboard({ scan, onViewFindings, onSelectFinding }: Props) {
                 <div className="flex items-center gap-4 shrink-0">
                   <SeverityBadge severity={finding.Severity} />
                   <span className="text-xs text-muted-foreground">{finding.Scanner}</span>
+                  {finding.locked && (
+                    <svg className="w-3.5 h-3.5 text-muted-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
+                    </svg>
+                  )}
                 </div>
               </button>
             ))}

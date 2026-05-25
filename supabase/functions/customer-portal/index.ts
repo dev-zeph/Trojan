@@ -2,11 +2,6 @@ import Stripe from 'npm:stripe@17'
 import { validateToken, corsHeaders } from '../_shared/auth.ts'
 import { supabase } from '../_shared/supabase.ts'
 
-const PLANS = {
-  pro: { priceId: Deno.env.get('STRIPE_PRO_PRICE_ID') ?? '' },
-  team: { priceId: Deno.env.get('STRIPE_TEAM_PRICE_ID') ?? '' },
-} as const
-
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { headers: corsHeaders() })
   if (req.method !== 'POST') return json({ error: 'Method not allowed' }, 405)
@@ -20,32 +15,26 @@ Deno.serve(async (req) => {
   const stripeKey = Deno.env.get('STRIPE_SECRET_KEY')
   if (!stripeKey) return json({ error: 'Service misconfigured' }, 500)
 
-  const body = await req.json()
-  const plan = PLANS[body.plan as keyof typeof PLANS]
-  if (!plan) return json({ error: 'Invalid plan' }, 400)
-
-  const origin = body.origin ?? 'https://trojan.dev'
-  const stripe = new Stripe(stripeKey)
-
-  const { data: profile } = await supabase
+  const { data: userData } = await supabase
     .from('users')
     .select('stripe_customer_id')
     .eq('id', user.id)
     .single()
 
-  const session = await stripe.checkout.sessions.create({
-    ui_mode: 'embedded',
-    mode: 'subscription',
-    payment_method_types: ['card'],
-    line_items: [{ price: plan.priceId, quantity: 1 }],
-    ...(profile?.stripe_customer_id
-      ? { customer: profile.stripe_customer_id }
-      : { customer_email: user.email }),
-    return_url: `${origin}/checkout/complete?session_id={CHECKOUT_SESSION_ID}`,
-    metadata: { userId: user.id, plan: body.plan },
+  if (!userData?.stripe_customer_id) {
+    return json({ error: 'No active subscription found' }, 404)
+  }
+
+  const stripe = new Stripe(stripeKey)
+  const body = await req.json().catch(() => ({}))
+  const origin = body.origin ?? 'https://trojan.dev'
+
+  const session = await stripe.billingPortal.sessions.create({
+    customer: userData.stripe_customer_id,
+    return_url: `${origin}/dashboard`,
   })
 
-  return json({ clientSecret: session.client_secret })
+  return json({ url: session.url })
 })
 
 function json(data: unknown, status = 200): Response {

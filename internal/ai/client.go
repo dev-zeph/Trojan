@@ -112,8 +112,17 @@ func cachePath(ruleID, scanner string) string {
 	return filepath.Join(home, ".trojan", "cache", key)
 }
 
+const cacheTTL = 30 * 24 * time.Hour // AI explanations refresh every 30 days
+
 func loadFromCache(ruleID, scanner string) *Synthesis {
-	data, err := os.ReadFile(cachePath(ruleID, scanner))
+	p := cachePath(ruleID, scanner)
+
+	info, err := os.Stat(p)
+	if err != nil || time.Since(info.ModTime()) > cacheTTL {
+		return nil
+	}
+
+	data, err := os.ReadFile(p)
 	if err != nil {
 		return nil
 	}
