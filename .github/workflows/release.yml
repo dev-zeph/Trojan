@@ -21,9 +21,10 @@ jobs:
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
+        run: |
+          VERSION=$(awk '/^go /{print $2}' go.mod)
+          curl -fsSL "https://go.dev/dl/go${VERSION}.linux-amd64.tar.gz" | sudo tar -C /usr/local -xz
+          echo "/usr/local/go/bin" >> $GITHUB_PATH
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
