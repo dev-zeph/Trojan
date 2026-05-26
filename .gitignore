@@ -1,6 +1,6 @@
 # Compiled binary
-trojan
-trojan.exe
+/trojan
+/trojan.exe
 
 # Go build cache
 /vendor/
