@@ -16,8 +16,7 @@ func (t Trivy) Name() string     { return "trivy" }
 func (t Trivy) Category() string { return "sca" }
 
 func (t Trivy) IsAvailable() bool {
-	_, err := exec.LookPath("trivy")
-	return err == nil
+	return IsInstalled("trivy")
 }
 
 func (t Trivy) Run(projectPath string) ([]normalizer.Finding, error) {
@@ -25,7 +24,7 @@ func (t Trivy) Run(projectPath string) ([]normalizer.Finding, error) {
 		return nil, fmt.Errorf("trivy not found: run 'trojan init' to install it")
 	}
 
-	cmd := exec.Command("trivy", "fs", "--format", "json", "--quiet", projectPath)
+	cmd := exec.Command(ManagedBinary("trivy"), "fs", "--format", "json", "--quiet", projectPath)
 	output, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {

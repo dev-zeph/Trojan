@@ -8,19 +8,6 @@ import type { Finding, ScanResult } from './types'
 
 type View = 'dashboard' | 'findings'
 
-function useDarkMode() {
-  const [dark, setDark] = useState(() =>
-    window.matchMedia('(prefers-color-scheme: dark)').matches
-  )
-
-  useEffect(() => {
-    const root = document.documentElement
-    dark ? root.classList.add('dark') : root.classList.remove('dark')
-  }, [dark])
-
-  return { dark, toggle: () => setDark(d => !d) }
-}
-
 export default function App() {
   const [scan, setScan] = useState<ScanResult | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -28,7 +15,16 @@ export default function App() {
   const [selected, setSelected] = useState<Finding | null>(null)
   const [auth, setAuth] = useState<AuthStatus | null>(null)
   const [rescanning, setRescanning] = useState(false)
-  const { dark, toggle } = useDarkMode()
+
+  useEffect(() => {
+    const root = document.documentElement
+    const mq = window.matchMedia('(prefers-color-scheme: dark)')
+    mq.matches ? root.classList.add('dark') : root.classList.remove('dark')
+    const handler = (e: MediaQueryListEvent) =>
+      e.matches ? root.classList.add('dark') : root.classList.remove('dark')
+    mq.addEventListener('change', handler)
+    return () => mq.removeEventListener('change', handler)
+  }, [])
 
   async function loadScan() {
     try {
@@ -140,7 +136,7 @@ export default function App() {
                     }`}
                   >
                     {v}
-                    {v === 'findings' && ` (${scan.findings.length})`}
+                    {v === 'findings' && ` (${scan.findings.filter(f => f.Status === 'open').length})`}
                   </button>
                 ))}
               </nav>
@@ -152,12 +148,6 @@ export default function App() {
             )}
           </div>
 
-          <button
-            onClick={toggle}
-            className="text-xs text-muted-foreground hover:text-foreground transition-colors uppercase tracking-widest"
-          >
-            {dark ? 'Light' : 'Dark'}
-          </button>
         </div>
       </header>
 

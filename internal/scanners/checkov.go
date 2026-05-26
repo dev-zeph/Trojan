@@ -15,8 +15,7 @@ func (c Checkov) Name() string     { return "checkov" }
 func (c Checkov) Category() string { return "iac" }
 
 func (c Checkov) IsAvailable() bool {
-	_, err := exec.LookPath("checkov")
-	return err == nil
+	return IsInstalled("checkov")
 }
 
 func (c Checkov) Run(projectPath string) ([]normalizer.Finding, error) {
@@ -24,7 +23,7 @@ func (c Checkov) Run(projectPath string) ([]normalizer.Finding, error) {
 		return nil, fmt.Errorf("checkov not found: run 'trojan init' to install it")
 	}
 
-	cmd := exec.Command("checkov", "-d", projectPath, "-o", "json", "--quiet")
+	cmd := exec.Command(ManagedBinary("checkov"), "-d", projectPath, "-o", "json", "--quiet")
 	output, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {

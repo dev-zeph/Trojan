@@ -1,63 +1,61 @@
 package config
 
 import (
+	"archive/tar"
+	"archive/zip"
+	"compress/gzip"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 
 	"github.com/fatih/color"
 )
 
-// Scanner describes how to install a required scanner.
-type scannerDep struct {
-	Name       string
-	Binary     string
-	BrewPkg    string // macOS/Linux via Homebrew
-	PipPkg     string // via pip3 (fallback)
-	InstallURL string // docs URL if we can't auto-install
+// TrojanBinDir returns ~/.trojan/bin, creating it if needed.
+func TrojanBinDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("could not find home directory: %w", err)
+	}
+	dir := filepath.Join(home, ".trojan", "bin")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", fmt.Errorf("could not create %s: %w", dir, err)
+	}
+	return dir, nil
 }
 
-var scannerDeps = []scannerDep{
-	{
-		Name:    "Semgrep",
-		Binary:  "semgrep",
-		PipPkg:  "semgrep",
-		InstallURL: "https://semgrep.dev/docs/getting-started",
-	},
-	{
-		Name:    "Trivy",
-		Binary:  "trivy",
-		BrewPkg: "trivy",
-		InstallURL: "https://aquasecurity.github.io/trivy/latest/getting-started/installation",
-	},
-	{
-		Name:    "Gitleaks",
-		Binary:  "gitleaks",
-		BrewPkg: "gitleaks",
-		InstallURL: "https://github.com/gitleaks/gitleaks#installing",
-	},
-	{
-		Name:    "Checkov",
-		Binary:  "checkov",
-		PipPkg:  "checkov",
-		InstallURL: "https://www.checkov.io/1.Welcome/Quick%20Start.html",
-	},
-	{
-		Name:    "Syft",
-		Binary:  "syft",
-		BrewPkg: "syft",
-		InstallURL: "https://github.com/anchore/syft#installation",
-	},
+// ManagedBinaryPath returns the path to a scanner binary managed by Trojan.
+// Returns empty string if not installed.
+func ManagedBinaryPath(name string) string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	p := filepath.Join(home, ".trojan", "bin", name)
+	if _, err := os.Stat(p); err == nil {
+		return p
+	}
+	return ""
 }
 
-// EnsureScanners checks which scanners are missing and installs them.
-// This is called automatically before the first scan.
+// EnsureScanners checks which scanners are missing and installs pinned versions.
 func EnsureScanners() error {
-	missing := []scannerDep{}
-	for _, dep := range scannerDeps {
-		if _, err := exec.LookPath(dep.Binary); err != nil {
-			missing = append(missing, dep)
+	binDir, err := TrojanBinDir()
+	if err != nil {
+		return err
+	}
+
+	platform := runtime.GOOS + "/" + runtime.GOARCH // e.g. "darwin/arm64"
+
+	missing := []ScannerManifest{}
+	for _, s := range Scanners {
+		dest := filepath.Join(binDir, s.Binary)
+		if _, err := os.Stat(dest); os.IsNotExist(err) {
+			missing = append(missing, s)
 		}
 	}
 
@@ -65,47 +63,233 @@ func EnsureScanners() error {
 		return nil
 	}
 
-	fmt.Printf("Installing %d missing scanner(s)...\n\n", len(missing))
+	fmt.Printf("Installing %d missing scanner(s) to ~/.trojan/bin/...\n\n", len(missing))
 
-	hasBrew := hasBrew()
-	hasPip := hasPip()
-
-	for _, dep := range missing {
-		fmt.Printf("  Installing %s... ", dep.Name)
-
-		var err error
-		if dep.BrewPkg != "" && hasBrew {
-			err = runQuiet("brew", "install", dep.BrewPkg)
-		} else if dep.PipPkg != "" && hasPip {
-			err = runQuiet("pip3", "install", dep.PipPkg)
-		} else {
-			color.Yellow("skipped\n")
-			fmt.Printf("    Install manually: %s\n", dep.InstallURL)
+	for _, s := range missing {
+		asset, ok := s.Platforms[platform]
+		if !ok {
+			color.Yellow("  %-12s skipped (unsupported platform: %s)\n", s.Name, platform)
 			continue
 		}
 
-		if err != nil {
-			color.Red("failed\n")
-			fmt.Printf("    Install manually: %s\n", dep.InstallURL)
+		fmt.Printf("  Installing %s v%s... ", s.Name, s.Version)
+
+		if asset.Archive == ArchivePip {
+			if err := installViaPip(asset.PipPackage, binDir); err != nil {
+				color.Red("failed\n")
+				fmt.Printf("    Error: %v\n", err)
+				continue
+			}
 		} else {
-			color.Green("done\n")
+			dest := filepath.Join(binDir, s.Binary)
+			if err := downloadScanner(asset, dest); err != nil {
+				color.Red("failed\n")
+				fmt.Printf("    Error: %v\n", err)
+				continue
+			}
 		}
+
+		color.Green("done\n")
 	}
 
 	fmt.Println()
 	return nil
 }
 
+// installViaPip installs a pinned pip package into ~/.trojan/venv/ and symlinks
+// the binary into ~/.trojan/bin/.
+func installViaPip(pipPackage, binDir string) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	venvDir := filepath.Join(home, ".trojan", "venv")
+
+	// Create venv if it doesn't exist
+	if _, err := os.Stat(venvDir); os.IsNotExist(err) {
+		if err := runCaptured("python3", "-m", "venv", venvDir); err != nil {
+			return fmt.Errorf("could not create venv (is python3 installed?): %w", err)
+		}
+	}
+
+	pipBin := filepath.Join(venvDir, "bin", "pip")
+	if err := runCaptured(pipBin, "install", "--quiet", "--disable-pip-version-check", pipPackage); err != nil {
+		return fmt.Errorf("pip install failed: %w", err)
+	}
+
+	// Symlink venv binary into ~/.trojan/bin/
+	name := pipPackage
+	if idx := len(pipPackage); idx > 0 {
+		for i, c := range pipPackage {
+			if c == '=' {
+				name = pipPackage[:i]
+				break
+			}
+		}
+	}
+	venvBin := filepath.Join(venvDir, "bin", name)
+	dest := filepath.Join(binDir, name)
+	os.Remove(dest) // remove stale symlink if present
+	return os.Symlink(venvBin, dest)
+}
+
+func runCaptured(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%w\n%s", err, string(out))
+	}
+	return nil
+}
+
+// downloadScanner downloads, verifies, and installs a single scanner binary.
+func downloadScanner(asset PlatformAsset, dest string) error {
+	// Download to a temp file
+	tmp, err := os.CreateTemp("", "trojan-scanner-*")
+	if err != nil {
+		return fmt.Errorf("could not create temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+
+	resp, err := http.Get(asset.URL)
+	if err != nil {
+		return fmt.Errorf("download failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download failed: HTTP %d", resp.StatusCode)
+	}
+
+	if _, err := io.Copy(tmp, resp.Body); err != nil {
+		tmp.Close()
+		return fmt.Errorf("download failed: %w", err)
+	}
+	tmp.Close()
+
+	// Verify SHA256 if set
+	if asset.SHA256 != "" {
+		actual, err := sha256File(tmpPath)
+		if err != nil {
+			return fmt.Errorf("checksum failed: %w", err)
+		}
+		if actual != asset.SHA256 {
+			return fmt.Errorf("checksum mismatch\n    expected: %s\n    got:      %s\n    The downloaded file may be corrupted or tampered with.", asset.SHA256, actual)
+		}
+	} else {
+		color.Yellow("(unverified — no checksum configured) ")
+	}
+
+	// Extract or move binary into place
+	switch asset.Archive {
+	case ArchiveDirect:
+		if err := installDirect(tmpPath, dest); err != nil {
+			return err
+		}
+	case ArchiveTarGz:
+		if err := extractTarGz(tmpPath, asset.BinaryInArchive, dest); err != nil {
+			return err
+		}
+	case ArchiveZip:
+		if err := extractZip(tmpPath, asset.BinaryInArchive, dest); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("unknown archive type: %s", asset.Archive)
+	}
+
+	return os.Chmod(dest, 0755)
+}
+
+func installDirect(src, dest string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, in)
+	return err
+}
+
+func extractTarGz(archivePath, binaryName, dest string) error {
+	f, err := os.Open(archivePath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return fmt.Errorf("not a valid gzip file: %w", err)
+	}
+	defer gz.Close()
+
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		if filepath.Base(hdr.Name) == binaryName {
+			out, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+			if err != nil {
+				return err
+			}
+			_, copyErr := io.Copy(out, tr)
+			out.Close()
+			return copyErr
+		}
+	}
+	return fmt.Errorf("binary %q not found inside archive", binaryName)
+}
+
+func extractZip(archivePath, binaryName, dest string) error {
+	r, err := zip.OpenReader(archivePath)
+	if err != nil {
+		return fmt.Errorf("not a valid zip file: %w", err)
+	}
+	defer r.Close()
+
+	for _, f := range r.File {
+		if f.Name == binaryName || filepath.Base(f.Name) == filepath.Base(binaryName) {
+			rc, err := f.Open()
+			if err != nil {
+				return err
+			}
+			out, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+			if err != nil {
+				rc.Close()
+				return err
+			}
+			_, copyErr := io.Copy(out, rc)
+			rc.Close()
+			out.Close()
+			return copyErr
+		}
+	}
+	return fmt.Errorf("binary %q not found inside zip", binaryName)
+}
+
+
 // RunInit is the full init flow — called by `trojan init`.
 func RunInit(projectPath string) error {
 	fmt.Println("Setting up Trojan...\n")
 
-	// Install missing scanners
 	if err := EnsureScanners(); err != nil {
 		return err
 	}
 
-	// Add .trojan/ to .gitignore
 	if err := ensureGitignore(projectPath); err != nil {
 		color.Yellow("Warning: could not update .gitignore: %s\n", err)
 	}
@@ -124,7 +308,6 @@ func ensureGitignore(projectPath string) error {
 	}
 	defer f.Close()
 
-	// Check if already present
 	content, _ := os.ReadFile(gitignorePath)
 	if contains(string(content), ".trojan/") {
 		return nil
@@ -134,21 +317,9 @@ func ensureGitignore(projectPath string) error {
 	return err
 }
 
-func hasBrew() bool {
-	_, err := exec.LookPath("brew")
-	return err == nil
-}
-
-func hasPip() bool {
-	_, err := exec.LookPath("pip3")
-	return err == nil
-}
-
-func runQuiet(name string, args ...string) error {
-	cmd := exec.Command(name, args...)
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	return cmd.Run()
+// Platform returns the current OS for informational purposes.
+func Platform() string {
+	return runtime.GOOS
 }
 
 func contains(s, substr string) bool {
@@ -162,9 +333,4 @@ func containsStr(s, substr string) bool {
 		}
 	}
 	return false
-}
-
-// Platform returns the current OS for informational purposes.
-func Platform() string {
-	return runtime.GOOS
 }

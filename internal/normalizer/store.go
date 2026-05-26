@@ -15,8 +15,20 @@ type ScanResult struct {
 	Findings    []Finding `json:"findings"`
 }
 
+// NewScanResult creates an in-memory ScanResult without writing anything to disk.
+// Used for free-tier users — findings are served from memory only and discarded
+// when the local server closes.
+func NewScanResult(projectPath string, findings []Finding) *ScanResult {
+	return &ScanResult{
+		Timestamp:   time.Now(),
+		ProjectPath: projectPath,
+		Findings:    findings,
+	}
+}
+
 // SaveScanResult writes scan results to .trojan/scans/[timestamp].json
 // and returns the ScanResult for use by the local server.
+// Only called for Pro users — free users use NewScanResult instead.
 func SaveScanResult(projectPath string, findings []Finding) (*ScanResult, error) {
 	scansDir := filepath.Join(projectPath, ".trojan", "scans")
 	if err := os.MkdirAll(scansDir, 0755); err != nil {

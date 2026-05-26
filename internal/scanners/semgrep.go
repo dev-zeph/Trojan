@@ -16,8 +16,7 @@ func (s Semgrep) Name() string     { return "semgrep" }
 func (s Semgrep) Category() string { return "sast" }
 
 func (s Semgrep) IsAvailable() bool {
-	_, err := exec.LookPath("semgrep")
-	return err == nil
+	return IsInstalled("semgrep")
 }
 
 func (s Semgrep) Run(projectPath string) ([]normalizer.Finding, error) {
@@ -25,7 +24,7 @@ func (s Semgrep) Run(projectPath string) ([]normalizer.Finding, error) {
 		return nil, fmt.Errorf("semgrep not found: run 'trojan init' to install it")
 	}
 
-	cmd := exec.Command("semgrep", "--config=auto", "--json", projectPath)
+	cmd := exec.Command(ManagedBinary("semgrep"), "--config=auto", "--json", projectPath)
 	output, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {

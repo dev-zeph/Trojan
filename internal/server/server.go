@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dev-zeph/trojan/internal/ai"
 	"github.com/dev-zeph/trojan/internal/config"
 	"github.com/dev-zeph/trojan/internal/normalizer"
 )
@@ -191,27 +190,15 @@ func (s *Server) handleLatestScan(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-// checkProStatus validates the user's subscription against the Supabase license
-// endpoint. Results are cached in memory for licenseCacheTTL. Fails closed —
-// any error (no token, network failure, expired token) returns false.
+// checkProStatus reads the subscription status directly from the local JWT
+// claims — same source of truth used by main.go when deciding whether to run
+// AI and save results. No network call needed; fails closed on any error.
 func (s *Server) checkProStatus() bool {
 	cfg, err := config.LoadConfig()
 	if err != nil || cfg.AccessToken == "" {
 		return false
 	}
-
-	s.licenseMu.Lock()
-	defer s.licenseMu.Unlock()
-
-	if s.licenseCache != nil && time.Since(s.licenseCache.fetchedAt) < licenseCacheTTL {
-		return s.licenseCache.isPro
-	}
-
-	info, err := ai.FetchLicense(cfg.AccessToken)
-	isPro := err == nil && info != nil && info.IsPro
-
-	s.licenseCache = &licenseResult{isPro: isPro, fetchedAt: time.Now()}
-	return isPro
+	return config.IsProFromToken(cfg.AccessToken)
 }
 
 // markFindingsForFree returns a copy of all findings with the Locked field set
@@ -240,6 +227,10 @@ func markFindingsForFree(findings []normalizer.Finding) (marked []normalizer.Fin
 	marked = make([]normalizer.Finding, len(findings))
 	for i, f := range findings {
 		marked[i] = f
+		// Never expose AI-generated content to free users — strip cached
+		// Simply/Actions regardless of whether the finding is unlocked.
+		marked[i].Simply = ""
+		marked[i].Actions = nil
 		if !freeIDs[f.ID] {
 			marked[i].Locked = true
 			lockedCount++

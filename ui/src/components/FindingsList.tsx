@@ -15,7 +15,10 @@ export function FindingsList({ findings, lockedCount, onSelect }: Props) {
   const [severityFilter, setSeverityFilter] = useState<Severity | 'all'>('all')
   const [scannerFilter, setScannerFilter] = useState<string>('all')
 
-  const scanners = [...new Set(findings.map(f => f.Scanner))]
+  // Only show open findings — resolved/suppressed are gone from view
+  const openFindings = findings.filter(f => f.Status === 'open')
+
+  const scanners = [...new Set(openFindings.map(f => f.Scanner))]
 
   const applyFilters = (list: Finding[]) =>
     list.filter(f => {
@@ -24,9 +27,9 @@ export function FindingsList({ findings, lockedCount, onSelect }: Props) {
       return true
     })
 
-  const unlocked = applyFilters(findings.filter(f => !f.locked))
+  const unlocked = applyFilters(openFindings.filter(f => !f.locked))
   const locked   = applyFilters(
-    [...findings.filter(f => f.locked)].sort(
+    [...openFindings.filter(f => f.locked)].sort(
       (a, b) => SEVERITY_ORDER[a.Severity] - SEVERITY_ORDER[b.Severity]
     )
   )
@@ -34,7 +37,7 @@ export function FindingsList({ findings, lockedCount, onSelect }: Props) {
   const totalVisible = unlocked.length + locked.length
 
   // Only show upgrade banner when the free cap is actually hit
-  const unlockedTotal = findings.filter(f => !f.locked).length
+  const unlockedTotal = openFindings.filter(f => !f.locked).length
   const showBanner = lockedCount > 0 && unlockedTotal >= 5
 
   return (
