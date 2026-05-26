@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: write
-  id-token: write  # Required for SLSA provenance attestation
 
 jobs:
   release:
@@ -103,11 +102,5 @@ jobs:
             "dist/trojan_${VERSION}_binary_checksums.txt.sig" \
             --clobber
 
-      # Generate SLSA provenance attestation via GitHub's built-in action.
-      # This creates a verifiable chain from source → CI build → binary,
-      # published to the public Sigstore transparency log.
-      # Verify any release with: gh attestation verify trojan_VERSION_OS_ARCH.tar.gz
-      - name: Generate SLSA provenance
-        uses: actions/attest-build-provenance@v2
-        with:
-          subject-path: dist/*.tar.gz
+      # SLSA provenance attestation — temporarily disabled due to GitHub CDN issues.
+      # Re-enable actions/attest-build-provenance@v2 once stable.
