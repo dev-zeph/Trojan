@@ -43,4 +43,69 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update Homebrew tap
+        env:
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          CHECKSUMS="dist/trojan_${VERSION}_checksums.txt"
+
+          get_sha() {
+            grep "$1" "$CHECKSUMS" | awk '{print $1}'
+          }
+
+          SHA_DARWIN_ARM64=$(get_sha "trojan_${VERSION}_darwin_arm64.tar.gz")
+          SHA_DARWIN_AMD64=$(get_sha "trojan_${VERSION}_darwin_amd64.tar.gz")
+          SHA_LINUX_ARM64=$(get_sha "trojan_${VERSION}_linux_arm64.tar.gz")
+          SHA_LINUX_AMD64=$(get_sha "trojan_${VERSION}_linux_amd64.tar.gz")
+
+          FORMULA=$(cat <<EOF
+          class Trojan < Formula
+            desc "Developer-first security CLI. Catch vulnerabilities before they ship."
+            homepage "https://trojan.dev"
+            version "${VERSION}"
+            license "BUSL-1.1"
+
+            on_macos do
+              on_arm do
+                url "https://github.com/dev-zeph/Trojan/releases/download/v${VERSION}/trojan_${VERSION}_darwin_arm64.tar.gz"
+                sha256 "${SHA_DARWIN_ARM64}"
+              end
+              on_intel do
+                url "https://github.com/dev-zeph/Trojan/releases/download/v${VERSION}/trojan_${VERSION}_darwin_amd64.tar.gz"
+                sha256 "${SHA_DARWIN_AMD64}"
+              end
+            end
+
+            on_linux do
+              on_arm do
+                url "https://github.com/dev-zeph/Trojan/releases/download/v${VERSION}/trojan_${VERSION}_linux_arm64.tar.gz"
+                sha256 "${SHA_LINUX_ARM64}"
+              end
+              on_intel do
+                url "https://github.com/dev-zeph/Trojan/releases/download/v${VERSION}/trojan_${VERSION}_linux_amd64.tar.gz"
+                sha256 "${SHA_LINUX_AMD64}"
+              end
+            end
+
+            def install
+              bin.install "trojan"
+            end
+
+            test do
+              system bin/"trojan", "version"
+            end
+          end
+          EOF
+          )
+
+          git clone "https://x-access-token:${HOMEBREW_TAP_GITHUB_TOKEN}@github.com/dev-zeph/homebrew-trojan.git" tap
+          mkdir -p tap/Formula
+          echo "$FORMULA" > tap/Formula/trojan.rb
+          cd tap
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add Formula/trojan.rb
+          git commit -m "trojan ${VERSION}"
+          git push
