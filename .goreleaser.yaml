@@ -2,25 +2,20 @@ version: 2
 
 before:
   hooks:
-    # Build the UI before compiling the Go binary
     - sh -c "cd ui && npm run build"
 
 builds:
   - id: trojan
-    main: ./cmd/trojan/
+    main: ./cmd/trojan
     binary: trojan
     env:
       - CGO_ENABLED=0
     goos:
       - darwin
       - linux
-      - windows
     goarch:
       - amd64
       - arm64
-    ignore:
-      - goos: windows
-        goarch: arm64
     ldflags:
       - -s -w
       - -X main.version={{.Version}}
@@ -28,9 +23,6 @@ builds:
 archives:
   - id: trojan
     formats: [tar.gz]
-    format_overrides:
-      - goos: windows
-        formats: [zip]
     name_template: "trojan_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     files:
       - LICENSE
@@ -39,20 +31,6 @@ archives:
 checksum:
   name_template: "trojan_{{ .Version }}_checksums.txt"
 
-# Sign the checksums file with GPG.
-# GPG_FINGERPRINT must be set in the environment (GitHub Actions secret).
-# The private key is imported in the release workflow before goreleaser runs.
-signs:
-  - artifacts: checksum
-    args:
-      - "--batch"
-      - "--local-user"
-      - "{{ .Env.GPG_FINGERPRINT }}"
-      - "--output"
-      - "${signature}"
-      - "--detach-sign"
-      - "${artifact}"
-
 release:
   github:
     owner: dev-zeph
@@ -60,14 +38,8 @@ release:
   draft: false
   prerelease: auto
   name_template: "v{{.Version}}"
-  # Binary checksums (not archive checksums) are computed and uploaded
-  # by the release workflow after goreleaser finishes. See
-  # .github/workflows/release.yml for that step.
-  extra_files:
-    - glob: dist/trojan_*_binary_checksums.txt
-    - glob: dist/trojan_*_binary_checksums.txt.sig
 
-brews:
+homebrew:
   - name: trojan
     repository:
       owner: dev-zeph
@@ -76,7 +48,6 @@ brews:
     homepage: "https://trojan.dev"
     description: "Developer-first security CLI. Catch vulnerabilities before they ship."
     license: "BUSL-1.1"
-    skip_upload: auto
     install: |
       bin.install "trojan"
     test: |
