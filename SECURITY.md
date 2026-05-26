@@ -4,7 +4,7 @@
 
 If you find a security vulnerability in Trojan, **do not open a public GitHub issue**.
 
-Email **security@trojan.dev** with:
+Email **security@trojancli.com** with:
 - A description of the vulnerability
 - Steps to reproduce
 - Potential impact
