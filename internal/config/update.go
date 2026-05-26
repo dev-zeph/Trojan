@@ -97,7 +97,7 @@ func RunUpdate(currentVersion string) error {
 	fmt.Println()
 	fmt.Println("  — or —")
 	fmt.Println()
-	fmt.Println("  curl -fsSL https://trojan.dev/install.sh | sh")
+	fmt.Println("  curl -fsSL https://trojancli.com/install.sh | sh")
 	fmt.Println()
 
 	return nil

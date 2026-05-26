@@ -136,7 +136,7 @@ func scanCmd() *cobra.Command {
 				cfg, err := config.LoadConfig()
 				if err != nil || !config.IsProFromToken(cfg.AccessToken) {
 					color.Red("trojan scan --watch requires a Pro subscription.\n")
-					fmt.Println("Visit https://trojan.dev/pricing to upgrade.")
+					fmt.Println("Visit https://trojancli.com/pricing to upgrade.")
 					os.Exit(1)
 				}
 			}
@@ -372,7 +372,7 @@ func loginCmd() *cobra.Command {
 			if status == "pro" || status == "team" {
 				color.Green("Plan: %s\n", status)
 			} else {
-				fmt.Println("Plan: Free. Visit https://trojan.dev/pricing to upgrade.")
+				fmt.Println("Plan: Free. Visit https://trojancli.com/pricing to upgrade.")
 			}
 			fmt.Println("Run `trojan scan` to start scanning.")
 		},
@@ -425,7 +425,7 @@ func proCmd() *cobra.Command {
 				color.Green("✓ You're the pro. (%s)\n", status)
 				fmt.Println("AI explanations are active. Run `trojan scan` to use them.")
 			} else {
-				color.Yellow("Free plan. Visit https://trojan.dev/pricing to upgrade.\n")
+				color.Yellow("Free plan. Visit https://trojancli.com/pricing to upgrade.\n")
 				fmt.Println("After upgrading, log out and back in: `trojan login`")
 			}
 		},
@@ -586,11 +586,11 @@ No gpg binary is required — verification runs entirely in Go.`,
 				color.Green("✓ Binary is authentic and unmodified.\n")
 			} else if !result.HashMatch {
 				color.Red("✗ Hash mismatch — binary has been modified or corrupted.\n")
-				color.Red("  Reinstall from https://trojan.dev or via: brew reinstall trojan\n")
+				color.Red("  Reinstall from https://trojancli.com or via: brew reinstall trojan\n")
 				os.Exit(1)
 			} else {
 				color.Yellow("~ Hash verified but signature check was inconclusive.\n")
-				color.Yellow("  See https://trojan.dev/security for the public key.\n")
+				color.Yellow("  See https://trojancli.com/security for the public key.\n")
 			}
 		},
 	}
