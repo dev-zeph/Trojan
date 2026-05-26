@@ -3,8 +3,8 @@ import { validateToken, corsHeaders } from '../_shared/auth.ts'
 import { supabase } from '../_shared/supabase.ts'
 
 const PLANS = {
-  pro: { priceId: Deno.env.get('STRIPE_PRO_PRICE_ID') ?? '' },
-  team: { priceId: Deno.env.get('STRIPE_TEAM_PRICE_ID') ?? '' },
+  pro_monthly: { priceId: Deno.env.get('STRIPE_PRO_MONTHLY_PRICE_ID') ?? '' },
+  pro_yearly:  { priceId: Deno.env.get('STRIPE_PRO_YEARLY_PRICE_ID') ?? '' },
 } as const
 
 Deno.serve(async (req) => {
@@ -24,7 +24,7 @@ Deno.serve(async (req) => {
   const plan = PLANS[body.plan as keyof typeof PLANS]
   if (!plan) return json({ error: 'Invalid plan' }, 400)
 
-  const origin = body.origin ?? 'https://trojan.dev'
+  const origin = body.origin ?? 'https://trojancli.com'
   const stripe = new Stripe(stripeKey)
 
   const { data: profile } = await supabase
