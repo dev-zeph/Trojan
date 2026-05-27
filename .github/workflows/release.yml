@@ -40,7 +40,7 @@ jobs:
         run: cd dast-ui && npm ci
 
       - name: Build DAST UI
-        run: cd dast-ui && npm run build
+        run: cd dast-ui && npm run build && touch dist/.gitkeep
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v7
