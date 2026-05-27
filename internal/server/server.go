@@ -190,15 +190,14 @@ func (s *Server) handleLatestScan(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-// checkProStatus reads the subscription status directly from the local JWT
-// claims — same source of truth used by main.go when deciding whether to run
-// AI and save results. No network call needed; fails closed on any error.
+// checkProStatus reads cfg.IsPro which is set server-side on login/refresh.
+// This correctly covers org seat members whose JWT subscription_status is "free".
 func (s *Server) checkProStatus() bool {
 	cfg, err := config.LoadConfig()
 	if err != nil || cfg.AccessToken == "" {
 		return false
 	}
-	return config.IsProFromToken(cfg.AccessToken)
+	return cfg.IsPro
 }
 
 // markFindingsForFree returns a copy of all findings with the Locked field set
@@ -284,9 +283,14 @@ func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	plan := config.SubscriptionStatusFromToken(cfg.AccessToken)
+	// For org seat members their JWT plan is "free" but cfg.IsPro is true.
+	// Show "Pro" so the UI banner displays correctly.
+	if cfg.IsPro && plan == "free" {
+		plan = "Pro"
+	}
 	json.NewEncoder(w).Encode(map[string]any{
 		"loggedIn": true,
-		"isPro":    plan == "pro" || plan == "team",
+		"isPro":    cfg.IsPro,
 		"plan":     plan,
 		"email":    cfg.UserEmail,
 	})

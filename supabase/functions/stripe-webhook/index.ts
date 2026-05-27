@@ -97,9 +97,31 @@ Deno.serve(async (req) => {
 
   if (event.type === 'customer.subscription.deleted') {
     const sub = event.data.object as Stripe.Subscription
-    await supabase.from('users')
+
+    // Reset the owner's subscription
+    const { data: owner } = await supabase
+      .from('users')
       .update({ subscription_status: 'free', subscription_id: null })
       .eq('subscription_id', sub.id)
+      .select('id')
+      .single()
+
+    // Deactivate all org members so they lose pro access immediately
+    if (owner) {
+      const { data: org } = await supabase
+        .from('organizations')
+        .select('id')
+        .eq('owner_id', owner.id)
+        .single()
+
+      if (org) {
+        await supabase
+          .from('org_members')
+          .update({ status: 'pending' })
+          .eq('org_id', org.id)
+          .eq('role', 'member')
+      }
+    }
   }
 
   return new Response(JSON.stringify({ received: true }), {

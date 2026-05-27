@@ -77,7 +77,7 @@ export default function App() {
               Unlock AI explanations and fix suggestions with Trojan Pro.
             </p>
             <a
-              href="https://trojan.dev"
+              href="https://trojancli.com/login"
               target="_blank"
               rel="noopener noreferrer"
               className="text-xs font-medium underline underline-offset-4 hover:text-muted-foreground transition-colors"
@@ -94,7 +94,7 @@ export default function App() {
               You're on the free plan. Upgrade to Pro to unlock AI explanations.
             </p>
             <a
-              href="https://trojan.dev/pricing"
+              href="https://trojancli.com/pricing"
               target="_blank"
               rel="noopener noreferrer"
               className="text-xs font-medium underline underline-offset-4 hover:text-muted-foreground transition-colors"
