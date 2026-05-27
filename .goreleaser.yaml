@@ -3,6 +3,7 @@ version: 2
 before:
   hooks:
     - sh -c "cd ui && npm run build"
+    - sh -c "cd dast-ui && npm run build"
 
 builds:
   - id: trojan

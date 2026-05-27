@@ -2,8 +2,11 @@ package main
 
 import (
 	"fmt"
+	"io/fs"
+	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -36,6 +39,7 @@ func main() {
 
 	rootCmd.AddCommand(versionCmd())
 	rootCmd.AddCommand(scanCmd())
+	rootCmd.AddCommand(dastCmd())
 	rootCmd.AddCommand(ciCmd())
 	rootCmd.AddCommand(initCmd())
 	rootCmd.AddCommand(updateCmd())
@@ -290,7 +294,8 @@ func scanCmd() *cobra.Command {
 			}
 
 			// Start local web server
-			srv := server.New(scanResult, trojan.UIAssets)
+			scanUI, _ := fs.Sub(trojan.UIAssets, "ui/dist")
+			srv := server.New(scanResult, scanUI)
 			url, err := srv.Start()
 			if err != nil {
 				color.Yellow("Warning: could not start UI server: %s\n", err)
@@ -335,6 +340,128 @@ func scanCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&watch, "watch", false, "Re-scan on file changes and push updates to the open report")
 
 	return cmd
+}
+
+func dastCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "dast <url>",
+		Short: "Scan a running web server for runtime vulnerabilities",
+		Args:  cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			targetURL := args[0]
+
+			if !strings.HasPrefix(targetURL, "http://") && !strings.HasPrefix(targetURL, "https://") {
+				color.Red("Error: URL must start with http:// or https://\n")
+				os.Exit(1)
+			}
+
+			go config.NotifyIfOutdated(version)
+
+			// Reachability check — fail fast if the dev server isn't up.
+			fmt.Printf("Checking %s is reachable...\n", targetURL)
+			client := &http.Client{Timeout: 5 * time.Second}
+			if _, err := client.Get(targetURL); err != nil { //nolint:noctx
+				color.Red("\nCannot reach %s\n", targetURL)
+				fmt.Println("Is your dev server running?")
+				os.Exit(1)
+			}
+			color.Green("✓ Server is up\n\n")
+
+			// Install Nuclei on first run.
+			if err := config.EnsureDastScanners(); err != nil {
+				color.Yellow("Warning: could not install DAST scanners: %s\n", err)
+			}
+
+			dastScanners := scanners.DefaultDastScanners()
+			if len(dastScanners) == 0 {
+				color.Red("No DAST scanners available. Try running 'trojan dast' again to retry installation.\n")
+				os.Exit(1)
+			}
+
+			fmt.Printf("Scanning %s with nuclei...\n", targetURL)
+			fmt.Printf("(First run will download templates — this may take a minute)\n\n")
+
+			// Nuclei streams its own progress to stderr, so no spinner needed here.
+			findings := scanners.RunDast(targetURL, dastScanners, func(name string, done bool, err error) {
+				if done {
+					if err != nil {
+						color.Red("\n[failed] %s: %s\n", name, err)
+					}
+				}
+			})
+
+			fmt.Println()
+			printFindings(findings)
+
+			// AI synthesis for Pro users.
+			isPro := false
+			var accessToken string
+			if cfg, err := config.LoadConfig(); err == nil {
+				accessToken = cfg.AccessToken
+				isPro = cfg.IsPro
+			}
+
+			if isPro && len(findings) > 0 {
+				total := len(findings)
+				const maxConcurrent = 8
+
+				fmt.Printf("Generating simplified summaries for %d finding(s)...\n", total)
+
+				var (
+					progressMu sync.Mutex
+					completed  int
+				)
+
+				sem := make(chan struct{}, maxConcurrent)
+				var wg sync.WaitGroup
+
+				for i := range findings {
+					idx := i
+					wg.Add(1)
+					sem <- struct{}{}
+					go func() {
+						defer wg.Done()
+						defer func() { <-sem }()
+
+						s, err := ai.SynthesizeFinding(findings[idx], accessToken)
+						progressMu.Lock()
+						defer progressMu.Unlock()
+						if err == nil {
+							findings[idx].Simply = s.Simply
+							findings[idx].Actions = s.Actions
+						}
+						completed++
+						fmt.Printf("\r  %d / %d complete", completed, total)
+					}()
+				}
+
+				wg.Wait()
+				fmt.Printf("\r  %d / %d complete\n\n", total, total)
+			}
+
+			// DAST has no local project path, so results are always in-memory.
+			scanResult := normalizer.NewScanResult(targetURL, findings)
+
+			dastUI, _ := fs.Sub(trojan.DastUIAssets, "dast-ui/dist")
+			srv := server.New(scanResult, dastUI)
+			url, err := srv.Start()
+			if err != nil {
+				color.Yellow("Warning: could not start UI server: %s\n", err)
+				return
+			}
+
+			fmt.Printf("\n→ Report ready at %s\n", url)
+			fmt.Printf("→ Press Ctrl+C to close\n\n")
+
+			browser.OpenURL(url)
+
+			quit := make(chan os.Signal, 1)
+			signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+			<-quit
+
+			fmt.Println("\nServer closed.")
+		},
+	}
 }
 
 func printFindings(findings []normalizer.Finding) {

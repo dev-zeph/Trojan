@@ -85,12 +85,8 @@ func (s *Server) Start() (string, error) {
 	mux.HandleFunc("/api/auth/status", s.handleAuthStatus)
 	mux.HandleFunc("/api/events", s.handleSSE)
 
-	// Serve embedded UI assets
-	uiFS, err := fs.Sub(s.uiAssets, "ui/dist")
-	if err != nil {
-		return "", fmt.Errorf("could not load UI assets: %w", err)
-	}
-	mux.Handle("/", http.FileServer(http.FS(uiFS)))
+	// Serve embedded UI assets (caller passes an already-subbed fs.FS)
+	mux.Handle("/", http.FileServer(http.FS(s.uiAssets)))
 
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 	go http.ListenAndServe(addr, mux)

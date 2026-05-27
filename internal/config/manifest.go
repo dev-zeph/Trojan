@@ -27,7 +27,7 @@ type ScannerManifest struct {
 	Platforms map[string]PlatformAsset // keyed by "darwin/amd64", "darwin/arm64", "linux/amd64", "linux/arm64"
 }
 
-// Scanners is the pinned manifest. Update versions + SHA256s here when cutting a new Trojan release.
+// Scanners is the pinned manifest for SAST/SCA scanners installed by `trojan init`.
 // To recompute SHA256 for any archive:   shasum -a 256 <file>   (macOS / Linux)
 var Scanners = []ScannerManifest{
 	{
@@ -166,6 +166,42 @@ var Scanners = []ScannerManifest{
 				SHA256:          "24e4d34078ae81da7c82539616f0ccac3e226cf4f74a38ce6fb3463619e50a55",
 				Archive:         ArchiveTarGz,
 				BinaryInArchive: "syft",
+			},
+		},
+	},
+}
+
+// DastScanners is the pinned manifest for DAST scanners.
+// These are installed lazily by `trojan dast` rather than eagerly by `trojan init`.
+var DastScanners = []ScannerManifest{
+	{
+		Name:    "Nuclei",
+		Binary:  "nuclei",
+		Version: "3.8.0",
+		Platforms: map[string]PlatformAsset{
+			"linux/amd64": {
+				URL:             "https://github.com/projectdiscovery/nuclei/releases/download/v3.8.0/nuclei_3.8.0_linux_amd64.zip",
+				SHA256:          "cd4ea43c88b50af8ab96eb6ad3fb4debd8e9d51efaff4d4c2d99106041578943",
+				Archive:         ArchiveZip,
+				BinaryInArchive: "nuclei",
+			},
+			"linux/arm64": {
+				URL:             "https://github.com/projectdiscovery/nuclei/releases/download/v3.8.0/nuclei_3.8.0_linux_arm64.zip",
+				SHA256:          "deb622901acda6bbc6ffe771b98b2d41276667cc5dca6ce403b6ae331ccba64e",
+				Archive:         ArchiveZip,
+				BinaryInArchive: "nuclei",
+			},
+			"darwin/amd64": {
+				URL:             "https://github.com/projectdiscovery/nuclei/releases/download/v3.8.0/nuclei_3.8.0_macOS_amd64.zip",
+				SHA256:          "b8ad7476b4698561f9956b276643c9eeee2391e4c8caf88580ee2c1aef0160f0",
+				Archive:         ArchiveZip,
+				BinaryInArchive: "nuclei",
+			},
+			"darwin/arm64": {
+				URL:             "https://github.com/projectdiscovery/nuclei/releases/download/v3.8.0/nuclei_3.8.0_macOS_arm64.zip",
+				SHA256:          "872b49984a014eb6bf9022eb95889c9e5935900624d06880b1d856914606e80f",
+				Archive:         ArchiveZip,
+				BinaryInArchive: "nuclei",
 			},
 		},
 	},

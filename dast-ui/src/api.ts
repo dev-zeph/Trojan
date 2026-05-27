@@ -1,0 +1,34 @@
+import type { ScanResult } from './types'
+
+const BASE = '/api'
+
+export async function getLatestScan(): Promise<ScanResult> {
+  const res = await fetch(`${BASE}/scans/latest`)
+  if (!res.ok) throw new Error('Failed to load scan results')
+  return res.json()
+}
+
+export async function reviewFinding(id: string): Promise<void> {
+  await fetch(`${BASE}/findings/${id}/resolve`, { method: 'POST' })
+}
+
+export async function suppressFinding(id: string): Promise<void> {
+  await fetch(`${BASE}/findings/${id}/suppress`, { method: 'POST' })
+}
+
+export interface AuthStatus {
+  loggedIn: boolean
+  isPro: boolean
+  plan?: string
+  email?: string
+}
+
+export async function getAuthStatus(): Promise<AuthStatus> {
+  try {
+    const res = await fetch(`${BASE}/auth/status`)
+    if (!res.ok) return { loggedIn: false, isPro: false }
+    return res.json()
+  } catch {
+    return { loggedIn: false, isPro: false }
+  }
+}

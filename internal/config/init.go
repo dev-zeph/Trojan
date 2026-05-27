@@ -282,6 +282,51 @@ func extractZip(archivePath, binaryName, dest string) error {
 }
 
 
+// EnsureDastScanners installs any missing DAST scanners (e.g. Nuclei).
+// Called lazily by `trojan dast` on first run rather than by `trojan init`.
+func EnsureDastScanners() error {
+	binDir, err := TrojanBinDir()
+	if err != nil {
+		return err
+	}
+
+	platform := runtime.GOOS + "/" + runtime.GOARCH
+
+	missing := []ScannerManifest{}
+	for _, s := range DastScanners {
+		dest := filepath.Join(binDir, s.Binary)
+		if _, err := os.Stat(dest); os.IsNotExist(err) {
+			missing = append(missing, s)
+		}
+	}
+
+	if len(missing) == 0 {
+		return nil
+	}
+
+	fmt.Printf("Installing %d DAST scanner(s) to ~/.trojan/bin/...\n\n", len(missing))
+
+	for _, s := range missing {
+		asset, ok := s.Platforms[platform]
+		if !ok {
+			color.Yellow("  %-12s skipped (unsupported platform: %s)\n", s.Name, platform)
+			continue
+		}
+
+		fmt.Printf("  Installing %s v%s... ", s.Name, s.Version)
+		dest := filepath.Join(binDir, s.Binary)
+		if err := downloadScanner(asset, dest); err != nil {
+			color.Red("failed\n")
+			fmt.Printf("    Error: %v\n", err)
+			continue
+		}
+		color.Green("done\n")
+	}
+
+	fmt.Println()
+	return nil
+}
+
 // RunInit is the full init flow — called by `trojan init`.
 func RunInit(projectPath string) error {
 	fmt.Println("Setting up Trojan...\n")
