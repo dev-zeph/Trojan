@@ -26,6 +26,9 @@ backend/dist/
 # Supabase CLI temp files
 supabase/.temp/
 
+# Backend Edge Functions — proprietary, kept in private repo
+supabase/functions/
+
 # Internal / private
 Blueprint.md
 PROGRESS.md
