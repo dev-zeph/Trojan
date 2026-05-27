@@ -12,6 +12,8 @@
 # UI build output
 ui/dist/
 ui/node_modules/
+dast-ui/dist/
+dast-ui/node_modules/
 
 # Trojan local data
 .trojan/
