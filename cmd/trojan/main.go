@@ -134,7 +134,7 @@ func scanCmd() *cobra.Command {
 			// --watch requires Pro
 			if watch {
 				cfg, err := config.LoadConfig()
-				if err != nil || !config.IsProFromToken(cfg.AccessToken) {
+				if err != nil || !cfg.IsPro {
 					color.Red("trojan scan --watch requires a Pro subscription.\n")
 					fmt.Println("Visit https://trojancli.com/pricing to upgrade.")
 					os.Exit(1)
@@ -203,7 +203,7 @@ func scanCmd() *cobra.Command {
 				var accessToken string
 				if cfg, err := config.LoadConfig(); err == nil {
 					accessToken = cfg.AccessToken
-					isPro = config.IsProFromToken(accessToken)
+					isPro = cfg.IsPro
 				}
 
 				if isPro {
@@ -368,9 +368,10 @@ func loginCmd() *cobra.Command {
 			}
 			cfg, _ := config.LoadConfig()
 			color.Green("Logged in as %s\n", cfg.UserEmail)
-			status := config.SubscriptionStatusFromToken(cfg.AccessToken)
-			if status == "pro" || status == "team" {
-				color.Green("Plan: %s\n", status)
+			// ForceRefreshLicense validates pro status server-side (includes org seat membership)
+			info, err := config.ForceRefreshLicense()
+			if err == nil && info.IsPro {
+				color.Green("Plan: Pro\n")
 			} else {
 				fmt.Println("Plan: Free. Visit https://trojancli.com/pricing to upgrade.")
 			}
