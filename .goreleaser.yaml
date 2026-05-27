@@ -2,8 +2,10 @@ version: 2
 
 before:
   hooks:
-    - sh -c "cd ui && npm run build"
-    - sh -c "cd dast-ui && npm run build"
+    # UI builds run as explicit CI steps before GoReleaser — these are kept as
+    # a fallback for local `goreleaser release --snapshot` runs.
+    - sh -c "cd ui && npm ci && npm run build"
+    - sh -c "cd dast-ui && npm ci && npm run build"
 
 builds:
   - id: trojan

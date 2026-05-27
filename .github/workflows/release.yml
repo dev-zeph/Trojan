@@ -29,14 +29,18 @@ jobs:
         uses: actions/setup-node@v5
         with:
           node-version: 20
-          cache: npm
-          cache-dependency-path: ui/package-lock.json
 
       - name: Install UI dependencies
         run: cd ui && npm ci
 
+      - name: Build UI
+        run: cd ui && npm run build
+
       - name: Install DAST UI dependencies
         run: cd dast-ui && npm ci
+
+      - name: Build DAST UI
+        run: cd dast-ui && npm run build
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v7
