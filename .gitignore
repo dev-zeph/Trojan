@@ -24,5 +24,11 @@ backend/dist/
 # Supabase CLI temp files
 supabase/.temp/
 
+# Internal / private
+Blueprint.md
+PROGRESS.md
+backend/sql/
+docs/
+
 # OS
 .DS_Store
