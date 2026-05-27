@@ -112,7 +112,7 @@ export default function App() {
         <div className="max-w-5xl mx-auto px-8 py-5 flex items-center justify-between">
           <div className="flex items-center gap-6">
             <div className="flex items-center gap-2">
-              <span className="font-bold text-lg tracking-tight">Trojan</span>
+              <img src="/logo.png" alt="Trojan" className="h-14 w-auto" />
               <span className="text-xs font-medium uppercase tracking-widest text-muted-foreground border border-border rounded px-1.5 py-0.5">
                 DAST
               </span>
@@ -140,10 +140,11 @@ export default function App() {
             onAction={() => { setSelected(null); reload() }}
           />
         ) : openCount === 0 ? (
-          <div className="py-24 text-center space-y-3">
-            <p className="text-sm font-medium text-foreground">No runtime vulnerabilities found</p>
-            <p className="text-xs text-muted-foreground">
-              {scan.project_path} passed the DAST scan.
+          <div className="py-24 text-center space-y-4">
+            <p className="text-4xl font-bold tracking-tight text-foreground">Great work.</p>
+            <p className="text-lg font-medium text-foreground">No runtime vulnerabilities found.</p>
+            <p className="text-sm text-muted-foreground max-w-sm mx-auto">
+              {scan.project_path} passed the DAST scan — no known attack patterns matched across 6,000+ templates.
             </p>
           </div>
         ) : (

@@ -39,11 +39,10 @@ func (n Nuclei) Run(targetURL string) ([]normalizer.Finding, error) {
 	cmd := exec.Command(
 		ManagedBinary("nuclei"),
 		"-target", targetURL,
-		"-output", outPath,                         // findings → temp file (not stdout)
-		"-jsonl",                                   // JSONL format in the output file
+		"-output", outPath,          // findings → temp file (not stdout)
+		"-jsonl",                    // JSONL format in the output file
 		"-severity", "critical,high,medium,low",
-		"-tags", "misconfig,cors,headers,exposure", // broad coverage for any HTTP server
-		"-ni",                                      // skip OOB/interactsh (not useful locally)
+		"-ni",                       // skip OOB/interactsh (not useful locally)
 	)
 	// stdout and stderr both go to the user's terminal — full progress visible.
 	cmd.Stdout = os.Stdout

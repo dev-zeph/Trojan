@@ -329,7 +329,8 @@ func EnsureDastScanners() error {
 
 // RunInit is the full init flow — called by `trojan init`.
 func RunInit(projectPath string) error {
-	fmt.Println("Setting up Trojan...\n")
+	fmt.Println("Setting up Trojan...")
+	fmt.Println()
 
 	if err := EnsureScanners(); err != nil {
 		return err

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -205,9 +206,11 @@ func scanCmd() *cobra.Command {
 
 				isPro := false
 				var accessToken string
-				if cfg, err := config.LoadConfig(); err == nil {
+				if cfg, err := config.LoadConfig(); err == nil && cfg.AccessToken != "" {
 					accessToken = cfg.AccessToken
-					isPro = cfg.IsPro
+					if info, err := ai.FetchLicense(accessToken); err == nil {
+						isPro = info.IsPro
+					}
 				}
 
 				if isPro {
@@ -355,7 +358,7 @@ func dastCmd() *cobra.Command {
 				os.Exit(1)
 			}
 
-			go config.NotifyIfOutdated(version)
+			config.NotifyIfOutdated(version)
 
 			// Reachability check — fail fast if the dev server isn't up.
 			fmt.Printf("Checking %s is reachable...\n", targetURL)
@@ -366,6 +369,44 @@ func dastCmd() *cobra.Command {
 				os.Exit(1)
 			}
 			color.Green("✓ Server is up\n\n")
+
+			// Pre-scan briefing — each step requires confirmation.
+			reader := bufio.NewReader(os.Stdin)
+			confirm := func(prompt string) {
+				fmt.Printf("  %s (y/n): ", prompt)
+				ans, _ := reader.ReadString('\n')
+				if a := strings.TrimSpace(strings.ToLower(ans)); a != "y" && a != "yes" {
+					fmt.Println("\nScan cancelled.")
+					os.Exit(0)
+				}
+				fmt.Println()
+			}
+
+			color.Yellow("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
+
+			fmt.Printf("  Is %s the URL of your localhost instance?\n", targetURL)
+			fmt.Println("  Testing against URLs you don't own is a crime")
+			fmt.Println("  punishable by law.")
+			fmt.Println()
+			confirm("Confirm")
+
+			fmt.Println("  DAST actively probes your server — it sends real attack")
+			fmt.Println("  payloads to your local running app. It's always better")
+			fmt.Println("  to find runtime vulnerabilities now before you push code.")
+			fmt.Println()
+			confirm("Understood")
+
+			fmt.Println("  Your server logs will get spammy, that's expected,")
+			fmt.Println("  Nuclei is firing 6,000+ templates. Don't panic.")
+			fmt.Println()
+			confirm("Got it")
+
+			fmt.Println("  This normally takes 3 - 5 minutes. Take a break and")
+			fmt.Println("  grab some tea, you deserve it. ☕")
+			fmt.Println()
+			confirm("Let's go")
+
+			color.Yellow("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
 
 			// Install Nuclei on first run.
 			if err := config.EnsureDastScanners(); err != nil {
@@ -393,12 +434,14 @@ func dastCmd() *cobra.Command {
 			fmt.Println()
 			printFindings(findings)
 
-			// AI synthesis for Pro users.
+			// AI synthesis for Pro users — verify live from server, never trust local cache.
 			isPro := false
 			var accessToken string
-			if cfg, err := config.LoadConfig(); err == nil {
+			if cfg, err := config.LoadConfig(); err == nil && cfg.AccessToken != "" {
 				accessToken = cfg.AccessToken
-				isPro = cfg.IsPro
+				if info, err := ai.FetchLicense(accessToken); err == nil {
+					isPro = info.IsPro
+				}
 			}
 
 			if isPro && len(findings) > 0 {
@@ -582,7 +625,8 @@ func mcpCmd() *cobra.Command {
 		Use:   "install",
 		Short: "Auto-configure Claude Code, Cursor, and Codex CLI to use Trojan MCP",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println("Detecting AI editors...\n")
+			fmt.Println("Detecting AI editors...")
+			fmt.Println()
 			if err := mcpserver.Install(); err != nil {
 				color.Red("Error: %s\n", err)
 				os.Exit(1)
