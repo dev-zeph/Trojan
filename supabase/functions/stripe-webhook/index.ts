@@ -26,13 +26,50 @@ Deno.serve(async (req) => {
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object as Stripe.Checkout.Session
     const userId = session.metadata?.['userId']
-    const plan = (session.metadata?.['plan'] === 'team') ? 'team' : 'pro'
+    const rawPlan = session.metadata?.['plan'] ?? ''
+    const isTeam = rawPlan.startsWith('team')
+    const plan = isTeam ? 'team' : 'pro'
+
     if (userId) {
       await supabase.from('users').update({
         subscription_status: plan,
         subscription_id: session.subscription,
         stripe_customer_id: session.customer,
       }).eq('id', userId)
+
+      // For team plans: create the organization and add the owner as an active member
+      if (isTeam) {
+        const seatLimit = rawPlan.startsWith('team_10') ? 10 : 5
+
+        // Fetch owner email for the org_members row
+        const { data: owner } = await supabase
+          .from('users')
+          .select('email')
+          .eq('id', userId)
+          .single()
+
+        const { data: org } = await supabase
+          .from('organizations')
+          .insert({
+            owner_id: userId,
+            stripe_customer_id: session.customer as string,
+            subscription_id: session.subscription as string,
+            seat_limit: seatLimit,
+          })
+          .select('id')
+          .single()
+
+        if (org && owner) {
+          await supabase.from('org_members').upsert({
+            org_id: org.id,
+            user_id: userId,
+            invited_email: owner.email,
+            role: 'owner',
+            status: 'active',
+            joined_at: new Date().toISOString(),
+          }, { onConflict: 'org_id,invited_email' })
+        }
+      }
     }
   }
 

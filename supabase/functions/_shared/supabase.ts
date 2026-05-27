@@ -15,4 +15,6 @@ export interface User {
   subscription_status: 'free' | 'pro' | 'team'
   subscription_id: string | null
   created_at: string
+  // Computed by validateToken — not stored in DB
+  is_team_member: boolean
 }

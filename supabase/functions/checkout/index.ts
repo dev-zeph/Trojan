@@ -3,8 +3,12 @@ import { validateToken, corsHeaders } from '../_shared/auth.ts'
 import { supabase } from '../_shared/supabase.ts'
 
 const PLANS = {
-  pro_monthly: { priceId: Deno.env.get('STRIPE_PRO_MONTHLY_PRICE_ID') ?? '' },
-  pro_yearly:  { priceId: Deno.env.get('STRIPE_PRO_YEARLY_PRICE_ID') ?? '' },
+  pro_monthly:     { priceId: Deno.env.get('STRIPE_PRO_MONTHLY_PRICE_ID') ?? '' },
+  pro_yearly:      { priceId: Deno.env.get('STRIPE_PRO_YEARLY_PRICE_ID') ?? '' },
+  team_5_monthly:  { priceId: Deno.env.get('STRIPE_TEAM5_MONTHLY_PRICE_ID') ?? '' },
+  team_5_yearly:   { priceId: Deno.env.get('STRIPE_TEAM5_YEARLY_PRICE_ID') ?? '' },
+  team_10_monthly: { priceId: Deno.env.get('STRIPE_TEAM10_MONTHLY_PRICE_ID') ?? '' },
+  team_10_yearly:  { priceId: Deno.env.get('STRIPE_TEAM10_YEARLY_PRICE_ID') ?? '' },
 } as const
 
 Deno.serve(async (req) => {
@@ -23,6 +27,12 @@ Deno.serve(async (req) => {
   const body = await req.json()
   const plan = PLANS[body.plan as keyof typeof PLANS]
   if (!plan) return json({ error: 'Invalid plan' }, 400)
+
+  // Guard: if the user already has an active paid subscription, do not create a
+  // new checkout session — they should use the billing portal to upgrade/switch.
+  if (user.subscription_status !== 'free') {
+    return json({ error: 'already_subscribed' }, 409)
+  }
 
   const origin = body.origin ?? 'https://trojancli.com'
   const stripe = new Stripe(stripeKey)

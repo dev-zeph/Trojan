@@ -11,23 +11,48 @@ export async function validateToken(token: string): Promise<User | null> {
     .eq('id', user.id)
     .single()
 
-  if (data) return data as User
+  let profile: User
 
-  // Row missing — create it with free defaults so the user isn't locked out
-  const newUser = {
-    id: user.id,
-    email: user.email ?? '',
-    github_username: user.user_metadata?.user_name ?? null,
-    stripe_customer_id: null,
-    subscription_status: 'free' as const,
-    subscription_id: null,
+  if (data) {
+    profile = data as User
+  } else {
+    // Row missing — create it with free defaults so the user isn't locked out
+    const newUser = {
+      id: user.id,
+      email: user.email ?? '',
+      github_username: user.user_metadata?.user_name ?? null,
+      stripe_customer_id: null,
+      subscription_status: 'free' as const,
+      subscription_id: null,
+    }
+    await supabase.from('users').upsert(newUser, { onConflict: 'id' })
+    profile = { ...newUser, created_at: new Date().toISOString(), is_team_member: false }
+    return profile
   }
-  await supabase.from('users').upsert(newUser, { onConflict: 'id' })
-  return { ...newUser, created_at: new Date().toISOString() }
+
+  // For free-tier users, check if they're an active member of a team org.
+  // Team owners already have subscription_status === 'team', so skip the lookup for them.
+  let is_team_member = false
+  if (profile.subscription_status === 'free') {
+    const { data: membership } = await supabase
+      .from('org_members')
+      .select('id')
+      .eq('user_id', user.id)
+      .eq('status', 'active')
+      .limit(1)
+      .single()
+    is_team_member = !!membership
+  }
+
+  return { ...profile, is_team_member }
 }
 
 export function isPro(user: User): boolean {
-  return user.subscription_status === 'pro' || user.subscription_status === 'team'
+  return (
+    user.subscription_status === 'pro' ||
+    user.subscription_status === 'team' ||
+    user.is_team_member === true
+  )
 }
 
 export function corsHeaders(origin = '*') {
