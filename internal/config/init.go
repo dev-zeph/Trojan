@@ -98,6 +98,7 @@ func EnsureScanners() error {
 
 // RunInit is the full init flow — called by `trojan init`.
 func RunInit(projectPath string) error {
+	PrintLogo()
 	fmt.Println("Setting up Trojan...\n")
 
 	// Install missing scanners
