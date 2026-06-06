@@ -10,7 +10,8 @@
 *.out
 
 # UI build output
-ui/dist/
+ui/dist/*
+!ui/dist/.gitkeep
 ui/node_modules/
 dast-ui/dist/*
 !dast-ui/dist/.gitkeep
