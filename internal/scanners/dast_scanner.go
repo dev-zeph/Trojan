@@ -23,8 +23,9 @@ type DastResult struct {
 }
 
 // RunDast executes the given DAST scanners in parallel against the target URL.
-// onProgress mirrors the same contract as RunAll — called when each scanner starts and finishes.
-func RunDast(targetURL string, dastScanners []DastScanner, onProgress func(name string, done bool, err error)) []normalizer.Finding {
+// onProgress mirrors the same contract as RunAll — called when each scanner starts
+// (done=false, count=0) and finishes (done=true, count=number of findings).
+func RunDast(targetURL string, dastScanners []DastScanner, onProgress func(name string, done bool, count int, err error)) []normalizer.Finding {
 	results := make(chan DastResult, len(dastScanners))
 	var wg sync.WaitGroup
 
@@ -34,13 +35,13 @@ func RunDast(targetURL string, dastScanners []DastScanner, onProgress func(name 
 			defer wg.Done()
 
 			if onProgress != nil {
-				onProgress(s.Name(), false, nil)
+				onProgress(s.Name(), false, 0, nil)
 			}
 
 			findings, err := s.Run(targetURL)
 
 			if onProgress != nil {
-				onProgress(s.Name(), true, err)
+				onProgress(s.Name(), true, len(findings), err)
 			}
 
 			results <- DastResult{

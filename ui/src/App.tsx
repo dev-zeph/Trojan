@@ -16,16 +16,6 @@ export default function App() {
   const [auth, setAuth] = useState<AuthStatus | null>(null)
   const [rescanning, setRescanning] = useState(false)
 
-  useEffect(() => {
-    const root = document.documentElement
-    const mq = window.matchMedia('(prefers-color-scheme: dark)')
-    mq.matches ? root.classList.add('dark') : root.classList.remove('dark')
-    const handler = (e: MediaQueryListEvent) =>
-      e.matches ? root.classList.add('dark') : root.classList.remove('dark')
-    mq.addEventListener('change', handler)
-    return () => mq.removeEventListener('change', handler)
-  }, [])
-
   async function loadScan() {
     try {
       const data = await getLatestScan()

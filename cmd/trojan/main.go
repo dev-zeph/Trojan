@@ -12,7 +12,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/briandowns/spinner"
 	"github.com/fatih/color"
 	"github.com/pkg/browser"
 	"github.com/spf13/cobra"
@@ -21,11 +20,13 @@ import (
 	"github.com/dev-zeph/trojan/internal/ai"
 	"github.com/dev-zeph/trojan/internal/ci"
 	"github.com/dev-zeph/trojan/internal/config"
+	"github.com/dev-zeph/trojan/internal/dast"
 	"github.com/dev-zeph/trojan/internal/hook"
 	"github.com/dev-zeph/trojan/internal/mcpserver"
 	"github.com/dev-zeph/trojan/internal/normalizer"
 	"github.com/dev-zeph/trojan/internal/scanners"
 	"github.com/dev-zeph/trojan/internal/server"
+	"github.com/dev-zeph/trojan/internal/ui"
 	"github.com/dev-zeph/trojan/internal/watcher"
 )
 
@@ -146,6 +147,8 @@ func scanCmd() *cobra.Command {
 				}
 			}
 
+			ui.PrintBanner(version)
+
 			go config.NotifyIfOutdated(version)
 
 			if err := config.EnsureScanners(); err != nil {
@@ -172,37 +175,28 @@ func scanCmd() *cobra.Command {
 			// the ScanResult. Used for both the initial scan and every
 			// re-scan triggered by --watch.
 			runScan := func() (*normalizer.ScanResult, []normalizer.Finding) {
-				fmt.Printf("Scanning %s with %d scanner(s)...\n\n", path, len(relevant))
+				ui.PrintScanHeader(path)
 
-				spins := map[string]*spinner.Spinner{}
-				var spinnerMu sync.Mutex
-
-				for _, s := range relevant {
-					sp := spinner.New(spinner.CharSets[14], 80*time.Millisecond)
-					sp.Suffix = fmt.Sprintf("  [running] %s (%s)", s.Name(), s.Category())
-					sp.Start()
-					spins[s.Name()] = sp
+				// Build ordered name list and start the progress display.
+				names := make([]string, len(relevant))
+				for i, s := range relevant {
+					names[i] = s.Name()
 				}
+				progress := ui.NewScanProgress(names)
+				progress.Start()
 
-				findings := scanners.RunAll(path, relevant, func(name string, done bool, err error) {
-					spinnerMu.Lock()
-					defer spinnerMu.Unlock()
-					sp, ok := spins[name]
-					if !ok {
-						return
-					}
+				findings := scanners.RunAll(path, relevant, func(name string, done bool, count int, err error) {
 					if done {
-						sp.Stop()
-						if err != nil {
-							color.Red("  [failed] %s: %s\n", name, err)
-						} else {
-							color.Green("  [done]   %s\n", name)
-						}
+						progress.Update(name, count, err)
 					}
 				})
 
-				fmt.Println()
-				printFindings(findings)
+				// Severity counts for results box.
+				counts := map[string]int{}
+				for _, f := range findings {
+					counts[string(f.Severity)]++
+				}
+				ui.PrintResultsBox(counts)
 
 				isPro := false
 				var accessToken string
@@ -214,6 +208,17 @@ func scanCmd() *cobra.Command {
 				}
 
 				if isPro {
+					// Enrich findings with project context before synthesis.
+					// Framework and ProjectType are project-level — compute once.
+					framework := ai.DetectFramework(path)
+					projectType := ai.DetectProjectTypeName(path)
+					for i := range findings {
+						findings[i].Language = ai.DetectLanguage(findings[i].FilePath)
+						findings[i].SurroundingCode = ai.ExtractSurroundingCode(findings[i].FilePath, findings[i].LineNumber, 15)
+						findings[i].Framework = framework
+						findings[i].ProjectType = projectType
+					}
+
 					// Identify which findings are new since the last scan.
 					// On the initial scan prevFindingIDs is empty so all
 					// findings are synthesised. On re-scans only net-new
@@ -230,7 +235,7 @@ func scanCmd() *cobra.Command {
 						total := len(toSynthesize)
 						const maxConcurrent = 8
 
-						fmt.Printf("Generating simplified summaries for %d finding(s)...\n", total)
+						fmt.Printf("  → Synthesizing AI explanations for %d finding(s)...\n", total)
 
 						var (
 							progressMu sync.Mutex
@@ -254,15 +259,18 @@ func scanCmd() *cobra.Command {
 								if err == nil {
 									findings[idx].Simply = s.Simply
 									findings[idx].Actions = s.Actions
+									findings[idx].Confidence = s.Confidence
+									findings[idx].IsFalsePositive = s.IsFalsePositive
+									findings[idx].FixDiff = s.FixDiff
 								}
 								completed++
-								fmt.Printf("\r  %d / %d complete", completed, total)
+								fmt.Printf("\r  → %d / %d complete", completed, total)
 							}()
 						}
 
 						wg.Wait()
-						fmt.Printf("\r  %d / %d complete\n", total, total)
-						fmt.Println("Preparing actionable fix recommendations...")
+						fmt.Printf("\r  → %d / %d complete\n", total, total)
+						ui.PrintArrow("Preparing actionable fix recommendations...")
 						fmt.Println()
 					}
 
@@ -305,19 +313,17 @@ func scanCmd() *cobra.Command {
 				return
 			}
 
-			fmt.Printf("\n→ Report ready at %s\n", url)
+			ui.PrintReportReady(url, watch)
 
 			if watch {
-				fmt.Printf("→ Watching for file changes. Press Ctrl+C to stop.\n\n")
-
 				w, err := watcher.New(path, func() {
-					fmt.Printf("\n[%s] Change detected — rescanning...\n\n",
+					fmt.Printf("  [%s] Change detected — rescanning...\n\n",
 						time.Now().Format("15:04:05"))
 
 					newResult, _ := runScan()
 					if newResult != nil {
 						srv.UpdateScan(newResult)
-						color.Green("→ Report updated at %s\n\n", url)
+						color.Green("  → Report updated at %s\n\n", url)
 					}
 				})
 				if err != nil {
@@ -346,13 +352,35 @@ func scanCmd() *cobra.Command {
 }
 
 func dastCmd() *cobra.Command {
-	return &cobra.Command{
+	var crawlDepth int
+	var crawlTimeout int
+
+	cmd := &cobra.Command{
 		Use:   "dast <url>",
-		Short: "Scan a running web server for runtime vulnerabilities",
+		Short: "Scan a running web server for runtime vulnerabilities (Pro)",
 		Args:  cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			targetURL := args[0]
 
+			ui.PrintBanner(version)
+
+			// ── Step 1: Pro gate — must be first, before any prompts ──────────────
+			cfg, _ := config.LoadConfig()
+			accessToken := ""
+			if cfg != nil {
+				accessToken = cfg.AccessToken
+			}
+			if accessToken == "" {
+				printDastProMessage(targetURL)
+				return
+			}
+			info, err := ai.FetchLicense(accessToken)
+			if err != nil || !info.IsPro {
+				printDastProMessage(targetURL)
+				return
+			}
+
+			// ── Step 2: URL validation ─────────────────────────────────────────────
 			if !strings.HasPrefix(targetURL, "http://") && !strings.HasPrefix(targetURL, "https://") {
 				color.Red("Error: URL must start with http:// or https://\n")
 				os.Exit(1)
@@ -360,17 +388,17 @@ func dastCmd() *cobra.Command {
 
 			config.NotifyIfOutdated(version)
 
-			// Reachability check — fail fast if the dev server isn't up.
-			fmt.Printf("Checking %s is reachable...\n", targetURL)
-			client := &http.Client{Timeout: 5 * time.Second}
-			if _, err := client.Get(targetURL); err != nil { //nolint:noctx
+			fmt.Printf("\n  → Starting Trojan DAST (Pro)\n\n")
+
+			// ── Step 3: Reachability check ─────────────────────────────────────────
+			httpClient := &http.Client{Timeout: 5 * time.Second}
+			if _, err := httpClient.Get(targetURL); err != nil { //nolint:noctx
 				color.Red("\nCannot reach %s\n", targetURL)
 				fmt.Println("Is your dev server running?")
 				os.Exit(1)
 			}
-			color.Green("✓ Server is up\n\n")
 
-			// Pre-scan briefing — each step requires confirmation.
+			// ── Step 4: 4-prompt confirmation flow (unchanged) ────────────────────
 			reader := bufio.NewReader(os.Stdin)
 			confirm := func(prompt string) {
 				fmt.Printf("  %s (y/n): ", prompt)
@@ -384,6 +412,9 @@ func dastCmd() *cobra.Command {
 
 			color.Yellow("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
 
+			fmt.Printf("  IMPORTANT: Only scan servers you own or have explicit written\n")
+			fmt.Printf("  permission to test. Unauthorized scanning is illegal.\n\n")
+
 			fmt.Printf("  Is %s the URL of your localhost instance?\n", targetURL)
 			fmt.Println("  Testing against URLs you don't own is a crime")
 			fmt.Println("  punishable by law.")
@@ -396,8 +427,9 @@ func dastCmd() *cobra.Command {
 			fmt.Println()
 			confirm("Understood")
 
-			fmt.Println("  Your server logs will get spammy, that's expected,")
-			fmt.Println("  Nuclei is firing 6,000+ templates. Don't panic.")
+			fmt.Println("  Your server logs will get spammy, that's expected.")
+			fmt.Println("  Nuclei is firing 6,000+ templates plus AI-generated ones.")
+			fmt.Println("  Don't panic.")
 			fmt.Println()
 			confirm("Got it")
 
@@ -408,47 +440,81 @@ func dastCmd() *cobra.Command {
 
 			color.Yellow("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
 
-			// Install Nuclei on first run.
+			// ── Step 5: Install Nuclei if missing ──────────────────────────────────
 			if err := config.EnsureDastScanners(); err != nil {
 				color.Yellow("Warning: could not install DAST scanners: %s\n", err)
 			}
 
-			dastScanners := scanners.DefaultDastScanners()
-			if len(dastScanners) == 0 {
-				color.Red("No DAST scanners available. Try running 'trojan dast' again to retry installation.\n")
-				os.Exit(1)
+			// ── Step 6: Crawl ──────────────────────────────────────────────────────
+			fmt.Printf("  → Crawling application (depth %d)...\n", crawlDepth)
+			crawlResult := dast.Crawl(targetURL, crawlDepth, crawlTimeout)
+
+			formCount := 0
+			for _, e := range crawlResult.Endpoints {
+				if e.Method == "POST" {
+					formCount++
+				}
+			}
+			endpointCount := len(crawlResult.Endpoints) - formCount
+			fmt.Printf("  → Discovered %d endpoints and %d forms\n\n", endpointCount, formCount)
+
+			// ── Step 7: AI template generation ────────────────────────────────────
+			fmt.Printf("  → Generating AI attack templates...\n\n")
+
+			tmpDir, err := os.MkdirTemp("", "trojan-dast-*")
+			if err != nil {
+				color.Yellow("Warning: could not create temp dir for templates: %s\n", err)
+			}
+			defer os.RemoveAll(tmpDir)
+
+			templateReq := dast.TemplateRequest{
+				TargetURL:    targetURL,
+				Endpoints:    crawlResult.Endpoints,
+				TechHints:    crawlResult.TechHints,
+				MaxTemplates: 10,
+			}
+			templateResp, err := dast.GenerateTemplates(templateReq, accessToken)
+
+			var nucleiScanner scanners.Nuclei
+			if err != nil {
+				if err.Error() == "rate_limit_exceeded" {
+					color.Yellow("  Daily AI limit reached — running with standard templates only.\n\n")
+				} else {
+					color.Yellow("  Template generation failed (%s) — running with standard templates only.\n\n", err)
+				}
+			} else {
+				if writeErr := dast.WriteTemplatesToDir(templateResp, tmpDir); writeErr == nil {
+					fmt.Printf("  → Generated %d custom templates\n\n", len(templateResp.Templates))
+					nucleiScanner = scanners.Nuclei{ExtraTemplateDirs: []string{tmpDir}}
+				} else {
+					fmt.Printf("  → Generated %d custom templates\n\n", len(templateResp.Templates))
+					nucleiScanner = scanners.Nuclei{ExtraTemplateDirs: []string{tmpDir}}
+				}
 			}
 
-			fmt.Printf("Scanning %s with nuclei...\n", targetURL)
-			fmt.Printf("(First run will download templates — this may take a minute)\n\n")
+			// ── Step 8: Nuclei scan ────────────────────────────────────────────────
+			customCount := len(nucleiScanner.ExtraTemplateDirs)
+			if customCount > 0 && templateResp != nil {
+				fmt.Printf("  → Running Nuclei (6,618 standard + %d custom templates)...\n", len(templateResp.Templates))
+			} else {
+				fmt.Printf("  → Running Nuclei (6,618 standard templates)...\n")
+			}
+			fmt.Printf("  (First run will download templates — this may take a minute)\n\n")
 
-			// Nuclei streams its own progress to stderr, so no spinner needed here.
-			findings := scanners.RunDast(targetURL, dastScanners, func(name string, done bool, err error) {
-				if done {
-					if err != nil {
-						color.Red("\n[failed] %s: %s\n", name, err)
-					}
+			findings := scanners.RunDast(targetURL, []scanners.DastScanner{nucleiScanner}, func(name string, done bool, count int, err error) {
+				if done && err != nil {
+					color.Red("\n  [failed] %s: %s\n", name, err)
 				}
 			})
 
 			fmt.Println()
-			printFindings(findings)
 
-			// AI synthesis for Pro users — verify live from server, never trust local cache.
-			isPro := false
-			var accessToken string
-			if cfg, err := config.LoadConfig(); err == nil && cfg.AccessToken != "" {
-				accessToken = cfg.AccessToken
-				if info, err := ai.FetchLicense(accessToken); err == nil {
-					isPro = info.IsPro
-				}
-			}
-
-			if isPro && len(findings) > 0 {
+			// ── Step 9: AI synthesis ───────────────────────────────────────────────
+			if len(findings) > 0 {
 				total := len(findings)
 				const maxConcurrent = 8
 
-				fmt.Printf("Generating simplified summaries for %d finding(s)...\n", total)
+				fmt.Printf("  → Synthesizing %d finding(s)...\n", total)
 
 				var (
 					progressMu sync.Mutex
@@ -466,37 +532,51 @@ func dastCmd() *cobra.Command {
 						defer wg.Done()
 						defer func() { <-sem }()
 
-						s, err := ai.SynthesizeFinding(findings[idx], accessToken)
+						s, serr := ai.SynthesizeFinding(findings[idx], accessToken)
 						progressMu.Lock()
 						defer progressMu.Unlock()
-						if err == nil {
+						if serr == nil {
 							findings[idx].Simply = s.Simply
 							findings[idx].Actions = s.Actions
+							findings[idx].Confidence = s.Confidence
+							findings[idx].IsFalsePositive = s.IsFalsePositive
+							findings[idx].FixDiff = s.FixDiff
 						}
 						completed++
-						fmt.Printf("\r  %d / %d complete", completed, total)
+						fmt.Printf("\r      %d / %d complete", completed, total)
 					}()
 				}
 
 				wg.Wait()
-				fmt.Printf("\r  %d / %d complete\n\n", total, total)
+				fmt.Printf("\r      %d / %d complete\n\n", total, total)
 			}
 
-			// DAST has no local project path, so results are always in-memory.
+			// ── Step 10: Results ───────────────────────────────────────────────────
+			counts := map[normalizer.Severity]int{}
+			for _, f := range findings {
+				counts[f.Severity]++
+			}
+			fmt.Printf("  → DAST complete — %d findings (", len(findings))
+			color.New(color.FgRed, color.Bold).Printf("%d critical  ", counts[normalizer.SeverityCritical])
+			color.New(color.FgHiRed).Printf("%d high  ", counts[normalizer.SeverityHigh])
+			color.New(color.FgYellow).Printf("%d medium  ", counts[normalizer.SeverityMedium])
+			color.New(color.FgBlue).Printf("%d low", counts[normalizer.SeverityLow])
+			fmt.Printf(")\n")
+
 			scanResult := normalizer.NewScanResult(targetURL, findings)
 
 			dastUI, _ := fs.Sub(trojan.DastUIAssets, "dast-ui/dist")
 			srv := server.New(scanResult, dastUI)
-			url, err := srv.Start()
+			reportURL, err := srv.Start()
 			if err != nil {
 				color.Yellow("Warning: could not start UI server: %s\n", err)
 				return
 			}
 
-			fmt.Printf("\n→ Report ready at %s\n", url)
-			fmt.Printf("→ Press Ctrl+C to close\n\n")
+			fmt.Printf("  → Report ready at %s\n", reportURL)
+			fmt.Printf("  → Press Ctrl+C to close\n\n")
 
-			browser.OpenURL(url)
+			browser.OpenURL(reportURL)
 
 			quit := make(chan os.Signal, 1)
 			signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
@@ -505,32 +585,28 @@ func dastCmd() *cobra.Command {
 			fmt.Println("\nServer closed.")
 		},
 	}
+
+	cmd.Flags().IntVar(&crawlDepth, "crawl-depth", 2, "How many links deep to crawl")
+	cmd.Flags().IntVar(&crawlTimeout, "timeout", 90, "Crawler timeout in seconds")
+	return cmd
 }
 
-func printFindings(findings []normalizer.Finding) {
-	if len(findings) == 0 {
-		color.Green("No findings. Your code looks clean!\n")
-		return
-	}
-
-	counts := map[normalizer.Severity]int{}
-	for _, f := range findings {
-		counts[f.Severity]++
-	}
-
-	fmt.Printf("Found %d issue(s):  ", len(findings))
-	color.New(color.FgRed, color.Bold).Printf("%d critical  ", counts[normalizer.SeverityCritical])
-	color.New(color.FgHiRed).Printf("%d high  ", counts[normalizer.SeverityHigh])
-	color.New(color.FgYellow).Printf("%d medium  ", counts[normalizer.SeverityMedium])
-	color.New(color.FgBlue).Printf("%d low\n", counts[normalizer.SeverityLow])
-	fmt.Printf("→ Open the report for details.\n\n")
+func printDastProMessage(targetURL string) {
+	fmt.Println()
+	fmt.Println("  trojan dast is a Pro feature.")
+	fmt.Println()
+	fmt.Printf("  Pro DAST: smart crawling of %s + custom AI attack templates + synthesis.\n", targetURL)
+	fmt.Println("  Upgrade at trojancli.com/pricing to unlock it.")
+	fmt.Println()
 }
+
 
 func loginCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "login",
 		Short: "Log in to Trojan (always fetches a fresh token)",
 		Run: func(cmd *cobra.Command, args []string) {
+			ui.PrintBanner(version)
 			// Always re-authenticate — never skip — so plan changes are picked up immediately.
 			if err := config.Login(); err != nil {
 				color.Red("Login failed: %s\n", err)
@@ -569,6 +645,7 @@ func updateCmd() *cobra.Command {
 		Use:   "update",
 		Short: "Check for a newer version of Trojan",
 		Run: func(cmd *cobra.Command, args []string) {
+			ui.PrintBanner(version)
 			if err := config.RunUpdate(version); err != nil {
 				color.Red("Error: %s\n", err)
 				os.Exit(1)
@@ -643,6 +720,7 @@ func initCmd() *cobra.Command {
 		Short: "Install scanners and set up Trojan for this project",
 		Args:  cobra.MaximumNArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
+			ui.PrintBanner(version)
 			path := "."
 			if len(args) > 0 {
 				path = args[0]

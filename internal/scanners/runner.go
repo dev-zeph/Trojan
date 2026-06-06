@@ -14,9 +14,9 @@ type ScannerResult struct {
 }
 
 // RunAll executes the given scanners in parallel and returns all findings.
-// The onProgress callback is called when each scanner starts and finishes —
-// this is what the spinner in Phase 2 will hook into.
-func RunAll(projectPath string, scanners []Scanner, onProgress func(name string, done bool, err error)) []normalizer.Finding {
+// The onProgress callback is called when each scanner starts (done=false, count=0)
+// and finishes (done=true, count=number of findings from that scanner).
+func RunAll(projectPath string, scanners []Scanner, onProgress func(name string, done bool, count int, err error)) []normalizer.Finding {
 	results := make(chan ScannerResult, len(scanners))
 	var wg sync.WaitGroup
 
@@ -26,13 +26,13 @@ func RunAll(projectPath string, scanners []Scanner, onProgress func(name string,
 			defer wg.Done()
 
 			if onProgress != nil {
-				onProgress(s.Name(), false, nil) // scanner starting
+				onProgress(s.Name(), false, 0, nil) // scanner starting
 			}
 
 			findings, err := s.Run(projectPath)
 
 			if onProgress != nil {
-				onProgress(s.Name(), true, err) // scanner done
+				onProgress(s.Name(), true, len(findings), err) // scanner done
 			}
 
 			results <- ScannerResult{
