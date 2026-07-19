@@ -2,11 +2,14 @@ package main
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -51,6 +54,7 @@ func main() {
 	rootCmd.AddCommand(mcpCmd())
 	rootCmd.AddCommand(hookCmd())
 	rootCmd.AddCommand(verifyCmd())
+	rootCmd.AddCommand(serveCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -333,9 +337,21 @@ func scanCmd() *cobra.Command {
 			}
 
 			if desktop {
-				// Desktop mode: Tauri window is the browser. Write the READY
-				// signal so Tauri navigates the webview to the report URL.
-				fmt.Printf("READY %s\n", url)
+				// Desktop mode: emit READY so Tauri navigates the webview to
+				// the report URL. Print a blank line first to ensure any
+				// in-progress animation output has been flushed, so the READY
+				// signal lands on its own uncontaminated line.
+
+				// Write cache for desktop re-serve
+				cacheFile := desktopCachePath(path)
+				if data, err := json.Marshal(scanResult); err == nil {
+					if dir := filepath.Dir(cacheFile); os.MkdirAll(dir, 0755) == nil {
+						os.WriteFile(cacheFile, data, 0644) //nolint:errcheck
+						fmt.Printf("\nCACHE_PATH %s\n", cacheFile)
+					}
+				}
+
+				fmt.Printf("\nREADY %s\n", url)
 			} else {
 				ui.PrintReportReady(url, watch)
 				browser.OpenURL(url)
@@ -581,7 +597,16 @@ func dastCmd() *cobra.Command {
 			}
 
 			if desktop {
-				fmt.Printf("READY %s\n", reportURL)
+				// Write cache for desktop re-serve
+				cacheFile := desktopCachePath(targetURL)
+				if data, err := json.Marshal(scanResult); err == nil {
+					if dir := filepath.Dir(cacheFile); os.MkdirAll(dir, 0755) == nil {
+						os.WriteFile(cacheFile, data, 0644) //nolint:errcheck
+						fmt.Printf("\nCACHE_PATH %s\n", cacheFile)
+					}
+				}
+
+				fmt.Printf("\nREADY %s\n", reportURL)
 			} else {
 				fmt.Printf("  → Report ready at %s\n", reportURL)
 				fmt.Printf("  → Press Ctrl+C to close\n\n")
@@ -600,6 +625,74 @@ func dastCmd() *cobra.Command {
 	cmd.Flags().IntVar(&crawlTimeout, "timeout", 90, "Crawler timeout in seconds")
 	cmd.Flags().BoolVar(&desktop, "desktop", false, "Desktop app mode: skip browser, emit READY signal to stdout")
 	cmd.Flags().MarkHidden("desktop") //nolint:errcheck
+	return cmd
+}
+
+// desktopCachePath returns the path for the desktop cache file for a given target.
+// It uses the first 16 hex chars of the SHA-256 of the target as the filename.
+func desktopCachePath(target string) string {
+	h := sha256.Sum256([]byte(target))
+	name := fmt.Sprintf("%x", h)[:16] + ".json"
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".trojan", "desktop-cache", name)
+}
+
+// serveCmd reads a previously-written cache file and starts a fresh HTTP server
+// so the desktop app can re-open old scan results without re-running scanners.
+func serveCmd() *cobra.Command {
+	var desktop bool
+
+	cmd := &cobra.Command{
+		Use:    "serve <cache-file>",
+		Short:  "Serve a cached scan result (desktop re-open)",
+		Args:   cobra.ExactArgs(1),
+		Hidden: true,
+		Run: func(cmd *cobra.Command, args []string) {
+			cacheFile := args[0]
+
+			data, err := os.ReadFile(cacheFile)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "trojan serve: cannot read cache file: %s\n", err)
+				os.Exit(1)
+			}
+
+			var result normalizer.ScanResult
+			if err := json.Unmarshal(data, &result); err != nil {
+				fmt.Fprintf(os.Stderr, "trojan serve: invalid cache file: %s\n", err)
+				os.Exit(1)
+			}
+
+			// Choose the correct UI bundle based on the target type.
+			var scanUI fs.FS
+			if strings.HasPrefix(result.ProjectPath, "http") {
+				scanUI, _ = fs.Sub(trojan.DastUIAssets, "dast-ui/dist")
+			} else {
+				scanUI, _ = fs.Sub(trojan.UIAssets, "ui/dist")
+			}
+
+			srv := server.New(&result, scanUI)
+			url, err := srv.Start()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "trojan serve: could not start server: %s\n", err)
+				os.Exit(1)
+			}
+
+			if desktop {
+				fmt.Printf("\nREADY %s\n", url)
+			} else {
+				fmt.Printf("Serving cached scan at %s\nPress Ctrl+C to stop.\n", url)
+			}
+
+			quit := make(chan os.Signal, 1)
+			signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+			<-quit
+			fmt.Println("\nServer closed.")
+		},
+	}
+
+	cmd.Flags().BoolVar(&desktop, "desktop", false, "Desktop app mode: emit READY signal to stdout")
+	cmd.Flags().MarkHidden("desktop") //nolint:errcheck
+
 	return cmd
 }
 

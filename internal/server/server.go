@@ -69,25 +69,15 @@ func (s *Server) UpdateScan(scan *normalizer.ScanResult) {
 	s.notifySSEClients()
 }
 
-// Start binds to an available port starting from 7878 and starts the HTTP
-// server. It returns only after the port is confirmed bound, so callers can
-// immediately write the READY signal or open a browser without a race.
+// Start binds to any available port on loopback and starts the HTTP server.
+// Using port 0 lets the OS assign a free port, so stale sidecar processes
+// from previous sessions never cause "no available port" errors.
 func (s *Server) Start() (string, error) {
-	var ln net.Listener
-	var port int
-	for p := 7878; p < 7888; p++ {
-		addr := fmt.Sprintf("127.0.0.1:%d", p)
-		l, err := net.Listen("tcp", addr)
-		if err == nil {
-			ln = l
-			port = p
-			break
-		}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return "", fmt.Errorf("could not bind to a local port: %w", err)
 	}
-	if ln == nil {
-		return "", fmt.Errorf("no available port found in range 7878-7887")
-	}
-	s.port = port
+	s.port = ln.Addr().(*net.TCPAddr).Port
 
 	mux := http.NewServeMux()
 
@@ -103,7 +93,7 @@ func (s *Server) Start() (string, error) {
 
 	go http.Serve(ln, mux) //nolint:errcheck
 
-	return fmt.Sprintf("http://127.0.0.1:%d", port), nil
+	return fmt.Sprintf("http://127.0.0.1:%d", s.port), nil
 }
 
 // handleSSE implements a Server-Sent Events endpoint. The browser connects

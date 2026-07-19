@@ -25,6 +25,13 @@
       "csp": null
     }
   },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["trojan"]
+      }
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",

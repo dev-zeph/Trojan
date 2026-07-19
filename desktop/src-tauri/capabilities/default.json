@@ -13,6 +13,8 @@
     "store:allow-get",
     "store:allow-set",
     "store:allow-save",
-    "store:allow-load"
+    "store:allow-load",
+    "deep-link:default",
+    "opener:allow-open-url"
   ]
 }
