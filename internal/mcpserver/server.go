@@ -27,7 +27,7 @@ func Serve(projectPath string) error {
 		return fmt.Errorf("not logged in — run `trojan login` first")
 	}
 	if !config.IsProFromToken(cfg.AccessToken) {
-		return fmt.Errorf("MCP integration requires a Pro subscription — visit https://trojan.dev/pricing to upgrade")
+		return fmt.Errorf("MCP integration requires a Pro subscription — visit https://trojancli.com/pricing to upgrade")
 	}
 
 	s := server.NewMCPServer(

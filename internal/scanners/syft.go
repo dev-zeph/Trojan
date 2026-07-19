@@ -17,8 +17,7 @@ func (s Syft) Name() string     { return "syft" }
 func (s Syft) Category() string { return "sbom" }
 
 func (s Syft) IsAvailable() bool {
-	_, err := exec.LookPath("syft")
-	return err == nil
+	return IsInstalled("syft")
 }
 
 func (s Syft) Run(projectPath string) ([]normalizer.Finding, error) {
@@ -26,7 +25,7 @@ func (s Syft) Run(projectPath string) ([]normalizer.Finding, error) {
 		return nil, fmt.Errorf("syft not found: run 'trojan init' to install it")
 	}
 
-	cmd := exec.Command("syft", projectPath, "-o", "syft-json")
+	cmd := exec.Command(ManagedBinary("syft"), projectPath, "-o", "syft-json")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("syft failed: %w", err)

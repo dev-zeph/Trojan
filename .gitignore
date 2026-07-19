@@ -1,6 +1,6 @@
 # Compiled binary
-trojan
-trojan.exe
+/trojan
+/trojan.exe
 
 # Go build cache
 /vendor/
@@ -10,8 +10,12 @@ trojan.exe
 *.out
 
 # UI build output
-ui/dist/
+ui/dist/*
+!ui/dist/.gitkeep
 ui/node_modules/
+dast-ui/dist/*
+!dast-ui/dist/.gitkeep
+dast-ui/node_modules/
 
 # Trojan local data
 .trojan/
@@ -23,6 +27,15 @@ backend/dist/
 
 # Supabase CLI temp files
 supabase/.temp/
+
+# Backend Edge Functions — proprietary, kept in private repo
+supabase/functions/
+
+# Internal / private
+Blueprint.md
+PROGRESS.md
+backend/sql/
+docs/
 
 # OS
 .DS_Store

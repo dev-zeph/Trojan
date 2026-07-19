@@ -2,6 +2,7 @@ package ai
 
 import (
 	"bytes"
+	"crypto/md5"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -19,8 +20,11 @@ const (
 
 // Synthesis holds the AI-generated explanation and fix steps for a finding.
 type Synthesis struct {
-	Simply  string   `json:"simply"`
-	Actions []string `json:"actions"`
+	Simply          string   `json:"simply"`
+	Actions         []string `json:"actions"`
+	Confidence      int      `json:"confidence,omitempty"`
+	IsFalsePositive bool     `json:"isFalsePositive,omitempty"`
+	FixDiff         string   `json:"fixDiff,omitempty"`
 }
 
 // LicenseInfo holds the user's subscription status fetched from the backend.
@@ -60,17 +64,23 @@ func FetchLicense(accessToken string) (*LicenseInfo, error) {
 // fix steps for a finding. Results are cached locally to avoid repeat API calls.
 func SynthesizeFinding(finding normalizer.Finding, accessToken string) (*Synthesis, error) {
 	// Check local cache first
-	if cached := loadFromCache(finding.RuleID, finding.Scanner); cached != nil {
+	if cached := loadFromCache(finding); cached != nil {
 		return cached, nil
 	}
 
-	payload := map[string]string{
-		"ruleId":     finding.RuleID,
-		"scanner":    finding.Scanner,
-		"category":   finding.Category,
-		"severity":   string(finding.Severity),
-		"title":      finding.Title,
-		"rawMessage": finding.RawMessage,
+	payload := map[string]any{
+		"ruleId":          finding.RuleID,
+		"scanner":         finding.Scanner,
+		"category":        finding.Category,
+		"severity":        string(finding.Severity),
+		"title":           finding.Title,
+		"rawMessage":      finding.RawMessage,
+		"language":        finding.Language,
+		"filePath":        finding.FilePath,
+		"codeSnippet":     finding.CodeSnippet,
+		"surroundingCode": finding.SurroundingCode,
+		"projectType":     finding.ProjectType,
+		"framework":       finding.Framework,
 	}
 
 	body, err := json.Marshal(payload)
@@ -101,21 +111,25 @@ func SynthesizeFinding(finding normalizer.Finding, accessToken string) (*Synthes
 		return nil, err
 	}
 
-	saveToCache(finding.RuleID, finding.Scanner, &synthesis)
+	saveToCache(finding, &synthesis)
 	return &synthesis, nil
 }
 
-// cachePath returns the local cache file path for a given rule+scanner pair.
-func cachePath(ruleID, scanner string) string {
+// cachePath returns the local cache file path for a finding.
+// The key includes a 4-byte hash of the code snippet + file path so that
+// the same rule in different files gets its own cached explanation, while
+// identical code across repeated scans still hits the cache.
+func cachePath(f normalizer.Finding) string {
 	home, _ := os.UserHomeDir()
-	key := fmt.Sprintf("%s-%s.json", sanitize(ruleID), sanitize(scanner))
+	h := md5.Sum([]byte(f.CodeSnippet + f.FilePath))
+	key := fmt.Sprintf("%s-%s-%x.json", sanitize(f.RuleID), sanitize(f.Scanner), h[:4])
 	return filepath.Join(home, ".trojan", "cache", key)
 }
 
 const cacheTTL = 30 * 24 * time.Hour // AI explanations refresh every 30 days
 
-func loadFromCache(ruleID, scanner string) *Synthesis {
-	p := cachePath(ruleID, scanner)
+func loadFromCache(f normalizer.Finding) *Synthesis {
+	p := cachePath(f)
 
 	info, err := os.Stat(p)
 	if err != nil || time.Since(info.ModTime()) > cacheTTL {
@@ -133,8 +147,8 @@ func loadFromCache(ruleID, scanner string) *Synthesis {
 	return &s
 }
 
-func saveToCache(ruleID, scanner string, s *Synthesis) {
-	path := cachePath(ruleID, scanner)
+func saveToCache(f normalizer.Finding, s *Synthesis) {
+	path := cachePath(f)
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return
 	}

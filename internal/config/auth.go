@@ -579,7 +579,7 @@ const loginPageHTML = `<!DOCTYPE html>
     </div>
 
     <p class="footer-note">
-      No account needed for free scanning. <a href="https://trojan.dev/docs">Install guide →</a>
+      No account needed for free scanning. <a href="https://trojancli.com/docs">Install guide →</a>
     </p>
   </div>
 

@@ -8,19 +8,6 @@ import type { Finding, ScanResult } from './types'
 
 type View = 'dashboard' | 'findings'
 
-function useDarkMode() {
-  const [dark, setDark] = useState(() =>
-    window.matchMedia('(prefers-color-scheme: dark)').matches
-  )
-
-  useEffect(() => {
-    const root = document.documentElement
-    dark ? root.classList.add('dark') : root.classList.remove('dark')
-  }, [dark])
-
-  return { dark, toggle: () => setDark(d => !d) }
-}
-
 export default function App() {
   const [scan, setScan] = useState<ScanResult | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -28,7 +15,6 @@ export default function App() {
   const [selected, setSelected] = useState<Finding | null>(null)
   const [auth, setAuth] = useState<AuthStatus | null>(null)
   const [rescanning, setRescanning] = useState(false)
-  const { dark, toggle } = useDarkMode()
 
   async function loadScan() {
     try {
@@ -81,7 +67,7 @@ export default function App() {
               Unlock AI explanations and fix suggestions with Trojan Pro.
             </p>
             <a
-              href="https://trojan.dev"
+              href="https://trojancli.com/login"
               target="_blank"
               rel="noopener noreferrer"
               className="text-xs font-medium underline underline-offset-4 hover:text-muted-foreground transition-colors"
@@ -98,7 +84,7 @@ export default function App() {
               You're on the free plan. Upgrade to Pro to unlock AI explanations.
             </p>
             <a
-              href="https://trojan.dev/pricing"
+              href="https://trojancli.com/pricing"
               target="_blank"
               rel="noopener noreferrer"
               className="text-xs font-medium underline underline-offset-4 hover:text-muted-foreground transition-colors"
@@ -140,7 +126,7 @@ export default function App() {
                     }`}
                   >
                     {v}
-                    {v === 'findings' && ` (${scan.findings.length})`}
+                    {v === 'findings' && ` (${scan.findings.filter(f => f.Status === 'open').length})`}
                   </button>
                 ))}
               </nav>
@@ -152,12 +138,6 @@ export default function App() {
             )}
           </div>
 
-          <button
-            onClick={toggle}
-            className="text-xs text-muted-foreground hover:text-foreground transition-colors uppercase tracking-widest"
-          >
-            {dark ? 'Light' : 'Dark'}
-          </button>
         </div>
       </header>
 

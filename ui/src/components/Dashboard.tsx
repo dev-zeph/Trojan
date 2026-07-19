@@ -23,9 +23,10 @@ export function Dashboard({ scan, onViewFindings, onSelectFinding }: Props) {
 
   const scanners = [...new Set(scan.findings.map(f => f.Scanner))]
 
-  // Show the most critical findings first as preview
+  // Show the most critical open findings first as preview
   const severityOrder: Record<Severity, number> = { critical: 0, high: 1, medium: 2, low: 3, info: 4 }
-  const preview = [...scan.findings]
+  const openFindings = scan.findings.filter(f => f.Status === 'open')
+  const preview = [...openFindings]
     .sort((a, b) => severityOrder[a.Severity] - severityOrder[b.Severity])
     .slice(0, PREVIEW_COUNT)
 

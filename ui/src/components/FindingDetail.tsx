@@ -93,7 +93,7 @@ export function FindingDetail({ finding, onBack, onAction }: Props) {
               A plain-English explanation of this vulnerability — what it means for your app, why it matters, and a real-world breach with the same root cause.
             </p>
             <a
-              href="https://trojan.dev/pricing"
+              href="https://trojancli.com/pricing"
               className="text-xs underline underline-offset-4 text-muted-foreground hover:text-foreground transition-colors"
             >
               Upgrade to Pro →
@@ -125,7 +125,7 @@ export function FindingDetail({ finding, onBack, onAction }: Props) {
               Step-by-step actions to fix this vulnerability, with an AI-generated code diff you can apply directly.
             </p>
             <a
-              href="https://trojan.dev/pricing"
+              href="https://trojancli.com/pricing"
               className="text-xs underline underline-offset-4 text-muted-foreground hover:text-foreground transition-colors"
             >
               Upgrade to Pro →

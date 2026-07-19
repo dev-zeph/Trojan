@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dev-zeph/trojan/internal/ai"
 	"github.com/dev-zeph/trojan/internal/config"
 	"github.com/dev-zeph/trojan/internal/normalizer"
 )
@@ -70,11 +69,23 @@ func (s *Server) UpdateScan(scan *normalizer.ScanResult) {
 	s.notifySSEClients()
 }
 
-// Start finds an available port starting from 7878 and starts the HTTP server.
+// Start binds to an available port starting from 7878 and starts the HTTP
+// server. It returns only after the port is confirmed bound, so callers can
+// immediately write the READY signal or open a browser without a race.
 func (s *Server) Start() (string, error) {
-	port, err := findAvailablePort(7878)
-	if err != nil {
-		return "", fmt.Errorf("could not find available port: %w", err)
+	var ln net.Listener
+	var port int
+	for p := 7878; p < 7888; p++ {
+		addr := fmt.Sprintf("127.0.0.1:%d", p)
+		l, err := net.Listen("tcp", addr)
+		if err == nil {
+			ln = l
+			port = p
+			break
+		}
+	}
+	if ln == nil {
+		return "", fmt.Errorf("no available port found in range 7878-7887")
 	}
 	s.port = port
 
@@ -85,18 +96,14 @@ func (s *Server) Start() (string, error) {
 	mux.HandleFunc("/api/findings/", s.handleFindingAction)
 	mux.HandleFunc("/api/auth/status", s.handleAuthStatus)
 	mux.HandleFunc("/api/events", s.handleSSE)
+	mux.HandleFunc("/api/install-progress", s.handleInstallProgress)
 
-	// Serve embedded UI assets
-	uiFS, err := fs.Sub(s.uiAssets, "ui/dist")
-	if err != nil {
-		return "", fmt.Errorf("could not load UI assets: %w", err)
-	}
-	mux.Handle("/", http.FileServer(http.FS(uiFS)))
+	// Serve embedded UI assets (caller passes an already-subbed fs.FS)
+	mux.Handle("/", http.FileServer(http.FS(s.uiAssets)))
 
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
-	go http.ListenAndServe(addr, mux)
+	go http.Serve(ln, mux) //nolint:errcheck
 
-	return fmt.Sprintf("http://%s", addr), nil
+	return fmt.Sprintf("http://127.0.0.1:%d", port), nil
 }
 
 // handleSSE implements a Server-Sent Events endpoint. The browser connects
@@ -191,27 +198,14 @@ func (s *Server) handleLatestScan(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-// checkProStatus validates the user's subscription against the Supabase license
-// endpoint. Results are cached in memory for licenseCacheTTL. Fails closed —
-// any error (no token, network failure, expired token) returns false.
+// checkProStatus reads cfg.IsPro which is set server-side on login/refresh.
+// This correctly covers org seat members whose JWT subscription_status is "free".
 func (s *Server) checkProStatus() bool {
 	cfg, err := config.LoadConfig()
 	if err != nil || cfg.AccessToken == "" {
 		return false
 	}
-
-	s.licenseMu.Lock()
-	defer s.licenseMu.Unlock()
-
-	if s.licenseCache != nil && time.Since(s.licenseCache.fetchedAt) < licenseCacheTTL {
-		return s.licenseCache.isPro
-	}
-
-	info, err := ai.FetchLicense(cfg.AccessToken)
-	isPro := err == nil && info != nil && info.IsPro
-
-	s.licenseCache = &licenseResult{isPro: isPro, fetchedAt: time.Now()}
-	return isPro
+	return cfg.IsPro
 }
 
 // markFindingsForFree returns a copy of all findings with the Locked field set
@@ -240,6 +234,10 @@ func markFindingsForFree(findings []normalizer.Finding) (marked []normalizer.Fin
 	marked = make([]normalizer.Finding, len(findings))
 	for i, f := range findings {
 		marked[i] = f
+		// Never expose AI-generated content to free users — strip cached
+		// Simply/Actions regardless of whether the finding is unlocked.
+		marked[i].Simply = ""
+		marked[i].Actions = nil
 		if !freeIDs[f.ID] {
 			marked[i].Locked = true
 			lockedCount++
@@ -293,23 +291,91 @@ func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	plan := config.SubscriptionStatusFromToken(cfg.AccessToken)
+	// For org seat members their JWT plan is "free" but cfg.IsPro is true.
+	// Show "Pro" so the UI banner displays correctly.
+	if cfg.IsPro && plan == "free" {
+		plan = "Pro"
+	}
 	json.NewEncoder(w).Encode(map[string]any{
 		"loggedIn": true,
-		"isPro":    plan == "pro" || plan == "team",
+		"isPro":    cfg.IsPro,
 		"plan":     plan,
 		"email":    cfg.UserEmail,
 	})
 }
 
-// findAvailablePort returns the first open port starting from the given port.
-func findAvailablePort(startPort int) (int, error) {
-	for port := startPort; port < startPort+10; port++ {
-		addr := fmt.Sprintf("127.0.0.1:%d", port)
-		ln, err := net.Listen("tcp", addr)
-		if err == nil {
-			ln.Close()
-			return port, nil
+// InstallProgressEvent is emitted by the desktop onboarding screen via SSE.
+type InstallProgressEvent struct {
+	Scanner string `json:"scanner"`
+	Status  string `json:"status"` // "downloading" | "verifying" | "done" | "error"
+	Pct     int    `json:"pct"`
+	Error   string `json:"error,omitempty"`
+}
+
+// installProgressMu guards installProgressClients.
+var installProgressMu sync.Mutex
+var installProgressClients = map[int]chan InstallProgressEvent{}
+var installProgressNextID int
+
+// BroadcastInstallProgress sends a progress event to all connected onboarding
+// SSE clients. Called by config.RunInit when running in desktop mode.
+func BroadcastInstallProgress(evt InstallProgressEvent) {
+	installProgressMu.Lock()
+	defer installProgressMu.Unlock()
+	for _, ch := range installProgressClients {
+		select {
+		case ch <- evt:
+		default:
 		}
 	}
-	return 0, fmt.Errorf("no available port found in range %d-%d", startPort, startPort+10)
+}
+
+// handleInstallProgress is the SSE endpoint the desktop onboarding screen
+// subscribes to. It streams scanner install progress in real time.
+func (s *Server) handleInstallProgress(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	ch := make(chan InstallProgressEvent, 8)
+	installProgressMu.Lock()
+	id := installProgressNextID
+	installProgressNextID++
+	installProgressClients[id] = ch
+	installProgressMu.Unlock()
+	defer func() {
+		installProgressMu.Lock()
+		delete(installProgressClients, id)
+		installProgressMu.Unlock()
+	}()
+
+	fmt.Fprintf(w, ": connected\n\n")
+	flusher.Flush()
+
+	ticker := time.NewTicker(25 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-ticker.C:
+			fmt.Fprintf(w, ": ping\n\n")
+			flusher.Flush()
+		case evt := <-ch:
+			data, _ := json.Marshal(evt)
+			fmt.Fprintf(w, "event: progress\ndata: %s\n\n", data)
+			flusher.Flush()
+			if evt.Status == "done" && evt.Pct == 100 && evt.Scanner == "__all__" {
+				return
+			}
+		}
+	}
 }

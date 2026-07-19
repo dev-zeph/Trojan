@@ -35,9 +35,18 @@ type Finding struct {
 	RuleID      string   // The scanner rule that triggered this
 	Status      Status   // open, resolved, suppressed
 
+	// Context fields — populated before AI synthesis
+	Language        string // "typescript", "go", "python", "hcl", etc. (from file extension)
+	Framework       string // "nextjs", "express", "gin", "fastapi", etc. (from project files)
+	ProjectType     string // "nextjs", "go-api", "python-api", "static", etc.
+	SurroundingCode string // 15 lines before + after LineNumber; empty for DAST/SCA findings
+
 	// AI synthesis fields — populated for Pro users
-	Simply  string   `json:"Simply,omitempty"`  // Plain-English explanation
-	Actions []string `json:"Actions,omitempty"` // Step-by-step fix instructions
+	Simply          string   `json:"Simply,omitempty"`          // Plain-English explanation
+	Actions         []string `json:"Actions,omitempty"`         // Step-by-step fix instructions
+	Confidence      int      `json:"Confidence,omitempty"`      // 0-100 how sure the AI is this is real
+	IsFalsePositive bool     `json:"IsFalsePositive,omitempty"` // true if AI thinks this is a false positive
+	FixDiff         string   `json:"FixDiff,omitempty"`         // Optional git-style diff for the fix
 
 	// Locked is set at serve time (never persisted to disk).
 	// True when the finding is not accessible on the free plan.

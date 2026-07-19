@@ -15,8 +15,7 @@ func (g Gitleaks) Name() string     { return "gitleaks" }
 func (g Gitleaks) Category() string { return "secrets" }
 
 func (g Gitleaks) IsAvailable() bool {
-	_, err := exec.LookPath("gitleaks")
-	return err == nil
+	return IsInstalled("gitleaks")
 }
 
 func (g Gitleaks) Run(projectPath string) ([]normalizer.Finding, error) {
@@ -24,7 +23,7 @@ func (g Gitleaks) Run(projectPath string) ([]normalizer.Finding, error) {
 		return nil, fmt.Errorf("gitleaks not found: run 'trojan init' to install it")
 	}
 
-	cmd := exec.Command("gitleaks", "detect", "--source", projectPath, "--report-format", "json", "--report-path", "/dev/stdout", "--no-banner", "-q")
+	cmd := exec.Command(ManagedBinary("gitleaks"), "detect", "--source", projectPath, "--report-format", "json", "--report-path", "/dev/stdout", "--no-banner", "-q")
 	output, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {

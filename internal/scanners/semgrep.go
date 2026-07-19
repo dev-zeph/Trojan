@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"runtime"
 	"strings"
 
 	"github.com/dev-zeph/trojan/internal/normalizer"
@@ -16,8 +17,7 @@ func (s Semgrep) Name() string     { return "semgrep" }
 func (s Semgrep) Category() string { return "sast" }
 
 func (s Semgrep) IsAvailable() bool {
-	_, err := exec.LookPath("semgrep")
-	return err == nil
+	return IsInstalled("semgrep")
 }
 
 func (s Semgrep) Run(projectPath string) ([]normalizer.Finding, error) {
@@ -25,7 +25,24 @@ func (s Semgrep) Run(projectPath string) ([]normalizer.Finding, error) {
 		return nil, fmt.Errorf("semgrep not found: run 'trojan init' to install it")
 	}
 
-	cmd := exec.Command("semgrep", "--config=auto", "--json", projectPath)
+	// Build args: parallel jobs + skip generated/vendor dirs + cap large files.
+	args := []string{
+		"--config=auto",
+		"--json",
+		"--jobs", fmt.Sprintf("%d", runtime.NumCPU()),
+		"--max-target-bytes", "1000000", // skip files > 1MB (minified JS, generated code)
+		// Exclude directories that are not source code.
+		"--exclude", "node_modules",
+		"--exclude", "vendor",
+		"--exclude", "dist",
+		"--exclude", "build",
+		"--exclude", ".next",
+		"--exclude", "__pycache__",
+		"--exclude", "coverage",
+		"--exclude", "*.min.js",
+		projectPath,
+	}
+	cmd := exec.Command(ManagedBinary("semgrep"), args...)
 	output, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {

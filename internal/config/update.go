@@ -35,14 +35,21 @@ func CheckForUpdate(currentVersion string) (string, bool, error) {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		return "", false, fmt.Errorf("release check returned status %d", resp.StatusCode)
+	}
+
 	var release githubRelease
 	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
 		return "", false, fmt.Errorf("could not parse release info: %w", err)
 	}
 
 	latest := release.TagName
+	if latest == "" {
+		return "", false, nil
+	}
 	// Strip leading 'v' for comparison
-	if len(latest) > 0 && latest[0] == 'v' {
+	if latest[0] == 'v' {
 		latest = latest[1:]
 	}
 
@@ -90,7 +97,7 @@ func RunUpdate(currentVersion string) error {
 	fmt.Println()
 	fmt.Println("  — or —")
 	fmt.Println()
-	fmt.Println("  curl -fsSL https://trojan.dev/install.sh | sh")
+	fmt.Println("  curl -fsSL https://trojancli.com/install.sh | sh")
 	fmt.Println()
 
 	return nil
