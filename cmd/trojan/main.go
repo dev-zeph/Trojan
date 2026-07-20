@@ -55,6 +55,7 @@ func main() {
 	rootCmd.AddCommand(hookCmd())
 	rootCmd.AddCommand(verifyCmd())
 	rootCmd.AddCommand(serveCmd())
+	rootCmd.AddCommand(depsCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -196,6 +197,15 @@ func scanCmd() *cobra.Command {
 					}
 				})
 
+				// Extract the dependency package list from Trivy (populated during Run()).
+				var pkgs []normalizer.Package
+				for _, s := range relevant {
+					if t, ok := s.(*scanners.Trivy); ok {
+						pkgs = t.Packages()
+						break
+					}
+				}
+
 				// Severity counts for results box.
 				counts := map[string]int{}
 				for _, f := range findings {
@@ -289,8 +299,11 @@ func scanCmd() *cobra.Command {
 					scanResult, err := normalizer.SaveScanResult(path, findings)
 					if err != nil {
 						color.Yellow("Warning: could not save scan results: %s\n", err)
-						return normalizer.NewScanResult(path, findings), findings
+						r := normalizer.NewScanResult(path, findings)
+						r.Packages = pkgs
+						return r, findings
 					}
+					scanResult.Packages = pkgs
 					return scanResult, findings
 				}
 
@@ -300,7 +313,9 @@ func scanCmd() *cobra.Command {
 					findings[i].Simply = ""
 					findings[i].Actions = nil
 				}
-				return normalizer.NewScanResult(path, findings), findings
+				r := normalizer.NewScanResult(path, findings)
+				r.Packages = pkgs
+				return r, findings
 			}
 
 			// Initial scan
@@ -687,6 +702,75 @@ func serveCmd() *cobra.Command {
 			signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 			<-quit
 			fmt.Println("\nServer closed.")
+		},
+	}
+
+	cmd.Flags().BoolVar(&desktop, "desktop", false, "Desktop app mode: emit READY signal to stdout")
+	cmd.Flags().MarkHidden("desktop") //nolint:errcheck
+
+	return cmd
+}
+
+// depsCmd is a hidden, desktop-only command that runs Trivy only and serves
+// the resulting package list so the Dependencies sidebar can be populated
+// quickly without running all scanners.
+func depsCmd() *cobra.Command {
+	var desktop bool
+
+	cmd := &cobra.Command{
+		Use:    "deps [path]",
+		Short:  "Scan dependencies only (Trivy)",
+		Args:   cobra.MaximumNArgs(1),
+		Hidden: true,
+		Run: func(cmd *cobra.Command, args []string) {
+			path := "."
+			if len(args) > 0 {
+				path = args[0]
+			}
+
+			if err := config.EnsureScanners(); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not install scanners: %s\n", err)
+			}
+
+			t := &scanners.Trivy{}
+			if !t.IsAvailable() {
+				fmt.Fprintln(os.Stderr, "trivy not found: run 'trojan init' to install it")
+				os.Exit(1)
+			}
+
+			findings, err := t.Run(path)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "trivy failed: %s\n", err)
+				os.Exit(1)
+			}
+
+			result := normalizer.NewScanResult(path, findings)
+			result.Packages = t.Packages()
+
+			scanUI, _ := fs.Sub(trojan.UIAssets, "ui/dist")
+			srv := server.New(result, scanUI)
+			url, startErr := srv.Start()
+			if startErr != nil {
+				fmt.Fprintf(os.Stderr, "could not start UI server: %s\n", startErr)
+				os.Exit(1)
+			}
+
+			if desktop {
+				cacheFile := desktopCachePath("deps::" + path)
+				if data, err := json.Marshal(result); err == nil {
+					if dir := filepath.Dir(cacheFile); os.MkdirAll(dir, 0755) == nil {
+						os.WriteFile(cacheFile, data, 0644) //nolint:errcheck
+						fmt.Printf("\nCACHE_PATH %s\n", cacheFile)
+					}
+				}
+				fmt.Printf("\nREADY %s\n", url)
+			} else {
+				fmt.Printf("Dependency report at %s\n", url)
+			}
+
+			quit := make(chan os.Signal, 1)
+			signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+			<-quit
 		},
 	}
 

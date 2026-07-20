@@ -14,6 +14,7 @@
     "store:allow-set",
     "store:allow-save",
     "store:allow-load",
+    "store:allow-clear",
     "deep-link:default",
     "opener:allow-open-url"
   ]

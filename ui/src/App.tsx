@@ -2,11 +2,12 @@ import { useEffect, useState } from 'react'
 import { Dashboard } from './components/Dashboard'
 import { FindingsList } from './components/FindingsList'
 import { FindingDetail } from './components/FindingDetail'
+import { DependencyDashboard } from './components/DependencyDashboard'
 import { getLatestScan, getAuthStatus, subscribeToScanEvents } from './api'
 import type { AuthStatus } from './api'
 import type { Finding, ScanResult } from './types'
 
-type View = 'dashboard' | 'findings'
+type View = 'dashboard' | 'findings' | 'dependencies'
 
 export default function App() {
   const [scan, setScan] = useState<ScanResult | null>(null)
@@ -115,7 +116,7 @@ export default function App() {
             <img src="/logo.png" alt="Trojan" className="h-14 w-auto" />
             {!selected && (
               <nav className="flex gap-6">
-                {(['dashboard', 'findings'] as View[]).map(v => (
+                {(['dashboard', 'findings', 'dependencies'] as View[]).map(v => (
                   <button
                     key={v}
                     onClick={() => setView(v)}
@@ -127,6 +128,7 @@ export default function App() {
                   >
                     {v}
                     {v === 'findings' && ` (${scan.findings.filter(f => f.Status === 'open').length})`}
+                    {v === 'dependencies' && scan.packages != null && ` (${scan.packages.length})`}
                   </button>
                 ))}
               </nav>
@@ -155,6 +157,8 @@ export default function App() {
             onViewFindings={() => setView('findings')}
             onSelectFinding={setSelected}
           />
+        ) : view === 'dependencies' ? (
+          <DependencyDashboard packages={scan.packages ?? []} />
         ) : (
           <FindingsList
             findings={scan.findings}

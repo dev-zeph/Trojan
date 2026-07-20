@@ -18,9 +18,28 @@ export interface Finding {
   locked?: boolean
 }
 
+export interface PackageAdvisory {
+  id: string
+  severity: Severity
+  summary: string
+  fix_version?: string
+}
+
+export interface Package {
+  name: string
+  version: string
+  ecosystem: string
+  direct: boolean
+  cve_count: number
+  highest_severity?: Severity
+  fix_version?: string
+  advisories?: PackageAdvisory[]
+}
+
 export interface ScanResult {
   timestamp: string
   project_path: string
   findings: Finding[]
   locked_count: number
+  packages?: Package[]
 }

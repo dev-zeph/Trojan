@@ -52,3 +52,24 @@ type Finding struct {
 	// True when the finding is not accessible on the free plan.
 	Locked bool `json:"locked,omitempty"`
 }
+
+// PackageAdvisory is a single security advisory attached to a dependency.
+type PackageAdvisory struct {
+	ID         string   `json:"id"`                    // CVE or GHSA identifier
+	Severity   Severity `json:"severity"`
+	Summary    string   `json:"summary"`
+	FixVersion string   `json:"fix_version,omitempty"` // version that resolves this advisory
+}
+
+// Package represents a third-party dependency found during scanning.
+// Populated by Trivy and attached to ScanResult.Packages.
+type Package struct {
+	Name            string            `json:"name"`
+	Version         string            `json:"version"`
+	Ecosystem       string            `json:"ecosystem"`        // "npm", "PyPI", "Go", etc.
+	Direct          bool              `json:"direct"`           // false = transitive dependency
+	CVECount        int               `json:"cve_count"`
+	HighestSeverity Severity          `json:"highest_severity,omitempty"`
+	FixVersion      string            `json:"fix_version,omitempty"` // earliest fix across all advisories
+	Advisories      []PackageAdvisory `json:"advisories,omitempty"`
+}

@@ -29,6 +29,7 @@ type scanResponse struct {
 	ProjectPath string               `json:"project_path"`
 	Findings    []normalizer.Finding `json:"findings"`
 	LockedCount int                  `json:"locked_count"`
+	Packages    []normalizer.Package `json:"packages,omitempty"`
 }
 
 // Server holds the scan results and serves the UI + API.
@@ -91,7 +92,19 @@ func (s *Server) Start() (string, error) {
 	// Serve embedded UI assets (caller passes an already-subbed fs.FS)
 	mux.Handle("/", http.FileServer(http.FS(s.uiAssets)))
 
-	go http.Serve(ln, mux) //nolint:errcheck
+	// Wrap with CORS headers so the Tauri desktop webview (localhost:1420 in dev,
+	// tauri://localhost in prod) can fetch /api/* endpoints directly.
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
+	go http.Serve(ln, handler) //nolint:errcheck
 
 	return fmt.Sprintf("http://127.0.0.1:%d", s.port), nil
 }
@@ -184,6 +197,7 @@ func (s *Server) handleLatestScan(w http.ResponseWriter, r *http.Request) {
 	} else {
 		resp.Findings, resp.LockedCount = markFindingsForFree(scan.Findings)
 	}
+	resp.Packages = scan.Packages
 
 	json.NewEncoder(w).Encode(resp)
 }

@@ -185,6 +185,26 @@ async fn serve_scan(app: AppHandle, cache_path: String) -> Result<String, String
     Ok(url)
 }
 
+/// Run a dependency-only scan (Trivy) and return the server URL + cache path.
+/// Much faster than start_scan — only Trivy runs, no SAST/secrets/IaC.
+#[tauri::command]
+async fn scan_deps(app: AppHandle, path: String) -> Result<ScanReturn, String> {
+    kill_old_scans(&app);
+
+    let (rx, child) = app
+        .shell()
+        .sidecar("trojan")
+        .map_err(|e| format!("sidecar not found: {e}"))?
+        .args(["deps", &path, "--desktop"])
+        .spawn()
+        .map_err(|e| format!("spawn failed: {e}"))?;
+    let (url, cache_path) = await_ready(rx).await?;
+    if let Ok(mut children) = app.state::<ActiveScans>().0.lock() {
+        children.push(child);
+    }
+    Ok(ScanReturn { url, cache_path })
+}
+
 /// Open a URL in the system browser (used for the auth flow).
 #[tauri::command]
 async fn open_auth(app: AppHandle, url: String) -> Result<(), String> {
@@ -204,6 +224,14 @@ pub fn run() {
         .setup(|app| {
             // Store for keeping Go sidecar child processes alive.
             app.manage(ActiveScans(Mutex::new(Vec::new())));
+
+            // On Windows/Linux, register the trojan:// scheme at runtime so
+            // deep links work in dev mode too. On macOS the scheme is baked
+            // into Info.plist at build time — register_all() is unimplemented
+            // there and panics, so we skip it on that platform.
+            #[cfg(not(target_os = "macos"))]
+            app.deep_link().register_all()?;
+
             // Forward deep-link URLs to the React frontend as a Tauri event.
             let handle = app.handle().clone();
             app.deep_link().on_open_url(move |event| {
@@ -216,6 +244,7 @@ pub fn run() {
             pick_folder,
             start_scan,
             start_dast,
+            scan_deps,
             open_auth,
             serve_scan,
         ])
