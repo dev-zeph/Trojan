@@ -37,8 +37,10 @@ struct ScanReturn {
 /// Reads stdout/stderr from the Go sidecar until it emits "READY <url>".
 /// Also captures a "CACHE_PATH <path>" line that arrives before READY.
 /// Returns `(url, cache_path)` on success.
-async fn await_ready(mut rx: Receiver<CommandEvent>) -> Result<(String, String), String> {
-    // Rolling buffer of the last 4 non-empty stdout lines (for error context).
+/// Reads stdout/stderr from the Go sidecar until it emits "READY <url>".
+/// Every output line is forwarded to the frontend terminal panel as a
+/// `terminal-output` Tauri event so the user sees live scan progress.
+async fn await_ready(app: &AppHandle, mut rx: Receiver<CommandEvent>) -> Result<(String, String), String> {
     let mut last_stdout: Vec<String> = Vec::new();
     let mut last_stderr: Vec<String> = Vec::new();
     let mut cache_path = String::new();
@@ -47,17 +49,21 @@ async fn await_ready(mut rx: Receiver<CommandEvent>) -> Result<(String, String),
         match event {
             CommandEvent::Stdout(bytes) => {
                 let raw = String::from_utf8_lossy(&bytes);
+
+                // Forward raw bytes (ANSI colors preserved) to the terminal panel.
+                let terminal_chunk = raw.trim_end_matches('\n').replace('\n', "\r\n");
+                if !terminal_chunk.is_empty() {
+                    let _ = app.emit("terminal-output", format!("{}\r\n", terminal_chunk));
+                }
+
+                // Strip ANSI for logic: CACHE_PATH and READY detection.
                 let line = strip_ansi(raw.trim());
 
-                // Capture CACHE_PATH before READY arrives.
                 if let Some(pos) = line.find("CACHE_PATH ") {
                     let p = line[pos + 11..].trim().to_string();
                     if !p.is_empty() { cache_path = p; }
                 }
 
-                // Search for "READY " anywhere in the ANSI-stripped line.
-                // The animation goroutine may interleave cursor sequences with
-                // the READY signal, so we can't rely on it being at position 0.
                 if let Some(pos) = line.find("READY ") {
                     let url = line[pos + 6..].trim().to_string();
                     if !url.is_empty() && url.starts_with("http") {
@@ -74,24 +80,23 @@ async fn await_ready(mut rx: Receiver<CommandEvent>) -> Result<(String, String),
                 let line = strip_ansi(String::from_utf8_lossy(&bytes).trim());
                 eprintln!("[trojan stderr] {}", line);
                 if !line.is_empty() {
+                    // Emit stderr in red to the terminal.
+                    let _ = app.emit("terminal-output", format!("\x1b[31m{}\x1b[0m\r\n", line));
                     last_stderr.push(line);
                     if last_stderr.len() > 4 { last_stderr.remove(0); }
                 }
             }
             CommandEvent::Terminated(status) => {
-                // Prefer stderr (panics, real errors) over stdout (progress noise).
                 let detail = if !last_stderr.is_empty() {
                     last_stderr.join(" · ")
                 } else if last_stdout.iter().any(|l| l.contains("No scanners")) {
                     return Err("No scanners installed. Run 'trojan init' in a terminal first.".to_string());
                 } else if last_stdout.iter().any(|l| l.contains("could not start UI")) {
-                    // Server startup failure — show the warning line
                     last_stdout.iter()
                         .find(|l| l.contains("could not start"))
                         .cloned()
                         .unwrap_or_else(|| format!("server failed to start (exit {:?})", status.code))
                 } else {
-                    // Show last 2 stdout lines — enough to see what went wrong
                     let tail: Vec<_> = last_stdout.iter().rev().take(2).rev().collect();
                     if tail.is_empty() {
                         format!("process exited (code {:?}) — try rebuilding the sidecar", status.code)
@@ -129,8 +134,8 @@ fn kill_old_scans(app: &AppHandle) {
 /// Run all static scanners on a local path.
 #[tauri::command]
 async fn start_scan(app: AppHandle, path: String) -> Result<ScanReturn, String> {
-    // Kill any previous scan processes so their ports are freed before we start.
     kill_old_scans(&app);
+    let _ = app.emit("terminal-output", format!("\x1b[1;35m$ trojan scan {}\x1b[0m\r\n", path));
 
     let (rx, child) = app
         .shell()
@@ -139,8 +144,9 @@ async fn start_scan(app: AppHandle, path: String) -> Result<ScanReturn, String> 
         .args(["scan", &path, "--desktop"])
         .spawn()
         .map_err(|e| format!("spawn failed: {e}"))?;
-    let (url, cache_path) = await_ready(rx).await?;
-    // Keep child alive — dropping it kills the embedded HTTP server.
+    let result = await_ready(&app, rx).await;
+    let _ = app.emit("terminal-scan-done", ());
+    let (url, cache_path) = result?;
     if let Ok(mut children) = app.state::<ActiveScans>().0.lock() {
         children.push(child);
     }
@@ -151,6 +157,7 @@ async fn start_scan(app: AppHandle, path: String) -> Result<ScanReturn, String> 
 #[tauri::command]
 async fn start_dast(app: AppHandle, url: String) -> Result<ScanReturn, String> {
     kill_old_scans(&app);
+    let _ = app.emit("terminal-output", format!("\x1b[1;35m$ trojan dast {}\x1b[0m\r\n", url));
 
     let (rx, child) = app
         .shell()
@@ -159,7 +166,9 @@ async fn start_dast(app: AppHandle, url: String) -> Result<ScanReturn, String> {
         .args(["dast", &url, "--desktop"])
         .spawn()
         .map_err(|e| format!("spawn failed: {e}"))?;
-    let (report_url, cache_path) = await_ready(rx).await?;
+    let result = await_ready(&app, rx).await;
+    let _ = app.emit("terminal-scan-done", ());
+    let (report_url, cache_path) = result?;
     if let Ok(mut children) = app.state::<ActiveScans>().0.lock() {
         children.push(child);
     }
@@ -170,6 +179,7 @@ async fn start_dast(app: AppHandle, url: String) -> Result<ScanReturn, String> {
 #[tauri::command]
 async fn serve_scan(app: AppHandle, cache_path: String) -> Result<String, String> {
     kill_old_scans(&app);
+    let _ = app.emit("terminal-output", "\x1b[1;35m$ trojan serve (loading cache…)\x1b[0m\r\n");
 
     let (rx, child) = app
         .shell()
@@ -178,7 +188,9 @@ async fn serve_scan(app: AppHandle, cache_path: String) -> Result<String, String
         .args(["serve", &cache_path, "--desktop"])
         .spawn()
         .map_err(|e| format!("spawn failed: {e}"))?;
-    let (url, _) = await_ready(rx).await?;
+    let result = await_ready(&app, rx).await;
+    let _ = app.emit("terminal-scan-done", ());
+    let (url, _) = result?;
     if let Ok(mut children) = app.state::<ActiveScans>().0.lock() {
         children.push(child);
     }
@@ -190,6 +202,7 @@ async fn serve_scan(app: AppHandle, cache_path: String) -> Result<String, String
 #[tauri::command]
 async fn scan_deps(app: AppHandle, path: String) -> Result<ScanReturn, String> {
     kill_old_scans(&app);
+    let _ = app.emit("terminal-output", format!("\x1b[1;35m$ trojan deps {}\x1b[0m\r\n", path));
 
     let (rx, child) = app
         .shell()
@@ -198,7 +211,9 @@ async fn scan_deps(app: AppHandle, path: String) -> Result<ScanReturn, String> {
         .args(["deps", &path, "--desktop"])
         .spawn()
         .map_err(|e| format!("spawn failed: {e}"))?;
-    let (url, cache_path) = await_ready(rx).await?;
+    let result = await_ready(&app, rx).await;
+    let _ = app.emit("terminal-scan-done", ());
+    let (url, cache_path) = result?;
     if let Ok(mut children) = app.state::<ActiveScans>().0.lock() {
         children.push(child);
     }

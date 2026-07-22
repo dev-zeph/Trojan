@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { load } from "@tauri-apps/plugin-store";
 import { createClient } from "@supabase/supabase-js";
+import { TerminalPanel } from "./TerminalPanel";
 import "./App.css";
 
 type NavView  = "overview" | "sast" | "dast" | "history" | "dependencies" | "threatlab" | "report";
@@ -463,6 +464,8 @@ export default function App() {
   const [labError, setLabError]           = useState<string | null>(null);
   const [showAuthForm, setShowAuthForm]   = useState(false);
   const [historyFilter, setHistoryFilter] = useState<"all" | "sast" | "dast">("all");
+  const [terminalOpen, setTerminalOpen]   = useState(true);
+  const [terminalHeight, setTerminalHeight] = useState(220);
 
   const DEP_PAGE_SIZE = 50;
   const iframeRef     = useRef<HTMLIFrameElement>(null);
@@ -869,6 +872,23 @@ export default function App() {
     />
   );
 
+  // ── Terminal resize handler ───────────────────────────────────────────
+  function handleTerminalResizeStart(e: React.MouseEvent) {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startH = terminalHeight;
+    const onMove = (ev: MouseEvent) => {
+      const delta = startY - ev.clientY;
+      setTerminalHeight(Math.max(120, Math.min(window.innerHeight * 0.65, startH + delta)));
+    };
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }
+
   // ── Main layout ───────────────────────────────────────────────────────
   return (
     <div className="app-layout">
@@ -948,7 +968,7 @@ export default function App() {
       </aside>
 
       {/* Right panel */}
-      <div className="app-content">
+      <div className="app-content" style={{ display: "flex", flexDirection: "column" }}>
 
         {/* Topbar */}
         <header className="topbar">
@@ -979,13 +999,23 @@ export default function App() {
                 {NAV.find((n) => n.view === view)?.label}
               </span>
               <div className="topbar-right">
+                <button
+                  className={`topbar-terminal-btn${terminalOpen ? " active" : ""}`}
+                  onClick={() => setTerminalOpen(o => !o)}
+                  title="Toggle terminal"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>
+                  </svg>
+                </button>
                 <div className="topbar-avatar" title={profile.name}>{initials(profile.name)}</div>
               </div>
             </>
           )}
         </header>
 
-        {/* Content */}
+        {/* Body — scrollable content above, terminal panel below */}
+        <div className="app-body">
         <main className={`content-area${view === "report" ? " content-area--report" : ""}`}>
 
           {/* ── Overview ── */}
@@ -1826,6 +1856,38 @@ export default function App() {
           )}
 
         </main>
+
+        {/* ── Terminal panel — VS Code-style resizable bottom panel ── */}
+        {terminalOpen && (
+          <>
+            <div className="terminal-resize-handle" onMouseDown={handleTerminalResizeStart} />
+            <div className="terminal-panel" style={{ height: terminalHeight }}>
+              <div className="terminal-header">
+                <div className="terminal-tabs">
+                  <span className="terminal-tab-item active">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: 5 }}>
+                      <polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>
+                    </svg>
+                    TERMINAL
+                  </span>
+                </div>
+                <div className="terminal-header-actions">
+                  <button className="terminal-action-btn" onClick={() => setTerminalOpen(false)} title="Close panel">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                  </button>
+                </div>
+              </div>
+              <TerminalPanel
+                height={terminalHeight - 32}
+                onScan={triggerSast}
+                onDast={triggerDast}
+                onDeps={triggerDeps}
+              />
+            </div>
+          </>
+        )}
+
+        </div>{/* end .app-body */}
       </div>
 
       {/* ── In-app auth modal ── */}

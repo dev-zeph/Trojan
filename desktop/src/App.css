@@ -473,6 +473,15 @@ html, body, #root { height: 100%; background: var(--bg); color: var(--fg); }
 /* ── App content (right panel) ───────────────────────────────────────────── */
 .app-content { flex: 1; display: flex; flex-direction: column; min-width: 0; height: 100%; overflow: hidden; }
 
+/* ── App body — splits into scrollable content + terminal panel ─────────── */
+.app-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;         /* critical: allows children to shrink */
+  overflow: hidden;
+}
+
 /* ── Topbar ───────────────────────────────────────────────────────────────── */
 .topbar {
   height: 48px; flex-shrink: 0;
@@ -498,7 +507,7 @@ html, body, #root { height: 100%; background: var(--bg); color: var(--fg); }
 }
 
 /* ── Content area ─────────────────────────────────────────────────────────── */
-.content-area { flex: 1; overflow-y: auto; background: var(--content-bg); }
+.content-area { flex: 1; min-height: 0; overflow-y: auto; background: var(--content-bg); }
 
 .content-inner {
   max-width: 900px; margin: 0 auto;
@@ -1662,4 +1671,111 @@ html, body, #root { height: 100%; background: var(--bg); color: var(--fg); }
 /* Compliance */
 .lab-compliance {
   font-size: 12.5px; color: oklch(0.35 0 0); line-height: 1.65; margin: 0;
+}
+
+/* ── Terminal panel ──────────────────────────────────────────────────────── */
+
+/* Drag handle between content and terminal */
+.terminal-resize-handle {
+  height: 4px;
+  flex-shrink: 0;
+  background: transparent;
+  border-top: 1px solid rgba(255,255,255,0.08);
+  cursor: ns-resize;
+  transition: background 0.15s;
+}
+.terminal-resize-handle:hover,
+.terminal-resize-handle:active {
+  background: rgba(167,139,250,0.35);
+}
+
+/* Panel container */
+.terminal-panel {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: #0a0a0a;
+  border-top: 1px solid rgba(255,255,255,0.07);
+  overflow: hidden;
+}
+
+/* VS Code-style header bar */
+.terminal-header {
+  height: 32px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px 0 8px;
+  background: #111111;
+  border-bottom: 1px solid rgba(255,255,255,0.07);
+}
+
+.terminal-tabs { display: flex; align-items: center; height: 100%; gap: 2px; }
+
+.terminal-tab-item {
+  display: flex;
+  align-items: center;
+  height: 100%;
+  padding: 0 14px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: rgba(255,255,255,0.45);
+  border-bottom: 2px solid transparent;
+  user-select: none;
+  cursor: default;
+}
+.terminal-tab-item.active {
+  color: rgba(255,255,255,0.90);
+  border-bottom-color: #a78bfa;
+}
+
+.terminal-header-actions { display: flex; align-items: center; gap: 4px; }
+
+.terminal-action-btn {
+  width: 22px; height: 22px;
+  display: flex; align-items: center; justify-content: center;
+  background: transparent;
+  border: none;
+  color: rgba(255,255,255,0.40);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+.terminal-action-btn:hover {
+  color: rgba(255,255,255,0.85);
+  background: rgba(255,255,255,0.08);
+}
+
+/* xterm.js mount point */
+.terminal-xterm {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  padding: 6px 8px;
+}
+/* xterm.js internal overrides */
+.terminal-xterm .xterm { height: 100%; }
+.terminal-xterm .xterm-viewport { border-radius: 0; }
+
+/* Topbar terminal toggle button */
+.topbar-terminal-btn {
+  width: 28px; height: 28px;
+  display: flex; align-items: center; justify-content: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: var(--muted-fg);
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+.topbar-terminal-btn:hover {
+  color: var(--fg);
+  background: var(--muted);
+}
+.topbar-terminal-btn.active {
+  color: #a78bfa;
+  background: rgba(167,139,250,0.12);
+  border-color: rgba(167,139,250,0.30);
 }
