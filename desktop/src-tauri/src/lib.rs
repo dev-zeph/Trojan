@@ -213,6 +213,167 @@ async fn open_auth(app: AppHandle, url: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// Percent-decode a URL query-parameter value (handles %XX and + → space).
+fn url_decode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Ok(hi), Ok(lo)) = (
+                std::str::from_utf8(&bytes[i + 1..i + 2]),
+                std::str::from_utf8(&bytes[i + 2..i + 3]),
+            ) {
+                let hex = format!("{}{}", hi, lo);
+                if let Ok(byte) = u8::from_str_radix(&hex, 16) {
+                    out.push(byte as char);
+                    i += 3;
+                    continue;
+                }
+            }
+        } else if bytes[i] == b'+' {
+            out.push(' ');
+            i += 1;
+            continue;
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
+}
+
+/// Spin up a one-shot local HTTP server on a random port and return that port.
+///
+/// The desktop auth flow passes `http://127.0.0.1:<port>/callback` to the
+/// website as the redirect URI. When the browser hits that URL the server
+/// extracts token/name/email from the query string, emits an "auth-callback"
+/// Tauri event to the frontend, and sends a success page to the browser.
+///
+/// This approach works identically in `tauri dev` and production — no URL
+/// scheme registration is involved so the wrong app is never opened.
+#[tauri::command]
+async fn start_auth_callback(app: AppHandle) -> Result<u16, String> {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
+    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+
+    std::thread::spawn(move || {
+        // Wait for exactly one connection (the browser callback).
+        if let Ok((mut stream, _)) = listener.accept() {
+            let mut buf = vec![0u8; 32_768];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let request = String::from_utf8_lossy(&buf[..n]);
+
+            // Parse: "GET /callback?token=...&name=...&email=...&refresh_token=... HTTP/1.1"
+            let mut token         = String::new();
+            let mut name          = String::new();
+            let mut email         = String::new();
+            let mut refresh_token = String::new();
+
+            if let Some(first_line) = request.lines().next() {
+                let parts: Vec<&str> = first_line.split_whitespace().collect();
+                if let Some(path_query) = parts.get(1) {
+                    if let Some(query) = path_query.split('?').nth(1) {
+                        for pair in query.split('&') {
+                            let mut kv = pair.splitn(2, '=');
+                            let k = kv.next().unwrap_or("");
+                            let v = url_decode(kv.next().unwrap_or(""));
+                            match k {
+                                "token"         => token         = v,
+                                "name"          => name          = v,
+                                "email"         => email         = v,
+                                "refresh_token" => refresh_token = v,
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !token.is_empty() {
+                let _ = app.emit("auth-callback", serde_json::json!({
+                    "token":         token,
+                    "name":          name,
+                    "email":         email,
+                    "refresh_token": refresh_token,
+                }));
+            }
+
+            // Send a self-closing browser page.
+            let body = concat!(
+                "<!DOCTYPE html><html><head><title>Trojan</title>",
+                "<style>*{margin:0;padding:0;box-sizing:border-box}",
+                "body{display:flex;align-items:center;justify-content:center;",
+                "height:100vh;font-family:system-ui,sans-serif;",
+                "background:#0a0a0a;color:#fff;text-align:center}",
+                "h2{font-size:1.25rem;font-weight:600;margin-bottom:.5rem}",
+                "p{font-size:.875rem;color:#9ca3af}</style></head>",
+                "<body><div>",
+                "<h2>Signed in to Trojan ✓</h2>",
+                "<p>You can close this tab and return to the app.</p>",
+                "</div><script>setTimeout(()=>window.close(),1500)</script>",
+                "</body></html>"
+            );
+            let _ = stream.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .as_bytes(),
+            );
+        }
+        // Listener drops here — port is freed.
+    });
+
+    Ok(port)
+}
+
+/// Write the user's auth token to ~/.trojan/config.json so the Go sidecar
+/// (and the embedded React report UI it serves) recognises the session.
+///
+/// The Go server reads this file for every /api/auth/status call, so syncing
+/// here means the report iframe and all Pro feature gates work without the
+/// user having to log in a second time inside the scan report.
+///
+/// `expires_at` must be an RFC3339 string (e.g. "2025-05-20T15:32:16Z").
+/// `is_pro` is derived from the JWT subscription_status claim on the JS side.
+/// `refresh_token` is stored so the Go CLI can refresh the session independently.
+#[tauri::command]
+async fn sync_auth(
+    token: String,
+    email: String,
+    expires_at: String,
+    is_pro: bool,
+    refresh_token: String,
+) -> Result<(), String> {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map_err(|_| "cannot determine home directory".to_string())?;
+
+    let config_dir = std::path::Path::new(&home).join(".trojan");
+    std::fs::create_dir_all(&config_dir).map_err(|e| e.to_string())?;
+
+    // Mirror the exact JSON shape of config.TrojanConfig in Go so the server
+    // can unmarshal it without any changes.
+    let config = serde_json::json!({
+        "access_token":       token,
+        "refresh_token":      refresh_token,
+        "user_email":         email,
+        "expires_at":         expires_at,
+        "is_pro":             is_pro,
+        "license_checked_at": "0001-01-01T00:00:00Z"
+    });
+
+    let content = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
+    std::fs::write(config_dir.join("config.json"), content).map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -247,6 +408,8 @@ pub fn run() {
             scan_deps,
             open_auth,
             serve_scan,
+            sync_auth,
+            start_auth_callback,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
