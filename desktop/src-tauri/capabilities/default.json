@@ -12,10 +12,12 @@
     "dialog:allow-open",
     "store:allow-get",
     "store:allow-set",
+    "store:allow-delete",
     "store:allow-save",
     "store:allow-load",
     "store:allow-clear",
     "deep-link:default",
-    "opener:allow-open-url"
+    "opener:allow-open-url",
+    "core:webview:allow-print"
   ]
 }

@@ -14,6 +14,7 @@
     "build:tauri": "npm run tauri build"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.110.8",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2.7.2",
     "@tauri-apps/plugin-opener": "^2",
