@@ -5,14 +5,16 @@ import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { load } from "@tauri-apps/plugin-store";
 import { createClient } from "@supabase/supabase-js";
 import { TerminalPanel } from "./TerminalPanel";
+import { PrintCertificate } from "./PrintCertificate";
 import "./App.css";
 
-type NavView  = "overview" | "sast" | "dast" | "history" | "dependencies" | "threatlab" | "report";
+type NavView  = "overview" | "sast" | "dast" | "history" | "dependencies" | "threatlab" | "profile" | "report";
 type ScanType = "sast" | "dast";
 
 interface PackageAdvisory { id: string; severity: string; summary: string; fix_version?: string; }
 interface PkgInfo { name: string; version: string; ecosystem: string; direct: boolean; cve_count: number; highest_severity?: string; fix_version?: string; advisories?: PackageAdvisory[]; }
 interface Finding { id: string; title: string; severity: string; scanner: string; file?: string; line?: number; description?: string; }
+interface ScanSummary { critical: number; high: number; medium: number; low: number; info: number; total: number; scannedAt: string; }
 
 interface AttackVector { title: string; severity: string; description: string; findings_involved: string[]; exploitability: "easy" | "moderate" | "hard"; }
 interface PriorityFix  { rank: number; type: "code" | "package" | "config"; title: string; description: string; command?: string; file?: string; line?: number; finding_id?: string; }
@@ -28,7 +30,7 @@ interface ThreatLabResult {
 interface AuthStatus { loggedIn: boolean; isPro: boolean; plan: string; email?: string; }
 
 interface RecentProject { path: string; name: string; type: ScanType; scannedAt: string; reportUrl?: string; cachePath?: string; }
-interface UserProfile   { name: string; email: string; token?: string; refreshToken?: string; }
+interface UserProfile   { name: string; email: string; token?: string; refreshToken?: string; familiarity?: number; aboutYou?: string; avatarDataUrl?: string; }
 interface Toast {
   id: string;
   label: string;
@@ -42,6 +44,7 @@ interface Toast {
 
 const STORE_KEY      = "recent-projects";
 const PROFILE_KEY    = "user-profile";
+const TERMINAL_KEY   = "terminal-prefs";
 const SUPABASE_URL   = "https://dtmocojzvgsswjdsrmqr.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_U1qvJb7QebxgH5_0HCMYJQ_jKBybATQ";
 
@@ -120,6 +123,53 @@ async function deleteRecentEntry(path: string): Promise<RecentProject[]> {
     await s.save();
     return updated;
   } catch { return []; }
+}
+
+// Maps raw internal error strings (from Rust/Go/network) to user-friendly messages.
+// Applied at every error surface so neither persona sees developer-facing text.
+function friendlyError(raw: string): string {
+  const s = raw.toLowerCase();
+
+  // ── Sidecar / spawn ──────────────────────────────────────────────────────
+  if (s.includes("sidecar not found") || s.includes("sidecar"))
+    return "Could not start the scanner. Try reinstalling Trojan.";
+  if (s.includes("spawn failed") || s.includes("spawn"))
+    return "The scanner couldn't launch. Restart the app and try again.";
+
+  // ── Scan process exits ───────────────────────────────────────────────────
+  if (s.includes("no scanners installed") || s.includes("trojan init"))
+    return "Scanners aren't set up yet. Open a terminal and run: trojan init";
+  if (s.includes("process exited") || s.includes("scan failed"))
+    return "The scan stopped unexpectedly. Try running it again.";
+  if (s.includes("server failed to start") || s.includes("could not start"))
+    return "The scan report server failed to start. Restart the app and try again.";
+
+  // ── Network ──────────────────────────────────────────────────────────────
+  if (s.includes("failed to fetch") || s.includes("networkerror") || s.includes("network error"))
+    return "Network error. Check your internet connection and try again.";
+  if (s.includes("could not fetch scan data"))
+    return "Couldn't load the scan results. Try rescanning.";
+
+  // ── Auth / session ───────────────────────────────────────────────────────
+  if (s.includes("sign in to use") || s.includes("unauthorized"))
+    return "You need to sign in to use this feature.";
+  if (s.includes("pro subscription") || s.includes("403"))
+    return "This feature requires a Pro subscription.";
+
+  // ── AI service ───────────────────────────────────────────────────────────
+  if (s.includes("rate_limit_exceeded") || (s.includes("daily") && s.includes("limit")))
+    return "Daily analysis limit reached. Resets at midnight UTC.";
+  if (s.includes("ai service error") || s.includes("anthropic"))
+    return "The AI analysis service had a problem. Try again in a moment.";
+  if (s.includes("failed to parse ai") || s.includes("unexpected response"))
+    return "The AI returned an unexpected response. Try running the analysis again.";
+  if (s.includes("service misconfigured"))
+    return "The analysis service isn't configured correctly. Contact support.";
+  if (s.includes("timed out") || s.includes("timeout") || s.includes("aborted"))
+    return "The request timed out. Try again — large codebases can take longer.";
+
+  // ── Fallback — strip developer prefixes, keep the human part ────────────
+  return raw.replace(/^Error:\s*/i, "").replace(/^Scan failed:\s*/i, "").trim() || "Something went wrong. Try again.";
 }
 
 function timeAgo(iso: string) {
@@ -436,6 +486,10 @@ const NAV: { view: NavView; label: string; icon: React.ReactNode; pro?: boolean 
     view: "threatlab", label: "Threat Lab", pro: true,
     icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M10 2v7.53a2 2 0 0 1-.21.9L4.72 20.55a1 1 0 0 0 .9 1.45h12.76a1 1 0 0 0 .9-1.45l-5.07-10.12a2 2 0 0 1-.21-.9V2 M8.5 2h7 M7 16h10"/></svg>,
   },
+  {
+    view: "profile", label: "Profile",
+    icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>,
+  },
 ];
 
 // ── App ───────────────────────────────────────────────────────────────────
@@ -459,13 +513,16 @@ export default function App() {
   const [depDragOver, setDepDragOver]     = useState(false);
   const [currentServerUrl, setCurrentServerUrl] = useState<string | null>(null);
   const [authStatus, setAuthStatus]       = useState<AuthStatus | null>(null);
+  const [scanSummary, setScanSummary]         = useState<ScanSummary | null>(null);
   const [threatLabResult, setThreatLabResult] = useState<ThreatLabResult | null>(null);
   const [isLabRunning, setIsLabRunning]   = useState(false);
   const [labError, setLabError]           = useState<string | null>(null);
   const [showAuthForm, setShowAuthForm]   = useState(false);
   const [historyFilter, setHistoryFilter] = useState<"all" | "sast" | "dast">("all");
+  const [staleCaches, setStaleCaches]     = useState<Set<string>>(new Set());
   const [terminalOpen, setTerminalOpen]   = useState(true);
   const [terminalHeight, setTerminalHeight] = useState(220);
+  const [sessionExpired, setSessionExpired] = useState(false);
 
   const DEP_PAGE_SIZE = 50;
   const iframeRef     = useRef<HTMLIFrameElement>(null);
@@ -473,15 +530,48 @@ export default function App() {
   // dropHandlerRef always points to the current drop function so the stale
   // onDragDropEvent closure never holds onto an old reference.
   const dropHandlerRef = useRef<(path: string) => void>(() => {});
+  // profileRef gives closures (event listeners, async callbacks) always-current profile.
+  const profileRef = useRef<UserProfile | null>(null);
 
   const isScanning = toasts.some((t) => t.status === "scanning");
 
   // Keep viewRef in sync so the drag-drop callback can read current view without stale closure.
   useEffect(() => { viewRef.current = view; }, [view]);
+  useEffect(() => { profileRef.current = profile; }, [profile]);
+
+  // Persist terminal layout so it survives app restarts.
+  useEffect(() => {
+    getStore().then(s => s.set(TERMINAL_KEY, { open: terminalOpen, height: terminalHeight })).catch(() => {});
+  }, [terminalOpen, terminalHeight]);
+
+  // Validate cache paths whenever history changes. Any entry whose file no
+  // longer exists on disk is added to staleCaches and shown with a badge.
+  useEffect(() => {
+    const withCache = recent.filter(r => r.cachePath);
+    if (withCache.length === 0) { setStaleCaches(new Set()); return; }
+    Promise.all(
+      withCache.map(r =>
+        invoke<boolean>("check_cache_exists", { path: r.cachePath! })
+          .then(exists => ({ key: r.path, stale: !exists }))
+          .catch(() => ({ key: r.path, stale: true }))
+      )
+    ).then(results => {
+      setStaleCaches(new Set(results.filter(r => r.stale).map(r => r.key)));
+    });
+  }, [recent]);
 
   useEffect(() => {
     async function init() {
       const [p, r] = await Promise.all([loadProfile(), loadRecent()]);
+      // Restore terminal layout prefs from previous session
+      try {
+        const s = await getStore();
+        const prefs = await s.get<{ open: boolean; height: number }>(TERMINAL_KEY);
+        if (prefs) {
+          setTerminalOpen(prefs.open);
+          setTerminalHeight(prefs.height);
+        }
+      } catch {}
       setRecent(r);
 
       let activeProfile = p;
@@ -526,6 +616,75 @@ export default function App() {
     init();
   }, []);
 
+  // ── Token refresh ─────────────────────────────────────────────────
+  // Single source of truth for getting a valid access token before any
+  // Supabase API call. Always calls getSession() so the client can rotate
+  // the token silently. Falls back to explicit refreshSession() if needed.
+  // On success, syncs the refreshed token back to profile state + Go config.
+  // On failure, sets sessionExpired so the banner appears.
+  const getFreshToken = useCallback(async (): Promise<string | null> => {
+    const p = profileRef.current;
+    if (!p?.email) return null;
+
+    try {
+      const { data: s } = await supabase.auth.getSession();
+      if (s.session?.access_token) {
+        const tok = s.session.access_token;
+        const ref = s.session.refresh_token ?? p.refreshToken ?? "";
+        // Sync back if the token rotated
+        if (tok !== p.token) {
+          const updated = { ...p, token: tok, refreshToken: ref } as UserProfile;
+          setProfile(updated);
+          saveProfile(updated);
+          syncAuthToGoConfig(tok, p.email, ref);
+        }
+        setSessionExpired(false);
+        return tok;
+      }
+
+      // No live session — try explicit refresh with stored refresh token
+      if (p.refreshToken) {
+        const { data: r } = await supabase.auth.refreshSession({ refresh_token: p.refreshToken });
+        if (r.session?.access_token) {
+          const tok = r.session.access_token;
+          const ref = r.session.refresh_token ?? p.refreshToken;
+          const updated = { ...p, token: tok, refreshToken: ref } as UserProfile;
+          setProfile(updated);
+          saveProfile(updated);
+          syncAuthToGoConfig(tok, p.email, ref);
+          setSessionExpired(false);
+          return tok;
+        }
+      }
+    } catch {}
+
+    // Both paths failed — session is truly expired
+    setSessionExpired(true);
+    return null;
+  }, []);
+
+  // Listen for Supabase-managed token rotation (happens automatically every
+  // ~50 min). Keeps profile state and Go config in sync without any polling.
+  useEffect(() => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      const p = profileRef.current;
+      if (!p?.email) return;
+
+      if (event === "TOKEN_REFRESHED" && session) {
+        const tok = session.access_token;
+        const ref = session.refresh_token ?? p.refreshToken ?? "";
+        const updated = { ...p, token: tok, refreshToken: ref } as UserProfile;
+        setProfile(updated);
+        saveProfile(updated);
+        syncAuthToGoConfig(tok, p.email, ref);
+        setSessionExpired(false);
+      } else if (event === "SIGNED_OUT") {
+        setSessionExpired(true);
+      }
+    });
+    return () => subscription.unsubscribe();
+  }, []);
+
   // ── Auth callbacks ────────────────────────────────────────────────
   // Shared handler — called from both the local-HTTP-server path and the
   // deep-link fallback so the logic lives in one place.
@@ -543,6 +702,7 @@ export default function App() {
     await saveProfile(p);
     setProfile(p);
     setShowAuthForm(false); // close the in-app sign-in modal if it was open
+    setSessionExpired(false);
     await syncAuthToGoConfig(token, p.email, refreshToken);
     if (currentServerUrl) fetchAndCachePackages(currentServerUrl);
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -576,6 +736,15 @@ export default function App() {
     }).then((fn) => { unlisten = fn; });
     return () => unlisten?.();
   }, [handleAuthPayload]);
+
+  // Dismiss all scanning toasts when the user cancels mid-scan.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listen("scan-cancelled", () => {
+      setToasts((prev) => prev.filter((t) => t.status !== "scanning"));
+    }).then((fn) => { unlisten = fn; });
+    return () => unlisten?.();
+  }, []);
 
   useEffect(() => {
     const appWindow = getCurrentWebviewWindow();
@@ -634,7 +803,7 @@ export default function App() {
         await updateRecentCachePath(path, cachePath);
       })
       .catch((e) => {
-        setDepScanError(String(e));
+        setDepScanError(friendlyError(String(e)));
         setIsDepScanning(false);
       });
   }
@@ -658,6 +827,16 @@ export default function App() {
         setPkgExpanded(null);
         setAdvExpanded(new Set());
       }
+      // Capture finding counts for the printable certificate
+      if (Array.isArray(data.findings)) {
+        const f: Finding[] = data.findings;
+        const counts = { critical: 0, high: 0, medium: 0, low: 0, info: 0, total: f.length };
+        for (const finding of f) {
+          const sev = (finding.severity ?? (finding as Record<string, string>)["Severity"] ?? "info").toLowerCase();
+          if (sev in counts) (counts as Record<string, number>)[sev]++;
+        }
+        setScanSummary({ ...counts, scannedAt: new Date().toISOString() });
+      }
     } catch {}
   }
 
@@ -674,13 +853,7 @@ export default function App() {
       const findings: Finding[] = scanData.findings ?? [];
       const pkgs: PkgInfo[] = scanData.packages ?? [];
 
-      // Always prefer the freshest token — Supabase auto-refreshes the session
-      // stored in localStorage, which handles token rotation correctly.
-      let token = profile?.token;
-      try {
-        const { data: s } = await supabase.auth.getSession();
-        if (s.session?.access_token) token = s.session.access_token;
-      } catch {}
+      const token = await getFreshToken();
       if (!token) throw new Error("Sign in to use Threat Lab");
 
       const res = await fetch(`${SUPABASE_URL}/functions/v1/threat-lab`, {
@@ -693,6 +866,8 @@ export default function App() {
           project_path: scanData.project_path ?? "",
           findings,
           packages: pkgs,
+          user_familiarity: profile?.familiarity ?? 1,
+          about_you: profile?.aboutYou ?? "",
         }),
       });
 
@@ -706,7 +881,7 @@ export default function App() {
       const result = await res.json() as ThreatLabResult;
       setThreatLabResult(result);
     } catch (e) {
-      setLabError(String(e));
+      setLabError(friendlyError(String(e)));
     } finally {
       setIsLabRunning(false);
     }
@@ -776,7 +951,7 @@ export default function App() {
         // for the user to click the toast button.
         openReport(url, path, "sast");
       })
-      .catch((e) => updateToastError(id, String(e)));
+      .catch((e) => { if (!String(e).includes("__cancelled__")) updateToastError(id, friendlyError(String(e))); });
   }
 
   function triggerDast(url: string): void {
@@ -796,7 +971,7 @@ export default function App() {
         // Auto-navigate to report view.
         openReport(rUrl, url, "dast");
       })
-      .catch((e) => updateToastError(id, String(e)));
+      .catch((e) => { if (!String(e).includes("__cancelled__")) updateToastError(id, friendlyError(String(e))); });
   }
 
   function openReport(url: string, path: string, type: ScanType): void {
@@ -807,6 +982,11 @@ export default function App() {
   }
 
   function openRecent(r: RecentProject): void {
+    if (r.cachePath && staleCaches.has(r.path)) {
+      // Cache file was deleted — re-run the scan instead of trying to serve it
+      r.type === "sast" ? triggerSast(r.path) : triggerDast(r.path);
+      return;
+    }
     if (r.cachePath) {
       // Re-serve cached findings — starts a fresh server, no zombie processes
       const id = crypto.randomUUID();
@@ -818,7 +998,7 @@ export default function App() {
           dismissToast(id);
           fetchAndCachePackages(url);
         })
-        .catch((e) => updateToastError(id, String(e)));
+        .catch((e) => { if (!String(e).includes("__cancelled__")) updateToastError(id, friendlyError(String(e))); });
     } else if (!isScanning) {
       r.type === "sast" ? triggerSast(r.path) : triggerDast(r.path);
     }
@@ -834,6 +1014,18 @@ export default function App() {
       setScanPath("");
       setView("overview");
     }
+  }
+
+  async function clearAllRecent() {
+    try {
+      const s = await getStore();
+      await s.set(STORE_KEY, []);
+      await s.save();
+    } catch {}
+    setRecent([]);
+    setReportUrl("");
+    setScanPath("");
+    if (view === "report") setView("overview");
   }
 
   async function logout() {
@@ -895,13 +1087,6 @@ export default function App() {
 
       {/* Sidebar */}
       <aside className="sidebar">
-        {/* macOS traffic lights */}
-        <div className="sidebar-traffic">
-          <span className="tl-dot tl-red" />
-          <span className="tl-dot tl-amber" />
-          <span className="tl-dot tl-green" />
-        </div>
-
         {/* Logo + wordmark + version */}
         <div className="sidebar-logo-wrap">
           <img src="/logo.png" alt="Trojan" className="sidebar-logo" />
@@ -944,6 +1129,20 @@ export default function App() {
             </>
           )}
         </nav>
+
+        {/* Terminal toggle — pinned above user section like VS Code's panel button */}
+        <div className="sidebar-bottom-actions">
+          <button
+            className={`sidebar-terminal-btn${terminalOpen ? " active" : ""}`}
+            onClick={() => setTerminalOpen(o => !o)}
+            title={terminalOpen ? "Hide terminal" : "Show terminal"}
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>
+            </svg>
+            <span>Terminal</span>
+          </button>
+        </div>
 
         <div className="sidebar-user">
           <div className="sidebar-avatar">{initials(profile.name)}</div>
@@ -1014,6 +1213,20 @@ export default function App() {
           )}
         </header>
 
+        {/* Session-expired banner — shown when refresh fails */}
+        {sessionExpired && (
+          <div className="session-expired-banner">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+            <span>Your session has expired.</span>
+            <button className="session-expired-btn" onClick={() => { setShowAuthForm(true); setSessionExpired(false); }}>
+              Sign in again →
+            </button>
+            <button className="session-expired-dismiss" onClick={() => setSessionExpired(false)} title="Dismiss">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+        )}
+
         {/* Body — scrollable content above, terminal panel below */}
         <div className="app-body">
         <main className={`content-area${view === "report" ? " content-area--report" : ""}`}>
@@ -1034,6 +1247,24 @@ export default function App() {
             const now = new Date();
             const dateStr = now.toLocaleDateString("en-US", { weekday:"short", month:"short", day:"numeric", hour:"2-digit", minute:"2-digit" });
             const workspace = profile.email ? profile.email.split("@")[1]?.replace(/\.(com|io|dev|net|org)$/, "") ?? profile.name : profile.name;
+
+            // ── First-run empty state ──────────────────────────────────────
+            if (recent.length === 0 && !isScanning) {
+              return (
+                <div className="first-run-empty">
+                  <div className="first-run-logo-wrap">
+                    <img src="/logo.png" alt="Trojan" className="first-run-logo" />
+                  </div>
+                  <h2 className="first-run-title">Secure your codebase</h2>
+                  <p className="first-run-desc">
+                    Trojan scans your project for vulnerabilities, exposed secrets, and dependency risks — all locally, nothing leaves your machine.
+                  </p>
+                  <button className="first-run-cta" onClick={handlePickFolder}>
+                    Scan a project
+                  </button>
+                </div>
+              );
+            }
 
             return (
               <div className="overview-page">
@@ -1193,7 +1424,7 @@ export default function App() {
                           <span className={`activity-badge ${r.type === "sast" ? "activity-badge-sast" : "activity-badge-dast"}`}>
                             {(r.type ?? "sast").toUpperCase()}
                           </span>
-                          <span className="activity-cta">{r.cachePath ? "View →" : "Scan →"}</span>
+                          <span className="activity-cta">{r.cachePath && !staleCaches.has(r.path) ? "View →" : "Scan →"}</span>
                           <button
                             className="recent-delete-btn"
                             style={{ position: "static", transform: "none" }}
@@ -1272,7 +1503,8 @@ export default function App() {
                     {recent.filter(r => r.type === "sast")[0] ? (
                       <>
                         <span className="scanner-last-name">{recent.filter(r => r.type === "sast")[0].name} · {timeAgo(recent.filter(r => r.type === "sast")[0].scannedAt)}</span>
-                        {recent.filter(r => r.type === "sast")[0].cachePath && (
+                        {recent.filter(r => r.type === "sast")[0].cachePath &&
+                         !staleCaches.has(recent.filter(r => r.type === "sast")[0].path) && (
                           <button className="scanner-last-link" onClick={() => openRecent(recent.filter(r => r.type === "sast")[0])}>
                             view report →
                           </button>
@@ -1394,16 +1626,23 @@ export default function App() {
                       : "No scans yet."}
                   </p>
                 </div>
-                <div className="history-filter-tabs">
-                  {(["all", "sast", "dast"] as const).map(f => (
-                    <button
-                      key={f}
-                      className={`history-filter-tab ${historyFilter === f ? "active" : ""}`}
-                      onClick={() => setHistoryFilter(f)}
-                    >
-                      {f.toUpperCase()}
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  {recent.length > 0 && (
+                    <button className="history-clear-all-btn" onClick={clearAllRecent}>
+                      Clear all
                     </button>
-                  ))}
+                  )}
+                  <div className="history-filter-tabs">
+                    {(["all", "sast", "dast"] as const).map(f => (
+                      <button
+                        key={f}
+                        className={`history-filter-tab ${historyFilter === f ? "active" : ""}`}
+                        onClick={() => setHistoryFilter(f)}
+                      >
+                        {f.toUpperCase()}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
 
@@ -1415,32 +1654,37 @@ export default function App() {
                   </div>
                 ) : (
                   <ul className="history-list">
-                    {filteredRecent.map((r) => (
-                      <li key={r.path} className="history-item-wrap">
-                        <button className="history-item" onClick={() => openRecent(r)}>
-                          <span className={`history-type-badge ${r.type === "sast" ? "activity-badge-sast" : "activity-badge-dast"}`}>
-                            {(r.type ?? "sast").toUpperCase()}
-                          </span>
-                          <span className="recent-left" style={{ flex: 1 }}>
-                            <div style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
-                              <span className="recent-name">{r.name}</span>
-                              <span className="recent-path">{r.path}</span>
-                            </div>
-                          </span>
-                          {r.cachePath
-                            ? <span className="history-status-badge history-status-cached">CACHED</span>
-                            : <span style={{ width: 60 }} />}
-                          <span className="recent-time" style={{ width: 80, textAlign: "right" }}>{timeAgo(r.scannedAt)}</span>
-                        </button>
-                        <button
-                          className="recent-delete-btn history-delete-btn"
-                          onClick={() => deleteRecent(r.path)}
-                          title="Delete this scan"
-                        >
-                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                        </button>
-                      </li>
-                    ))}
+                    {filteredRecent.map((r) => {
+                      const isStale = r.cachePath ? staleCaches.has(r.path) : false;
+                      return (
+                        <li key={r.path} className={`history-item-wrap${isStale ? " history-item-stale" : ""}`}>
+                          <button className="history-item" onClick={() => openRecent(r)} title={isStale ? "Cache removed — click to re-scan" : undefined}>
+                            <span className={`history-type-badge ${r.type === "sast" ? "activity-badge-sast" : "activity-badge-dast"}`}>
+                              {(r.type ?? "sast").toUpperCase()}
+                            </span>
+                            <span className="recent-left" style={{ flex: 1 }}>
+                              <div style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
+                                <span className="recent-name">{r.name}</span>
+                                <span className="recent-path">{r.path}</span>
+                              </div>
+                            </span>
+                            {isStale
+                              ? <span className="history-status-badge history-status-stale">CACHE REMOVED</span>
+                              : r.cachePath
+                              ? <span className="history-status-badge history-status-cached">CACHED</span>
+                              : <span style={{ width: 60 }} />}
+                            <span className="recent-time" style={{ width: 80, textAlign: "right" }}>{timeAgo(r.scannedAt)}</span>
+                          </button>
+                          <button
+                            className="recent-delete-btn history-delete-btn"
+                            onClick={() => deleteRecent(r.path)}
+                            title="Delete this scan"
+                          >
+                            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                          </button>
+                        </li>
+                      );
+                    })}
                   </ul>
                 );
               })()}
@@ -1843,6 +2087,178 @@ export default function App() {
             );
           })()}
 
+          {/* ── Profile ── */}
+          {view === "profile" && (() => {
+            const fams = [
+              { name: "Non-technical founder", desc: "Plain language, no jargon — what each risk means for your business and customers." },
+              { name: "Junior developer",      desc: "Balanced detail, with security concepts explained as they come up." },
+              { name: "Experienced developer", desc: "Full technical detail, security jargon, code-level." },
+            ];
+            const fam = profile.familiarity ?? 1;
+            const famPct = ["0%", "50%", "100%"][fam];
+
+            function updateProfile(patch: Partial<UserProfile>) {
+              const updated = { ...profile, ...patch } as UserProfile;
+              setProfile(updated);
+              saveProfile(updated);
+            }
+
+            function handleAvatarFile(file: File) {
+              if (!file.type.startsWith("image/")) return;
+              const reader = new FileReader();
+              reader.onload = e => {
+                const dataUrl = e.target?.result as string;
+                if (dataUrl) updateProfile({ avatarDataUrl: dataUrl });
+              };
+              reader.readAsDataURL(file);
+            }
+
+            const CM = () => (
+              <>
+                <i className="corner-mark cm-tl">+</i>
+                <i className="corner-mark cm-tr">+</i>
+                <i className="corner-mark cm-bl">+</i>
+                <i className="corner-mark cm-br">+</i>
+              </>
+            );
+
+            return (
+              <div className="profile-page">
+                <div className="profile-inner">
+
+                  {/* ── Header: avatar + name + subtitle ── */}
+                  <div className="profile-header-row">
+
+                    {/* Drag-drop avatar */}
+                    <label
+                      className="profile-avatar-wrap"
+                      onDragOver={e => { e.preventDefault(); e.currentTarget.classList.add("drag-over"); }}
+                      onDragLeave={e => e.currentTarget.classList.remove("drag-over")}
+                      onDrop={e => {
+                        e.preventDefault();
+                        e.currentTarget.classList.remove("drag-over");
+                        const file = e.dataTransfer.files[0];
+                        if (file) handleAvatarFile(file);
+                      }}
+                      title="Click or drag an image to set your photo"
+                    >
+                      {profile.avatarDataUrl
+                        ? <img src={profile.avatarDataUrl} alt="avatar" className="profile-avatar-img" />
+                        : <span className="profile-avatar-initials">{initials(profile.name)}</span>
+                      }
+                      <span className="profile-avatar-overlay">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+                        </svg>
+                      </span>
+                      <input type="file" accept="image/*" className="profile-avatar-input" onChange={e => { const f = e.target.files?.[0]; if (f) handleAvatarFile(f); }} />
+                    </label>
+
+                    <div className="profile-header-text">
+                      <div className="profile-name-display">{profile.name || "Your name"}</div>
+                      <div className="profile-subtitle">Trojan uses your details to understand your background and tailor all reports, explanations, and AI analysis accordingly.</div>
+                    </div>
+                  </div>
+
+                  {/* ── Identity card ── */}
+                  <div className="profile-card">
+                    <CM />
+                    <label className="profile-field">
+                      <span className="profile-mono-label">DISPLAY NAME</span>
+                      <input
+                        className="profile-input"
+                        type="text"
+                        value={profile.name}
+                        placeholder="Your name"
+                        onChange={e => updateProfile({ name: e.target.value })}
+                      />
+                    </label>
+                    {profile.email && (
+                      <label className="profile-field">
+                        <span className="profile-mono-label">EMAIL</span>
+                        <input className="profile-input profile-input--readonly" type="email" value={profile.email} readOnly />
+                      </label>
+                    )}
+                  </div>
+
+                  {/* ── Your context ── */}
+                  <div className="profile-section-group">
+                    <span className="profile-mono-label">YOUR CONTEXT</span>
+                    <div className="profile-card">
+                      <CM />
+                      <span className="profile-field-title">Tell us a bit more about you</span>
+                      <textarea
+                        className="profile-textarea profile-textarea--tall"
+                        value={profile.aboutYou ?? ""}
+                        placeholder={"Describe your priorities, risk tolerance, and the kind of summaries you find useful. For example:\n\n• I work on products in a regulated industry (healthcare), so compliance and data privacy are top concerns.\n• I prefer short, prioritized action lists — not exhaustive reports.\n• I care most about risks that affect end users or could cause a breach.\n• I'm comfortable with technical terms but need context on security-specific concepts."}
+                        onChange={e => updateProfile({ aboutYou: e.target.value })}
+                      />
+                      <span className="profile-hint">This context is used across all Trojan AI features — findings explanations, Threat Lab reports, remediation advice, and more.</span>
+                    </div>
+                  </div>
+
+                  {/* ── Security familiarity ── */}
+                  <div className="profile-section-group">
+                    <span className="profile-mono-label">SECURITY FAMILIARITY</span>
+                    <div className="profile-card">
+                      <CM />
+                      <span className="profile-fam-intro">Sets the technical depth of all explanations, combined with your context above.</span>
+
+                      <div className="profile-fam-slider-wrap">
+                        <div className="profile-fam-track-wrap">
+                          <div className="profile-fam-track-bg" />
+                          <div className="profile-fam-track-fill" style={{ width: famPct }} />
+                          {[0, 1, 2].map(i => (
+                            <div
+                              key={i}
+                              className="profile-fam-dot-hit"
+                              style={{ left: i === 0 ? "0%" : i === 1 ? "50%" : "100%" }}
+                              onClick={() => updateProfile({ familiarity: i })}
+                            >
+                              <span
+                                className="profile-fam-dot"
+                                style={{
+                                  width:      i === fam ? 16 : 12,
+                                  height:     i === fam ? 16 : 12,
+                                  background: i <= fam ? "#7c3aed" : "#c9c9cf",
+                                  boxShadow:  i === fam ? "0 0 0 4px rgba(124,58,237,0.16)" : "none",
+                                }}
+                              />
+                            </div>
+                          ))}
+                        </div>
+                        <div className="profile-fam-labels">
+                          {["Non-technical founder", "Junior developer", "Experienced developer"].map((lbl, i) => (
+                            <span
+                              key={i}
+                              className="profile-fam-label"
+                              style={{
+                                color:      i === fam ? "#6d28d9" : "oklch(0.5 0 0)",
+                                fontWeight: i === fam ? 600 : 400,
+                                textAlign:  i === 0 ? "left" : i === 1 ? "center" : "right",
+                                cursor: "pointer",
+                              }}
+                              onClick={() => updateProfile({ familiarity: i })}
+                            >
+                              {lbl}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="profile-fam-badge">
+                        <span className="profile-fam-badge-name">{fams[fam].name}</span>
+                        <span className="profile-fam-badge-desc">{fams[fam].desc}</span>
+                      </div>
+                    </div>
+                    <span className="profile-autosave-note">Changes are saved automatically.</span>
+                  </div>
+
+                </div>
+              </div>
+            );
+          })()}
+
           {/* ── Scan report iframe ── */}
           {/* Always mounted when reportUrl is set so switching tabs doesn't trigger a reload */}
           {reportUrl && (
@@ -1943,6 +2359,15 @@ export default function App() {
                   </button>
                 )}
               </div>
+              {t.status === "scanning" && (
+                <button
+                  className="toast-cancel-btn"
+                  onClick={() => invoke("cancel_scan")}
+                  title="Cancel scan"
+                >
+                  Cancel
+                </button>
+              )}
               {t.status !== "scanning" && (
                 <button className="toast-dismiss" onClick={() => dismissToast(t.id)} title="Dismiss">
                   <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -1952,6 +2377,14 @@ export default function App() {
           ))}
         </div>
       )}
+
+      {/* PrintCertificate renders via portal directly into document.body */}
+      <PrintCertificate
+        projectPath={scanPath}
+        scanSummary={scanSummary}
+        threatLabResult={threatLabResult}
+        packages={packages}
+      />
 
     </div>
   );

@@ -10,6 +10,10 @@ use std::sync::Mutex;
 /// keep serving the report after `start_scan` / `start_dast` return.
 struct ActiveScans(Mutex<Vec<CommandChild>>);
 
+/// Set to true when the user explicitly cancels a scan so `await_ready` can
+/// distinguish a user cancellation from a genuine scanner crash.
+struct CancelFlag(Mutex<bool>);
+
 /// Strip ANSI escape sequences from a string.
 fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -87,6 +91,16 @@ async fn await_ready(app: &AppHandle, mut rx: Receiver<CommandEvent>) -> Result<
                 }
             }
             CommandEvent::Terminated(status) => {
+                // Check if this was a user-requested cancellation.
+                // Clear the flag atomically so the next scan starts clean.
+                let was_cancelled = app.state::<CancelFlag>()
+                    .0.lock()
+                    .map(|mut f| { let v = *f; *f = false; v })
+                    .unwrap_or(false);
+                if was_cancelled {
+                    return Err("__cancelled__".to_string());
+                }
+
                 let detail = if !last_stderr.is_empty() {
                     last_stderr.join(" · ")
                 } else if last_stdout.iter().any(|l| l.contains("No scanners")) {
@@ -122,6 +136,13 @@ async fn pick_folder(app: AppHandle) -> Option<String> {
         .map(|p| p.to_string())
 }
 
+/// Check whether a cache file path exists on disk.
+/// Used by the frontend to mark stale history entries before showing them.
+#[tauri::command]
+fn check_cache_exists(path: String) -> bool {
+    std::path::Path::new(&path).exists()
+}
+
 /// Kill all previously tracked scan children, freeing their HTTP server ports.
 fn kill_old_scans(app: &AppHandle) {
     if let Ok(mut children) = app.state::<ActiveScans>().0.lock() {
@@ -129,6 +150,20 @@ fn kill_old_scans(app: &AppHandle) {
             let _ = child.kill();
         }
     }
+}
+
+/// Cancel any running scan: set the cancel flag so `await_ready` knows this
+/// is intentional, kill the sidecar child, and emit events so the frontend
+/// can clean up the toast and terminal.
+#[tauri::command]
+async fn cancel_scan(app: AppHandle) -> Result<(), String> {
+    if let Ok(mut flag) = app.state::<CancelFlag>().0.lock() {
+        *flag = true;
+    }
+    kill_old_scans(&app);
+    let _ = app.emit("terminal-output", "\x1b[33m⚡ Scan cancelled by user.\x1b[0m\r\n");
+    let _ = app.emit("scan-cancelled", ());
+    Ok(())
 }
 
 /// Run all static scanners on a local path.
@@ -400,6 +435,8 @@ pub fn run() {
         .setup(|app| {
             // Store for keeping Go sidecar child processes alive.
             app.manage(ActiveScans(Mutex::new(Vec::new())));
+            // Flag set by cancel_scan so await_ready can detect intentional cancellation.
+            app.manage(CancelFlag(Mutex::new(false)));
 
             // On Windows/Linux, register the trojan:// scheme at runtime so
             // deep links work in dev mode too. On macOS the scheme is baked
@@ -418,9 +455,11 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             pick_folder,
+            check_cache_exists,
             start_scan,
             start_dast,
             scan_deps,
+            cancel_scan,
             open_auth,
             serve_scan,
             sync_auth,
