@@ -483,19 +483,33 @@ export default function App() {
 
       let activeProfile = p;
 
-      // If we have a stored refresh token, ask Supabase for a fresh access
-      // token so the session survives across app restarts (access tokens
-      // expire in 1 hour). On success, persist the new tokens.
-      if (p?.refreshToken) {
+      if (p?.email) {
+        // 1. Try getSession() first — Supabase's client manages rotation
+        //    automatically in localStorage, which survives Tauri restarts.
+        //    This avoids the 400 caused by reusing an already-rotated token.
         try {
-          const { data } = await supabase.auth.refreshSession({ refresh_token: p.refreshToken });
-          if (data.session) {
+          const { data: sessionData } = await supabase.auth.getSession();
+          if (sessionData.session) {
             activeProfile = {
               ...p,
-              token:        data.session.access_token,
-              refreshToken: data.session.refresh_token ?? p.refreshToken,
+              token:        sessionData.session.access_token,
+              refreshToken: sessionData.session.refresh_token ?? p?.refreshToken ?? "",
             };
             await saveProfile(activeProfile);
+          } else if (p?.refreshToken) {
+            // 2. No live session in localStorage (e.g. GitHub OAuth path that
+            //    bypassed the Supabase client) — try explicit refresh.
+            const { data: refreshData } = await supabase.auth.refreshSession({
+              refresh_token: p.refreshToken,
+            });
+            if (refreshData.session) {
+              activeProfile = {
+                ...p,
+                token:        refreshData.session.access_token,
+                refreshToken: refreshData.session.refresh_token ?? p.refreshToken,
+              };
+              await saveProfile(activeProfile);
+            }
           }
         } catch {}
       }
@@ -657,7 +671,13 @@ export default function App() {
       const findings: Finding[] = scanData.findings ?? [];
       const pkgs: PkgInfo[] = scanData.packages ?? [];
 
-      const token = profile?.token;
+      // Always prefer the freshest token — Supabase auto-refreshes the session
+      // stored in localStorage, which handles token rotation correctly.
+      let token = profile?.token;
+      try {
+        const { data: s } = await supabase.auth.getSession();
+        if (s.session?.access_token) token = s.session.access_token;
+      } catch {}
       if (!token) throw new Error("Sign in to use Threat Lab");
 
       const res = await fetch(`${SUPABASE_URL}/functions/v1/threat-lab`, {
