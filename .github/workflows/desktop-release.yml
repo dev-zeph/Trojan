@@ -26,6 +26,26 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      # Node must come before Go because embed.go embeds ui/dist and
+      # dast-ui/dist at compile time — both must exist before `go build` runs.
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            ui/package-lock.json
+            dast-ui/package-lock.json
+            desktop/package-lock.json
+
+      - name: Build embedded UI
+        run: cd ui && npm ci && npm run build
+
+      - name: Build embedded DAST UI
+        run: cd dast-ui && npm ci && npm run build && touch dist/.gitkeep
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -43,13 +63,6 @@ jobs:
             -o desktop/src-tauri/binaries/trojan-${{ matrix.target }} \
             ./cmd/trojan
           chmod +x desktop/src-tauri/binaries/trojan-${{ matrix.target }}
-
-      - name: Setup Node
-        uses: actions/setup-node@v5
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: desktop/package-lock.json
 
       - name: Install frontend dependencies
         working-directory: desktop
