@@ -1,0 +1,79 @@
+name: Desktop Release
+
+on:
+  push:
+    tags:
+      - 'desktop-v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14          # Apple Silicon (M1/M2/M3)
+            target: aarch64-apple-darwin
+            go-arch: arm64
+          - os: macos-13          # Intel x86_64
+            target: x86_64-apple-darwin
+            go-arch: amd64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build Go sidecar
+        run: |
+          VERSION="${{ github.ref_name }}"
+          VERSION="${VERSION#desktop-}"   # strip "desktop-" prefix → v0.1.0
+          mkdir -p desktop/src-tauri/binaries
+          GOOS=darwin GOARCH=${{ matrix.go-arch }} go build \
+            -ldflags="-X main.version=${VERSION}" \
+            -o desktop/src-tauri/binaries/trojan-${{ matrix.target }} \
+            ./cmd/trojan
+          chmod +x desktop/src-tauri/binaries/trojan-${{ matrix.target }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Setup Rust
+        run: |
+          rustup update stable
+          rustup target add ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri -> target
+
+      - name: Build Tauri app
+        working-directory: desktop
+        # Use "npm run tauri" (not "npm run build:tauri") to skip the
+        # prebuild:tauri hook — the Go sidecar is already built above.
+        run: npm run tauri build -- --target ${{ matrix.target }}
+
+      - name: Upload DMG to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: |
+            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg

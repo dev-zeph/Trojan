@@ -260,7 +260,7 @@ function AuthForm({
       // page entirely. The code exchange still happens via /auth/desktop-callback
       // on the website, which then bounces the token to our local TCP server.
       //
-      // DEV ONLY: http://127.0.0.1 redirect — see README for production cleanup.
+      // The TCP callback server (start_auth_callback) is the production auth approach.
       const { data, error } = await supabase.auth.signInWithOAuth({
         provider: "github",
         options: {
@@ -389,7 +389,7 @@ function Onboarding({ onDone }: { onDone: (p: UserProfile) => void }) {
         {/* Bottom metadata */}
         <div className="ob-left-bottom">
           <div className="ob-left-features">SAST · DAST · SECRETS · DEPENDENCIES · AI THREAT ANALYSIS</div>
-          <div className="ob-left-ver">v2.4.0 — darwin/arm64</div>
+          <div className="ob-left-ver">v0.1.0</div>
         </div>
       </div>
 
@@ -1091,7 +1091,7 @@ export default function App() {
         <div className="sidebar-logo-wrap">
           <img src="/logo.png" alt="Trojan" className="sidebar-logo" />
           <span className="sidebar-wordmark">TROJAN</span>
-          <span className="sidebar-version">v2.4</span>
+          <span className="sidebar-version">v0.1</span>
         </div>
 
         <nav className="sidebar-nav">

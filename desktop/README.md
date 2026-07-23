@@ -37,67 +37,19 @@ Auth tokens are written to `~/.trojan/config.json` (via the `sync_auth` Rust com
 
 ## Auth Flow
 
-### Production (packaged `.app`)
+### Auth flow (dev and production)
 
-1. User clicks **Sign in** in the app shell.
-2. `open_auth` opens `https://trojancli.com/login?redirect=trojan://auth/callback` in the system browser.
-3. After login the website redirects to `trojan://auth/callback?token=...&name=...&email=...`.
-4. macOS routes the deep link to the `.app`; Tauri emits a `deep-link-received` event.
-5. The React frontend calls `sync_auth` to write `~/.trojan/config.json`.
-
-### Development (`npm run tauri dev`)
-
-macOS does **not** register the `trojan://` scheme for the dev server — only the installed `.app` receives deep links. A local HTTP callback server is used instead:
+The TCP callback server is the production auth approach — it works identically in `tauri dev` and packaged `.app` builds. No deep-link scheme registration is required.
 
 1. User clicks **Sign in**.
-2. `start_auth_callback` (Rust) spins up a one-shot TCP listener on a random port → returns that port.
-3. `open_auth` opens `https://trojancli.com/login?redirect=http://127.0.0.1:<port>/callback`.
-4. The website detects `http://127.0.0.1` as a desktop redirect and activates the desktop auth flow.
+2. `start_auth_callback` (Rust) spins up a one-shot TCP listener on a random loopback port → returns that port.
+3. `open_auth` opens `https://trojancli.com/login?redirect=http://127.0.0.1:<port>/callback` in the system browser.
+4. The website recognises `http://127.0.0.1` as a desktop redirect and activates the desktop auth flow.
 5. After login the website routes to `/auth/desktop-callback?redirect=http://127.0.0.1:<port>/callback`, exchanges the OAuth code for a session, then redirects to `http://127.0.0.1:<port>/callback?token=...`.
-6. The TCP server catches the request, emits an `auth-callback` Tauri event, sends a self-closing success page to the browser.
+6. The TCP server catches the request, emits an `auth-callback` Tauri event, and sends a self-closing success page to the browser.
 7. The React frontend handles `auth-callback`, calls `sync_auth`, and marks the user as logged in.
 
-> **PRODUCTION CLEANUP REQUIRED** — see section below.
-
----
-
-## ⚠ Dev-Only Changes — Remove Before Shipping
-
-Two temporary changes were made to support the local HTTP callback approach during development. **Both must be reverted before production deployment:**
-
-### 1. `trojan-web/frontend/app/login/login-card.tsx` — `isDesktop` check
-
-**Current (dev):**
-```tsx
-const isDesktop = (
-  desktopRedirect?.startsWith("trojan://") ||
-  desktopRedirect?.startsWith("http://127.0.0.1")   // DEV ONLY
-) === true;
-```
-
-**Revert to (production):**
-```tsx
-const isDesktop = desktopRedirect?.startsWith("trojan://") === true;
-```
-
-**Why:** `http://127.0.0.1` redirects are only valid when the dev server is running locally. Accepting them in production would widen the open-redirect surface to any localhost address.
-
----
-
-### 2. `trojan-web/frontend/app/auth/desktop-callback/route.ts` — security guard
-
-**Current (dev):**
-```ts
-if (!redirect.startsWith('trojan://') && !redirect.startsWith('http://127.0.0.1')) {
-  // DEV ONLY — http://127.0.0.1 branch
-```
-
-**Revert to (production):**
-```ts
-if (!redirect.startsWith('trojan://')) {
-```
-
-**Why:** The `http://127.0.0.1` allowance is intentionally locked to loopback, but it still accepts an arbitrary port number. In production the deep-link scheme (`trojan://`) is sufficient and carries no open-redirect risk.
+The `trojan://` deep-link scheme is wired as a fallback (macOS Info.plist) but is not the primary path. Both `login-card.tsx` and `desktop-callback/route.ts` intentionally accept `http://127.0.0.1` — this is correct production behaviour, not a dev-only workaround.
 
 ---
 
