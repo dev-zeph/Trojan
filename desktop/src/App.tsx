@@ -832,7 +832,7 @@ export default function App() {
         const f: Finding[] = data.findings;
         const counts = { critical: 0, high: 0, medium: 0, low: 0, info: 0, total: f.length };
         for (const finding of f) {
-          const sev = (finding.severity ?? (finding as Record<string, string>)["Severity"] ?? "info").toLowerCase();
+          const sev = (finding.severity ?? (finding as unknown as Record<string, string>)["Severity"] ?? "info").toLowerCase();
           if (sev in counts) (counts as Record<string, number>)[sev]++;
         }
         setScanSummary({ ...counts, scannedAt: new Date().toISOString() });
