@@ -21,19 +21,23 @@ type PlatformAsset struct {
 
 // ScannerManifest describes everything needed to install one scanner.
 type ScannerManifest struct {
-	Name      string                   // human-readable name e.g. "Trivy"
-	Binary    string                   // installed binary filename e.g. "trivy"
-	Version   string                   // pinned version string
-	Platforms map[string]PlatformAsset // keyed by "darwin/amd64", "darwin/arm64", "linux/amd64", "linux/arm64"
+	Name       string                   // human-readable name e.g. "Trivy"
+	Binary     string                   // installed binary filename e.g. "trivy"
+	Version    string                   // pinned version string
+	GitHubRepo string                   // "owner/repo" for resolving latest version via GitHub releases API
+	TagPrefix  string                   // prefix in release tags, e.g. "v" for tags like "v0.70.0"
+	Platforms  map[string]PlatformAsset // keyed by "darwin/amd64", "darwin/arm64", "linux/amd64", "linux/arm64"
 }
 
 // Scanners is the pinned manifest for SAST/SCA scanners installed by `trojan init`.
 // To recompute SHA256 for any archive:   shasum -a 256 <file>   (macOS / Linux)
 var Scanners = []ScannerManifest{
 	{
-		Name:    "Trivy",
-		Binary:  "trivy",
-		Version: "0.70.0",
+		Name:       "Trivy",
+		Binary:     "trivy",
+		Version:    "0.70.0",
+		GitHubRepo: "aquasecurity/trivy",
+		TagPrefix:  "v",
 		Platforms: map[string]PlatformAsset{
 			"linux/amd64": {
 				URL:             "https://github.com/aquasecurity/trivy/releases/download/v0.70.0/trivy_0.70.0_Linux-64bit.tar.gz",
@@ -62,9 +66,11 @@ var Scanners = []ScannerManifest{
 		},
 	},
 	{
-		Name:    "Semgrep",
-		Binary:  "semgrep",
-		Version: "1.89.0",
+		Name:       "Semgrep",
+		Binary:     "semgrep",
+		Version:    "1.89.0",
+		GitHubRepo: "semgrep/semgrep",
+		TagPrefix:  "v",
 		// Semgrep does not ship standalone binaries — installed via pip into ~/.trojan/venv/.
 		// The same pip entry is used for all platforms.
 		Platforms: map[string]PlatformAsset{
@@ -75,9 +81,11 @@ var Scanners = []ScannerManifest{
 		},
 	},
 	{
-		Name:    "Gitleaks",
-		Binary:  "gitleaks",
-		Version: "8.30.1",
+		Name:       "Gitleaks",
+		Binary:     "gitleaks",
+		Version:    "8.30.1",
+		GitHubRepo: "gitleaks/gitleaks",
+		TagPrefix:  "v",
 		Platforms: map[string]PlatformAsset{
 			"linux/amd64": {
 				URL:             "https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz",
@@ -106,9 +114,11 @@ var Scanners = []ScannerManifest{
 		},
 	},
 	{
-		Name:    "Checkov",
-		Binary:  "checkov",
-		Version: "3.2.529",
+		Name:       "Checkov",
+		Binary:     "checkov",
+		Version:    "3.2.529",
+		GitHubRepo: "bridgecrewio/checkov",
+		TagPrefix:  "",
 		// No native darwin/arm64 build — uses darwin/amd64 via Rosetta on Apple Silicon.
 		Platforms: map[string]PlatformAsset{
 			"linux/amd64": {
@@ -139,9 +149,11 @@ var Scanners = []ScannerManifest{
 		},
 	},
 	{
-		Name:    "Syft",
-		Binary:  "syft",
-		Version: "1.44.0",
+		Name:       "Syft",
+		Binary:     "syft",
+		Version:    "1.44.0",
+		GitHubRepo: "anchore/syft",
+		TagPrefix:  "v",
 		Platforms: map[string]PlatformAsset{
 			"linux/amd64": {
 				URL:             "https://github.com/anchore/syft/releases/download/v1.44.0/syft_1.44.0_linux_amd64.tar.gz",
@@ -175,9 +187,11 @@ var Scanners = []ScannerManifest{
 // These are installed lazily by `trojan dast` rather than eagerly by `trojan init`.
 var DastScanners = []ScannerManifest{
 	{
-		Name:    "Nuclei",
-		Binary:  "nuclei",
-		Version: "3.8.0",
+		Name:       "Nuclei",
+		Binary:     "nuclei",
+		Version:    "3.8.0",
+		GitHubRepo: "projectdiscovery/nuclei",
+		TagPrefix:  "v",
 		Platforms: map[string]PlatformAsset{
 			"linux/amd64": {
 				URL:             "https://github.com/projectdiscovery/nuclei/releases/download/v3.8.0/nuclei_3.8.0_linux_amd64.zip",

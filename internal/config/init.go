@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"compress/gzip"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
+	"time"
 
 	"github.com/fatih/color"
 )
@@ -42,14 +45,130 @@ func ManagedBinaryPath(name string) string {
 	return ""
 }
 
-// EnsureScanners checks which scanners are missing and installs pinned versions.
+// resolveLatestVersion queries the GitHub releases API for the latest version of a scanner.
+// Returns the raw version string (tag with prefix stripped).
+func resolveLatestVersion(repo, tagPrefix string) (string, error) {
+	client := &http.Client{Timeout: 10 * time.Second}
+	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", repo)
+	resp, err := client.Get(url)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("GitHub API returned %d", resp.StatusCode)
+	}
+	var release struct {
+		TagName string `json:"tag_name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		return "", err
+	}
+	return strings.TrimPrefix(release.TagName, tagPrefix), nil
+}
+
+// downloadWithRetry attempts to download a scanner binary, retrying once on failure.
+func downloadWithRetry(asset PlatformAsset, dest string) error {
+	err := downloadScanner(asset, dest)
+	if err == nil {
+		clearQuarantine(dest)
+		return nil
+	}
+	// Retry once
+	fmt.Print("retrying... ")
+	err = downloadScanner(asset, dest)
+	if err == nil {
+		clearQuarantine(dest)
+	}
+	return err
+}
+
+// clearQuarantine removes the macOS quarantine extended attribute from a downloaded binary
+// so Gatekeeper does not block execution. No-op on non-macOS systems.
+func clearQuarantine(path string) {
+	if runtime.GOOS == "darwin" {
+		exec.Command("xattr", "-d", "com.apple.quarantine", path).Run()
+	}
+}
+
+// tryInstallLatest attempts to download the latest GitHub release of a scanner.
+// Returns true if installation succeeded.
+func tryInstallLatest(s ScannerManifest, pinnedAsset PlatformAsset, dest string) bool {
+	latestVersion, err := resolveLatestVersion(s.GitHubRepo, s.TagPrefix)
+	if err != nil || latestVersion == s.Version {
+		return false
+	}
+
+	latestURL := strings.ReplaceAll(pinnedAsset.URL, s.Version, latestVersion)
+	latestAsset := PlatformAsset{
+		URL:             latestURL,
+		SHA256:          "", // cannot verify checksum for dynamically resolved versions
+		Archive:         pinnedAsset.Archive,
+		BinaryInArchive: pinnedAsset.BinaryInArchive,
+	}
+
+	fmt.Printf("  Installing %s v%s (latest)... ", s.Name, latestVersion)
+	if err := downloadWithRetry(latestAsset, dest); err != nil {
+		color.Yellow("failed\n")
+		return false
+	}
+	color.Green("done\n")
+	return true
+}
+
+// installPipDefensive installs a pip-based scanner with multiple fallback strategies:
+//  1. Try latest version via pip (if python3 is available)
+//  2. Fall back to pinned version via pip
+//  3. Fall back to Homebrew (if available)
+func installPipDefensive(s ScannerManifest, asset PlatformAsset, binDir string) error {
+	name := strings.SplitN(asset.PipPackage, "==", 2)[0]
+
+	hasPython := exec.Command("python3", "--version").Run() == nil
+
+	if hasPython {
+		// Try latest version first
+		if s.GitHubRepo != "" {
+			if latestVersion, err := resolveLatestVersion(s.GitHubRepo, s.TagPrefix); err == nil && latestVersion != s.Version {
+				latestPkg := name + "==" + latestVersion
+				if err := installViaPip(latestPkg, binDir); err == nil {
+					return nil
+				}
+			}
+		}
+		// Fall back to pinned version
+		if err := installViaPip(asset.PipPackage, binDir); err == nil {
+			return nil
+		}
+	}
+
+	// Fallback: try Homebrew
+	if _, err := exec.LookPath("brew"); err == nil {
+		fmt.Print("(trying brew) ")
+		if err := runCaptured("brew", "install", "--quiet", name); err == nil {
+			if p, err := exec.LookPath(name); err == nil {
+				dest := filepath.Join(binDir, name)
+				os.Remove(dest)
+				return os.Symlink(p, dest)
+			}
+		}
+	}
+
+	if !hasPython {
+		return fmt.Errorf("python3 not found — install with: xcode-select --install")
+	}
+	return fmt.Errorf("pip install failed — try manually: pip3 install %s", asset.PipPackage)
+}
+
+// EnsureScanners checks which scanners are missing and installs them.
+// For each missing scanner it tries the latest GitHub release first, then
+// falls back to the pinned version. Downloads are retried once on failure.
 func EnsureScanners() error {
 	binDir, err := TrojanBinDir()
 	if err != nil {
 		return err
 	}
 
-	platform := runtime.GOOS + "/" + runtime.GOARCH // e.g. "darwin/arm64"
+	platform := runtime.GOOS + "/" + runtime.GOARCH
 
 	missing := []ScannerManifest{}
 	for _, s := range Scanners {
@@ -72,23 +191,35 @@ func EnsureScanners() error {
 			continue
 		}
 
-		fmt.Printf("  Installing %s v%s... ", s.Name, s.Version)
+		dest := filepath.Join(binDir, s.Binary)
 
+		// ── pip-based scanners (e.g. Semgrep) ─────────────────────
 		if asset.Archive == ArchivePip {
-			if err := installViaPip(asset.PipPackage, binDir); err != nil {
+			fmt.Printf("  Installing %s... ", s.Name)
+			if err := installPipDefensive(s, asset, binDir); err != nil {
 				color.Red("failed\n")
 				fmt.Printf("    Error: %v\n", err)
-				continue
+			} else {
+				color.Green("done\n")
 			}
-		} else {
-			dest := filepath.Join(binDir, s.Binary)
-			if err := downloadScanner(asset, dest); err != nil {
-				color.Red("failed\n")
-				fmt.Printf("    Error: %v\n", err)
+			continue
+		}
+
+		// ── binary scanners ───────────────────────────────────────
+		// Try latest version from GitHub first
+		if s.GitHubRepo != "" {
+			if tryInstallLatest(s, asset, dest) {
 				continue
 			}
 		}
 
+		// Fall back to pinned version with retry
+		fmt.Printf("  Installing %s v%s... ", s.Name, s.Version)
+		if err := downloadWithRetry(asset, dest); err != nil {
+			color.Red("failed\n")
+			fmt.Printf("    Error: %v\n", err)
+			continue
+		}
 		color.Green("done\n")
 	}
 
@@ -284,6 +415,7 @@ func extractZip(archivePath, binaryName, dest string) error {
 
 // EnsureDastScanners installs any missing DAST scanners (e.g. Nuclei).
 // Called lazily by `trojan dast` on first run rather than by `trojan init`.
+// Uses the same latest-first + retry strategy as EnsureScanners.
 func EnsureDastScanners() error {
 	binDir, err := TrojanBinDir()
 	if err != nil {
@@ -313,9 +445,18 @@ func EnsureDastScanners() error {
 			continue
 		}
 
-		fmt.Printf("  Installing %s v%s... ", s.Name, s.Version)
 		dest := filepath.Join(binDir, s.Binary)
-		if err := downloadScanner(asset, dest); err != nil {
+
+		// Try latest version from GitHub first
+		if s.GitHubRepo != "" {
+			if tryInstallLatest(s, asset, dest) {
+				continue
+			}
+		}
+
+		// Fall back to pinned version with retry
+		fmt.Printf("  Installing %s v%s... ", s.Name, s.Version)
+		if err := downloadWithRetry(asset, dest); err != nil {
 			color.Red("failed\n")
 			fmt.Printf("    Error: %v\n", err)
 			continue

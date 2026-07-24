@@ -506,6 +506,45 @@ fn check_mcp_status() -> serde_json::Value {
     serde_json::Value::Object(status)
 }
 
+/// Run `trojan init` to install all missing scanner binaries.
+/// Streams output to the terminal panel so the user sees live progress.
+/// Called automatically on first scan or explicitly from the UI.
+#[tauri::command]
+async fn setup_scanners(app: AppHandle) -> Result<String, String> {
+    let _ = app.emit("terminal-output", "\x1b[1;35m$ trojan init\x1b[0m\r\n");
+
+    let (mut rx, _child) = app
+        .shell()
+        .sidecar("trojan")
+        .map_err(|e| format!("sidecar not found: {e}"))?
+        .args(["init", "."])
+        .spawn()
+        .map_err(|e| format!("spawn failed: {e}"))?;
+
+    let mut output = String::new();
+    while let Some(event) = rx.recv().await {
+        use tauri_plugin_shell::process::CommandEvent;
+        match event {
+            CommandEvent::Stdout(line) => {
+                let text = String::from_utf8_lossy(&line);
+                let terminal_chunk = text.trim_end_matches('\n').replace('\n', "\r\n");
+                if !terminal_chunk.is_empty() {
+                    let _ = app.emit("terminal-output", format!("{}\r\n", terminal_chunk));
+                }
+                output.push_str(&text);
+            }
+            CommandEvent::Stderr(line) => {
+                let text = String::from_utf8_lossy(&line);
+                let _ = app.emit("terminal-output", format!("\x1b[31m{}\x1b[0m\r\n", text.trim_end()));
+                output.push_str(&text);
+            }
+            CommandEvent::Terminated(_) => break,
+            _ => {}
+        }
+    }
+    Ok(output)
+}
+
 /// Run `trojan mcp install` to auto-configure all detected AI editors.
 /// Returns the combined stdout+stderr output for display.
 #[tauri::command]
@@ -579,6 +618,7 @@ pub fn run() {
             start_auth_callback,
             check_mcp_status,
             setup_mcp,
+            setup_scanners,
             sync_profile_context,
             clear_trojan_cache,
         ])
