@@ -1,5 +1,5 @@
 [package]
-name = "trojan"
+name = "trojan-desktop"
 version = "0.1.1"
 description = "Trojan — developer-first security scanner"
 authors = ["Zephaniah Chizulu"]
