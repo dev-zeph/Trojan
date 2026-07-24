@@ -1871,6 +1871,191 @@ html, body, #root { height: 100%; background: var(--bg); color: var(--fg); }
 }
 .sidebar-terminal-btn:hover { background: var(--sb-hover); color: var(--sb-fg-active); }
 
+/* ── Fix with AI (autofix) page ──────────────────────────────────────────── */
+.autofix-page {
+  flex: 1; overflow-y: auto; background: oklch(0.965 0 0); position: relative;
+}
+.autofix-inner {
+  position: relative; z-index: 1;
+  max-width: 960px; margin: 0 auto;
+  padding: 28px 32px 40px;
+  display: flex; flex-direction: column; gap: 16px;
+}
+
+/* Editor cards — 3-column row */
+.autofix-editors-row {
+  display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;
+}
+.autofix-editor-card {
+  background: white; border: 1px solid oklch(0.88 0 0);
+  padding: 16px; display: flex; flex-direction: column; gap: 10px;
+  position: relative; transition: border-color 0.15s;
+}
+.autofix-editor-card:hover { border-color: oklch(0.78 0 0); }
+.autofix-editor-card.configured { border-color: rgba(22,163,74,0.4); }
+.autofix-editor-card.not-installed { opacity: 0.4; }
+.autofix-editor-logo-wrap {
+  width: 36px; height: 36px;
+  border: 1px solid oklch(0.88 0 0);
+  display: flex; align-items: center; justify-content: center;
+  overflow: hidden; background: white;
+}
+.autofix-editor-logo {
+  width: 26px; height: 26px; object-fit: contain;
+}
+.autofix-editor-info { display: flex; flex-direction: column; gap: 2px; }
+.autofix-editor-name {
+  font: 600 13px Inter, sans-serif; color: oklch(0.13 0 0);
+}
+.autofix-editor-desc {
+  font-size: 11.5px; color: oklch(0.50 0 0); margin: 0;
+}
+.autofix-editor-status {
+  display: flex; align-items: center; gap: 6px; margin-top: auto;
+}
+.autofix-editor-dot {
+  width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+}
+.dot-ok { background: #16a34a; }
+.dot-pending { background: #d97706; }
+.dot-none { background: oklch(0.75 0 0); }
+.autofix-badge {
+  font: 500 9px 'Fira Code', monospace; letter-spacing: 0.5px;
+  padding: 2px 6px;
+  color: #16a34a; border: 1px solid rgba(22,163,74,0.3);
+}
+.autofix-badge.pending { color: #d97706; border-color: rgba(217,119,6,0.3); }
+.autofix-badge.none { color: oklch(0.50 0 0); border-color: oklch(0.85 0 0); }
+
+/* Action row — connect card + scan selector side by side */
+.autofix-action-row {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+}
+.autofix-connect-card, .autofix-scan-card {
+  background: white; border: 1px solid oklch(0.88 0 0);
+  padding: 18px; display: flex; flex-direction: column; gap: 10px;
+  position: relative;
+}
+.autofix-connect-card-code {
+  font: 400 10px 'Fira Code', monospace; letter-spacing: 1.5px;
+  color: oklch(0.50 0 0);
+}
+.autofix-connect-card-title {
+  font: 600 14px Inter, sans-serif; color: oklch(0.13 0 0);
+}
+.autofix-connect-card-desc {
+  font-size: 12px; color: oklch(0.50 0 0); line-height: 1.6; margin: 0;
+}
+.autofix-connect-btn {
+  padding: 9px 0; width: 100%; margin-top: auto;
+  background: oklch(0.13 0 0); color: oklch(0.97 0 0); border: none;
+  font: 600 12px Inter, sans-serif; letter-spacing: 0.02em;
+  cursor: pointer; transition: background 0.15s;
+}
+.autofix-connect-btn:hover { background: oklch(0.20 0 0); }
+.autofix-connect-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Scan selector */
+.autofix-empty {
+  padding: 16px; text-align: center;
+  background: oklch(0.97 0 0); border: 1px dashed oklch(0.85 0 0);
+}
+.autofix-empty p { font-size: 12px; color: oklch(0.50 0 0); margin: 0 0 10px; }
+.autofix-action-btn {
+  padding: 7px 18px; background: oklch(0.13 0 0); color: oklch(0.97 0 0); border: none;
+  font: 500 11.5px Inter, sans-serif; cursor: pointer;
+  transition: background 0.15s;
+}
+.autofix-action-btn:hover { background: oklch(0.20 0 0); }
+.autofix-scan-list {
+  display: flex; flex-direction: column; gap: 3px;
+}
+.autofix-scan-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; background: transparent;
+  border: 1px solid oklch(0.90 0 0);
+  cursor: pointer; transition: all 0.15s; text-align: left;
+}
+.autofix-scan-item:hover { background: oklch(0.97 0 0); }
+.autofix-scan-item.active {
+  background: oklch(0.96 0 0); border-color: oklch(0.13 0 0);
+}
+.autofix-scan-name {
+  font: 600 12px Inter, sans-serif; color: oklch(0.13 0 0); flex: 1;
+}
+.autofix-scan-time {
+  font: 400 10.5px 'Fira Code', monospace; color: oklch(0.55 0 0); flex-shrink: 0;
+}
+.autofix-scan-pager {
+  display: flex; align-items: center; justify-content: center; gap: 12px;
+  margin-top: 4px;
+}
+.autofix-pager-btn {
+  width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;
+  background: transparent; border: 1px solid oklch(0.88 0 0);
+  color: oklch(0.30 0 0); font-size: 13px; cursor: pointer;
+  transition: background 0.15s;
+}
+.autofix-pager-btn:hover:not(:disabled) { background: oklch(0.95 0 0); }
+.autofix-pager-btn:disabled { opacity: 0.3; cursor: default; }
+.autofix-pager-info {
+  font: 400 11px 'Fira Code', monospace; color: oklch(0.50 0 0);
+}
+
+/* Bottom row — how it works + prompts */
+.autofix-bottom-row {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+}
+.autofix-how-card, .autofix-prompts-card {
+  background: white; border: 1px solid oklch(0.88 0 0);
+  padding: 18px; display: flex; flex-direction: column; gap: 10px;
+  position: relative;
+}
+.autofix-how-steps {
+  display: flex; flex-direction: column; gap: 12px;
+}
+.autofix-how-step {
+  display: flex; gap: 10px;
+}
+.autofix-how-num {
+  width: 20px; height: 20px; display: flex; align-items: center; justify-content: center;
+  background: oklch(0.94 0 0); color: oklch(0.45 0 0);
+  font: 600 10px 'Fira Code', monospace;
+  border-radius: 50%; flex-shrink: 0; margin-top: 1px;
+}
+.autofix-how-step strong {
+  font-size: 12px; color: oklch(0.13 0 0); display: block; margin-bottom: 2px;
+}
+.autofix-how-step p {
+  font-size: 11px; color: oklch(0.50 0 0); line-height: 1.5; margin: 0;
+}
+.autofix-how-step code {
+  font: 400 10.5px 'Fira Code', monospace;
+  padding: 1px 4px; background: oklch(0.95 0 0);
+}
+
+/* Prompt suggestions */
+.autofix-prompt-list {
+  display: flex; flex-direction: column; gap: 4px;
+}
+.autofix-prompt {
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 12px;
+  background: oklch(0.97 0 0); border: 1px solid oklch(0.92 0 0);
+}
+.autofix-prompt code {
+  font: 400 11px 'Fira Code', monospace; color: oklch(0.13 0 0); flex: 1;
+}
+.autofix-prompt-tag {
+  font: 600 8px 'Fira Code', monospace; letter-spacing: 0.5px;
+  padding: 2px 5px;
+  color: oklch(0.13 0 0); border: 1px solid oklch(0.82 0 0);
+  flex-shrink: 0;
+}
+.autofix-prompts-hint {
+  font-size: 11px; color: oklch(0.50 0 0); margin: 0; line-height: 1.5;
+}
+
 /* ── Profile page ────────────────────────────────────────────────────────── */
 .profile-page {
   flex: 1;
@@ -2131,6 +2316,17 @@ html, body, #root { height: 100%; background: var(--bg); color: var(--fg); }
   text-align: center;
   line-height: 1.5;
 }
+.profile-save-btn {
+  width: 100%; padding: 10px 0; margin-top: 4px;
+  background: oklch(0.13 0 0); color: oklch(0.97 0 0); border: none;
+  font: 600 12px Inter, sans-serif; letter-spacing: 0.02em;
+  cursor: pointer; transition: background 0.15s, opacity 0.15s;
+}
+.profile-save-btn:hover:not(:disabled) { background: oklch(0.20 0 0); }
+.profile-save-btn.saved {
+  background: oklch(0.88 0 0); color: oklch(0.50 0 0);
+  cursor: default;
+}
 
 /* ── First-run empty state ───────────────────────────────────────────────── */
 .first-run-empty {
@@ -2162,13 +2358,13 @@ html, body, #root { height: 100%; background: var(--bg); color: var(--fg); }
   font-family: 'Fira Code', monospace;
   font-size: 18px;
   font-weight: 600;
-  color: #f8fafc;
+  color: #0a0a0a;
   letter-spacing: 0.02em;
   margin: 0;
 }
 .first-run-desc {
   font-size: 13px;
-  color: rgba(248,250,252,0.45);
+  color: rgba(10,10,10,0.55);
   max-width: 380px;
   line-height: 1.6;
   margin: 0;
@@ -2176,8 +2372,8 @@ html, body, #root { height: 100%; background: var(--bg); color: var(--fg); }
 .first-run-cta {
   margin-top: 8px;
   padding: 10px 28px;
-  background: #4ade80;
-  color: #0a0a0a;
+  background: #0a0a0a;
+  color: #f8fafc;
   border: none;
   font-family: 'Fira Code', monospace;
   font-size: 13px;
@@ -2186,8 +2382,8 @@ html, body, #root { height: 100%; background: var(--bg); color: var(--fg); }
   cursor: pointer;
   transition: background 0.15s;
 }
-.first-run-cta:hover { background: #86efac; }
-.first-run-cta:active { background: #22c55e; }
+.first-run-cta:hover { background: #1a1a1a; }
+.first-run-cta:active { background: #333; }
 
 /* ── Print Certificate ────────────────────────────────────────────────────── */
 /* Hidden in normal UI; becomes the only thing visible during print */

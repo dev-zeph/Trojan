@@ -8,7 +8,7 @@ import { TerminalPanel } from "./TerminalPanel";
 import { PrintCertificate } from "./PrintCertificate";
 import "./App.css";
 
-type NavView  = "overview" | "sast" | "dast" | "history" | "dependencies" | "threatlab" | "profile" | "report";
+type NavView  = "overview" | "sast" | "dast" | "history" | "dependencies" | "threatlab" | "autofix" | "profile" | "report";
 type ScanType = "sast" | "dast";
 
 interface PackageAdvisory { id: string; severity: string; summary: string; fix_version?: string; }
@@ -371,18 +371,12 @@ function Onboarding({ onDone }: { onDone: (p: UserProfile) => void }) {
 
       {/* ── Left dark brand panel ── */}
       <div className="ob-left">
-        <div className="ob-left-traffic">
-          <span className="tl-dot tl-red" />
-          <span className="tl-dot tl-amber" />
-          <span className="tl-dot tl-green" />
-        </div>
-
         {/* Centered brand block */}
         <div className="ob-left-center">
           <img src="/logo.png" alt="Trojan" className="ob-left-logo" />
           <span className="ob-left-wordmark">TROJAN</span>
           <p className="ob-left-tagline">
-            A local-first security workstation for production codebases. Scans run on this machine — nothing leaves it.
+            Industry-standard vulnerability scanners in one tool. Local-first — your code never leaves your machine.
           </p>
         </div>
 
@@ -405,7 +399,6 @@ function Onboarding({ onDone }: { onDone: (p: UserProfile) => void }) {
 
           {!showLocal ? (
             <>
-              <span className="ob-access-label">OPERATOR ACCESS</span>
               <span className="ob-right-title">Sign in</span>
 
               <AuthForm onAuth={handleAuth} onSkip={undefined} />
@@ -414,12 +407,10 @@ function Onboarding({ onDone }: { onDone: (p: UserProfile) => void }) {
                 <button type="button" className="ob-footer-skip" onClick={() => setShowLocal(true)}>
                   Continue without an account →
                 </button>
-                <span className="ob-footer-note">Creates a local workspace. Scans stay on this machine.</span>
               </div>
             </>
           ) : (
             <>
-              <span className="ob-access-label">LOCAL WORKSPACE</span>
               <span className="ob-right-title">Set up your workspace</span>
 
               <form className="ob-form" onSubmit={handleLocalSubmit}>
@@ -487,6 +478,10 @@ const NAV: { view: NavView; label: string; icon: React.ReactNode; pro?: boolean 
     icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M10 2v7.53a2 2 0 0 1-.21.9L4.72 20.55a1 1 0 0 0 .9 1.45h12.76a1 1 0 0 0 .9-1.45l-5.07-10.12a2 2 0 0 1-.21-.9V2 M8.5 2h7 M7 16h10"/></svg>,
   },
   {
+    view: "autofix", label: "Fix with AI",
+    icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z M2 17l10 5 10-5 M2 12l10 5 10-5"/></svg>,
+  },
+  {
     view: "profile", label: "Profile",
     icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>,
   },
@@ -523,6 +518,13 @@ export default function App() {
   const [terminalOpen, setTerminalOpen]   = useState(true);
   const [terminalHeight, setTerminalHeight] = useState(220);
   const [sessionExpired, setSessionExpired] = useState(false);
+  const [mcpStatus, setMcpStatus]         = useState<Record<string, { installed: boolean; configured: boolean }>>({});
+  const [mcpSetupBusy, setMcpSetupBusy]   = useState(false);
+  const [fixScanIdx, setFixScanIdx]       = useState(0);
+  const [fixScanPage, setFixScanPage]     = useState(0);
+  const [profileSaved, setProfileSaved]   = useState(true);
+  const [profileJustSaved, setProfileJustSaved] = useState(false);
+  const savedProfileRef = useRef<{ aboutYou: string; familiarity: number }>({ aboutYou: "", familiarity: 1 });
 
   const DEP_PAGE_SIZE = 50;
   const iframeRef     = useRef<HTMLIFrameElement>(null);
@@ -609,11 +611,17 @@ export default function App() {
 
       setProfile(activeProfile);
       setProfileLoaded(true);
+      if (activeProfile) {
+        savedProfileRef.current = { aboutYou: activeProfile.aboutYou ?? "", familiarity: activeProfile.familiarity ?? 1 };
+      }
       if (activeProfile?.token && activeProfile.email) {
         syncAuthToGoConfig(activeProfile.token, activeProfile.email, activeProfile.refreshToken ?? "");
       }
     }
     init();
+
+    // Load MCP editor status on mount
+    invoke("check_mcp_status").then((s) => setMcpStatus(s as Record<string, { installed: boolean; configured: boolean }>)).catch(() => {});
   }, []);
 
   // ── Token refresh ─────────────────────────────────────────────────
@@ -1034,18 +1042,33 @@ export default function App() {
       await s.clear();  // wipe all persisted keys (profile + recent projects)
       await s.save();   // force flush to disk so the next launch starts clean
     } catch {}
+    // Clear local AI cache + config so stale explanations aren't reused
+    invoke("clear_trojan_cache").catch(() => {});
     setProfile(null);
     setRecent([]);
     setCurrentServerUrl(null);
     setAuthStatus(null);
     setThreatLabResult(null);
     setPackages([]);
+    setScanSummary(null);
+    setReportUrl("");
+    setMcpStatus({});
   }
 
 
   async function handlePickFolder() {
     const selected = await invoke<string | null>("pick_folder");
     if (selected) triggerSast(selected);
+  }
+
+  async function handleSetupMcp() {
+    setMcpSetupBusy(true);
+    try {
+      await invoke("setup_mcp");
+      const s = await invoke("check_mcp_status") as Record<string, { installed: boolean; configured: boolean }>;
+      setMcpStatus(s);
+    } catch {}
+    setMcpSetupBusy(false);
   }
 
   // ── Gate renders ─────────────────────────────────────────────────────
@@ -2087,6 +2110,208 @@ export default function App() {
             );
           })()}
 
+          {/* ── Fix with AI ── */}
+          {view === "autofix" && (() => {
+            const editors = [
+              { key: "claude_code", label: "Claude Code", logo: "/claude-logo.png", desc: "Anthropic's coding agent" },
+              { key: "cursor",      label: "Cursor",      logo: "/cursor-logo.png", desc: "AI-native code editor" },
+              { key: "codex_cli",   label: "Codex CLI",   logo: "/openai-logo.webp", desc: "OpenAI's terminal agent" },
+            ];
+            const anyConfigured = editors.some(e => mcpStatus[e.key]?.configured);
+            const detectedEditors = editors.filter(e => mcpStatus[e.key]?.installed);
+            const connectedCount = editors.filter(e => mcpStatus[e.key]?.configured).length;
+
+            const sastScans = recent.filter(r => r.type === "sast" && r.cachePath);
+            const selectedScan = sastScans[fixScanIdx] ?? null;
+
+            return (
+              <div className="autofix-page">
+                <div className="overview-grid-bg" />
+                <div className="autofix-inner">
+
+                  {/* Row 1: header + status badge */}
+                  <div className="overview-header">
+                    <div>
+                      <h2 className="overview-greeting">Fix with AI</h2>
+                      <p className="overview-meta">
+                        Connect your AI editor to auto-fix vulnerabilities via MCP — your code never leaves your machine.
+                      </p>
+                    </div>
+                    <div className="overview-status-badge">
+                      <span className={`status-dot ${anyConfigured ? "status-dot-ok" : "status-dot-warn"}`} />
+                      {anyConfigured ? `${connectedCount} CONNECTED` : "NOT CONFIGURED"}
+                    </div>
+                  </div>
+
+                  {/* Row 2: editor cards (3-col grid like station cards) */}
+                  <div className="autofix-editors-row">
+                    {editors.map(e => {
+                      const s = mcpStatus[e.key];
+                      return (
+                        <div key={e.key} className={`autofix-editor-card ${s?.configured ? "configured" : ""} ${!s?.installed ? "not-installed" : ""}`}>
+                          <CM />
+                          <div className="autofix-editor-logo-wrap">
+                            <img src={e.logo} alt={e.label} className="autofix-editor-logo" />
+                          </div>
+                          <div className="autofix-editor-info">
+                            <span className="autofix-editor-name">{e.label}</span>
+                            <span className="autofix-editor-desc">{e.desc}</span>
+                          </div>
+                          <div className="autofix-editor-status">
+                            {s?.configured && <><span className="autofix-editor-dot dot-ok" /><span className="autofix-badge">Connected</span></>}
+                            {s?.installed && !s?.configured && <><span className="autofix-editor-dot dot-pending" /><span className="autofix-badge pending">Not configured</span></>}
+                            {!s?.installed && <><span className="autofix-editor-dot dot-none" /><span className="autofix-badge none">Not detected</span></>}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Row 3: connect button + scan selector side by side */}
+                  <div className="autofix-action-row">
+                    {/* Left: connect / configure */}
+                    <div className="autofix-connect-card">
+                      <CM />
+                      <div className="autofix-connect-card-code">MCP INTEGRATION</div>
+                      <div className="autofix-connect-card-title">
+                        {anyConfigured ? "Editors connected" : "Connect your editors"}
+                      </div>
+                      <p className="autofix-connect-card-desc">
+                        Trojan uses the Model Context Protocol to give your AI tool direct access to scan findings, code context, and fix suggestions.
+                      </p>
+                      <button
+                        className="autofix-connect-btn"
+                        onClick={handleSetupMcp}
+                        disabled={mcpSetupBusy || detectedEditors.length === 0}
+                      >
+                        {mcpSetupBusy
+                          ? "Configuring…"
+                          : anyConfigured
+                            ? "Reconfigure"
+                            : detectedEditors.length > 0
+                              ? "Connect editors"
+                              : "No editors detected"
+                        }
+                      </button>
+                    </div>
+
+                    {/* Right: scan selector */}
+                    <div className="autofix-scan-card">
+                      <CM />
+                      <div className="autofix-connect-card-code">SELECT SCAN</div>
+                      <div className="autofix-connect-card-title">Target project</div>
+                      {(() => {
+                        const PER_PAGE = 5;
+                        const totalPages = Math.ceil(sastScans.length / PER_PAGE);
+                        const pageScans = sastScans.slice(fixScanPage * PER_PAGE, (fixScanPage + 1) * PER_PAGE);
+
+                        if (sastScans.length === 0) return (
+                          <div className="autofix-empty">
+                            <p>No scans yet</p>
+                            <button className="autofix-action-btn" onClick={handlePickFolder}>Run a scan</button>
+                          </div>
+                        );
+
+                        return (
+                          <>
+                            <div className="autofix-scan-list">
+                              {pageScans.map((s, i) => {
+                                const globalIdx = fixScanPage * PER_PAGE + i;
+                                return (
+                                  <button
+                                    key={s.path}
+                                    className={`autofix-scan-item ${globalIdx === fixScanIdx ? "active" : ""}`}
+                                    onClick={() => setFixScanIdx(globalIdx)}
+                                  >
+                                    <span className="autofix-scan-name">{s.name}</span>
+                                    <span className="autofix-scan-time">{timeAgo(s.scannedAt)}</span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                            {totalPages > 1 && (
+                              <div className="autofix-scan-pager">
+                                <button
+                                  className="autofix-pager-btn"
+                                  disabled={fixScanPage === 0}
+                                  onClick={() => setFixScanPage(p => p - 1)}
+                                >
+                                  ←
+                                </button>
+                                <span className="autofix-pager-info">{fixScanPage + 1} / {totalPages}</span>
+                                <button
+                                  className="autofix-pager-btn"
+                                  disabled={fixScanPage >= totalPages - 1}
+                                  onClick={() => setFixScanPage(p => p + 1)}
+                                >
+                                  →
+                                </button>
+                              </div>
+                            )}
+                          </>
+                        );
+                      })()}
+                    </div>
+                  </div>
+
+                  {/* Row 4: how it works + prompts side by side */}
+                  <div className="autofix-bottom-row">
+                    {/* Left: how it works */}
+                    <div className="autofix-how-card">
+                      <CM />
+                      <div className="autofix-connect-card-code">HOW IT WORKS</div>
+                      <div className="autofix-how-steps">
+                        <div className="autofix-how-step">
+                          <span className="autofix-how-num">1</span>
+                          <div>
+                            <strong>AI reads findings</strong>
+                            <p>Calls <code>get_fixable_findings</code> — gets all vulnerabilities with surrounding code context.</p>
+                          </div>
+                        </div>
+                        <div className="autofix-how-step">
+                          <span className="autofix-how-num">2</span>
+                          <div>
+                            <strong>AI edits your code</strong>
+                            <p>Applies targeted fixes using language, framework, and fix hints from Trojan.</p>
+                          </div>
+                        </div>
+                        <div className="autofix-how-step">
+                          <span className="autofix-how-num">3</span>
+                          <div>
+                            <strong>Marks findings resolved</strong>
+                            <p>Calls <code>mark_fixed</code> to update scan results. Dashboard refreshes automatically.</p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Right: prompt suggestions */}
+                    <div className="autofix-prompts-card">
+                      <CM />
+                      <div className="autofix-connect-card-code">SUGGESTED PROMPTS</div>
+                      <div className="autofix-prompt-list">
+                        <div className="autofix-prompt">
+                          <code>"Fix all critical and high severity Trojan findings"</code>
+                          <span className="autofix-prompt-tag">Start here</span>
+                        </div>
+                        <div className="autofix-prompt">
+                          <code>"Show my Trojan findings and explain each one"</code>
+                        </div>
+                        <div className="autofix-prompt">
+                          <code>"Fix the most critical finding and mark it resolved"</code>
+                        </div>
+                      </div>
+                      <p className="autofix-prompts-hint">
+                        Open your editor in{selectedScan ? ` ${selectedScan.path}` : " the project directory"} and paste any prompt above.
+                      </p>
+                    </div>
+                  </div>
+
+                </div>
+              </div>
+            );
+          })()}
+
           {/* ── Profile ── */}
           {view === "profile" && (() => {
             const fams = [
@@ -2191,7 +2416,11 @@ export default function App() {
                         className="profile-textarea profile-textarea--tall"
                         value={profile.aboutYou ?? ""}
                         placeholder={"Describe your priorities, risk tolerance, and the kind of summaries you find useful. For example:\n\n• I work on products in a regulated industry (healthcare), so compliance and data privacy are top concerns.\n• I prefer short, prioritized action lists — not exhaustive reports.\n• I care most about risks that affect end users or could cause a breach.\n• I'm comfortable with technical terms but need context on security-specific concepts."}
-                        onChange={e => updateProfile({ aboutYou: e.target.value })}
+                        onChange={e => {
+                          setProfile({ ...profile, aboutYou: e.target.value } as UserProfile);
+                          setProfileSaved(false);
+                          setProfileJustSaved(false);
+                        }}
                       />
                       <span className="profile-hint">This context is used across all Trojan AI features — findings explanations, Threat Lab reports, remediation advice, and more.</span>
                     </div>
@@ -2213,7 +2442,7 @@ export default function App() {
                               key={i}
                               className="profile-fam-dot-hit"
                               style={{ left: i === 0 ? "0%" : i === 1 ? "50%" : "100%" }}
-                              onClick={() => updateProfile({ familiarity: i })}
+                              onClick={() => { setProfile({ ...profile, familiarity: i } as UserProfile); setProfileSaved(false); setProfileJustSaved(false); }}
                             >
                               <span
                                 className="profile-fam-dot"
@@ -2238,7 +2467,7 @@ export default function App() {
                                 textAlign:  i === 0 ? "left" : i === 1 ? "center" : "right",
                                 cursor: "pointer",
                               }}
-                              onClick={() => updateProfile({ familiarity: i })}
+                              onClick={() => { setProfile({ ...profile, familiarity: i } as UserProfile); setProfileSaved(false); setProfileJustSaved(false); }}
                             >
                               {lbl}
                             </span>
@@ -2251,7 +2480,24 @@ export default function App() {
                         <span className="profile-fam-badge-desc">{fams[fam].desc}</span>
                       </div>
                     </div>
-                    <span className="profile-autosave-note">Changes are saved automatically.</span>
+
+                    <button
+                      className={`profile-save-btn ${profileSaved ? "saved" : ""}`}
+                      disabled={profileSaved}
+                      onClick={() => {
+                        saveProfile(profile);
+                        invoke("sync_profile_context", {
+                          familiarity: profile.familiarity ?? 1,
+                          aboutYou: profile.aboutYou ?? "",
+                        }).catch(() => {});
+                        savedProfileRef.current = { aboutYou: profile.aboutYou ?? "", familiarity: profile.familiarity ?? 1 };
+                        setProfileSaved(true);
+                        setProfileJustSaved(true);
+                        setTimeout(() => setProfileJustSaved(false), 2000);
+                      }}
+                    >
+                      {profileJustSaved ? "Saved" : profileSaved ? "Preferences saved" : "Save preferences"}
+                    </button>
                   </div>
 
                 </div>
