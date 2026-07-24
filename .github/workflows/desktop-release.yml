@@ -17,9 +17,6 @@ jobs:
           - os: macos-14          # Apple Silicon (M1/M2/M3)
             target: aarch64-apple-darwin
             go-arch: arm64
-          - os: macos-13          # Intel x86_64
-            target: x86_64-apple-darwin
-            go-arch: amd64
 
     runs-on: ${{ matrix.os }}
 
@@ -29,8 +26,8 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Node must come before Go because embed.go embeds ui/dist and
-      # dast-ui/dist at compile time — both must exist before `go build` runs.
+      # Node must come before Go — embed.go embeds ui/dist and dast-ui/dist
+      # at compile time, so both must exist before `go build` runs.
       - name: Setup Node
         uses: actions/setup-node@v5
         with:

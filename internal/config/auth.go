@@ -29,6 +29,11 @@ type TrojanConfig struct {
 	// LicenseCheckedAt kept for backwards compat but no longer used.
 	IsPro            bool      `json:"is_pro"`
 	LicenseCheckedAt time.Time `json:"license_checked_at"`
+
+	// User profile context — controls the tone and depth of AI explanations.
+	// 0 = non-technical founder, 1 = junior developer, 2 = experienced developer.
+	Familiarity int    `json:"familiarity"`
+	AboutYou    string `json:"about_you,omitempty"`
 }
 
 // jwtClaims are the fields we care about inside the Supabase access token.

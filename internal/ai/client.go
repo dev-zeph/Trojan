@@ -62,7 +62,11 @@ func FetchLicense(accessToken string) (*LicenseInfo, error) {
 
 // SynthesizeFinding calls the backend to get a plain-English explanation and
 // fix steps for a finding. Results are cached locally to avoid repeat API calls.
-func SynthesizeFinding(finding normalizer.Finding, accessToken string) (*Synthesis, error) {
+// familiarity controls the tone: 0 = non-technical, 1 = junior dev, 2 = experienced.
+// aboutYou is free-form context from the user's profile.
+func SynthesizeFinding(finding normalizer.Finding, accessToken string, familiarity int, aboutYou string) (*Synthesis, error) {
+	activeFamiliarity = familiarity
+
 	// Check local cache first
 	if cached := loadFromCache(finding); cached != nil {
 		return cached, nil
@@ -81,6 +85,8 @@ func SynthesizeFinding(finding normalizer.Finding, accessToken string) (*Synthes
 		"surroundingCode": finding.SurroundingCode,
 		"projectType":     finding.ProjectType,
 		"framework":       finding.Framework,
+		"familiarity":     familiarity,
+		"aboutYou":        aboutYou,
 	}
 
 	body, err := json.Marshal(payload)
@@ -115,13 +121,16 @@ func SynthesizeFinding(finding normalizer.Finding, accessToken string) (*Synthes
 	return &synthesis, nil
 }
 
+// activeFamiliarity is set once per process from the config and included in
+// cache keys so changing your familiarity level invalidates stale explanations.
+var activeFamiliarity int
+
 // cachePath returns the local cache file path for a finding.
-// The key includes a 4-byte hash of the code snippet + file path so that
-// the same rule in different files gets its own cached explanation, while
-// identical code across repeated scans still hits the cache.
+// The key includes a 4-byte hash of the code snippet + file path + familiarity
+// so that the same rule at different tone levels gets its own cached explanation.
 func cachePath(f normalizer.Finding) string {
 	home, _ := os.UserHomeDir()
-	h := md5.Sum([]byte(f.CodeSnippet + f.FilePath))
+	h := md5.Sum([]byte(f.CodeSnippet + f.FilePath + fmt.Sprintf("%d", activeFamiliarity)))
 	key := fmt.Sprintf("%s-%s-%x.json", sanitize(f.RuleID), sanitize(f.Scanner), h[:4])
 	return filepath.Join(home, ".trojan", "cache", key)
 }

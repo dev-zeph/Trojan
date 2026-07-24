@@ -215,8 +215,12 @@ func scanCmd() *cobra.Command {
 
 				isPro := false
 				var accessToken string
+				familiarity := 1
+				aboutYou := ""
 				if cfg, err := config.LoadConfig(); err == nil && cfg.AccessToken != "" {
 					accessToken = cfg.AccessToken
+					familiarity = cfg.Familiarity
+					aboutYou = cfg.AboutYou
 					if info, err := ai.FetchLicense(accessToken); err == nil {
 						isPro = info.IsPro
 					}
@@ -268,7 +272,7 @@ func scanCmd() *cobra.Command {
 								defer wg.Done()
 								defer func() { <-sem }()
 
-								s, err := ai.SynthesizeFinding(findings[idx], accessToken)
+								s, err := ai.SynthesizeFinding(findings[idx], accessToken, familiarity, aboutYou)
 								progressMu.Lock()
 								defer progressMu.Unlock()
 								if err == nil {
@@ -405,8 +409,12 @@ func dastCmd() *cobra.Command {
 			// ── Step 1: Pro gate — must be first, before any prompts ──────────────
 			cfg, _ := config.LoadConfig()
 			accessToken := ""
+			dastFamiliarity := 1
+			dastAboutYou := ""
 			if cfg != nil {
 				accessToken = cfg.AccessToken
+				dastFamiliarity = cfg.Familiarity
+				dastAboutYou = cfg.AboutYou
 			}
 			if accessToken == "" {
 				printDastProMessage(targetURL)
@@ -570,7 +578,7 @@ func dastCmd() *cobra.Command {
 						defer wg.Done()
 						defer func() { <-sem }()
 
-						s, serr := ai.SynthesizeFinding(findings[idx], accessToken)
+						s, serr := ai.SynthesizeFinding(findings[idx], accessToken, dastFamiliarity, dastAboutYou)
 						progressMu.Lock()
 						defer progressMu.Unlock()
 						if serr == nil {

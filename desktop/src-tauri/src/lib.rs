@@ -424,6 +424,119 @@ async fn sync_auth(
     Ok(())
 }
 
+/// Clear the local AI cache (~/.trojan/cache/) and config on logout so stale
+/// Simply+Actions from a previous session aren't reused.
+#[tauri::command]
+fn clear_trojan_cache() -> Result<(), String> {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map_err(|_| "cannot determine home directory".to_string())?;
+
+    let cache_dir = std::path::Path::new(&home).join(".trojan").join("cache");
+    if cache_dir.exists() {
+        let _ = std::fs::remove_dir_all(&cache_dir);
+    }
+
+    let config_path = std::path::Path::new(&home).join(".trojan").join("config.json");
+    if config_path.exists() {
+        let _ = std::fs::remove_file(&config_path);
+    }
+
+    Ok(())
+}
+
+/// Sync user profile context (familiarity level + aboutYou) into
+/// ~/.trojan/config.json so the Go sidecar can pass it to the AI synthesis API.
+#[tauri::command]
+fn sync_profile_context(familiarity: u8, about_you: String) -> Result<(), String> {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map_err(|_| "cannot determine home directory".to_string())?;
+
+    let config_path = std::path::Path::new(&home).join(".trojan").join("config.json");
+
+    // Read existing config, merge in the new fields, write back.
+    let mut cfg: serde_json::Value = if config_path.exists() {
+        let data = std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
+        serde_json::from_str(&data).unwrap_or(serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    if let Some(obj) = cfg.as_object_mut() {
+        obj.insert("familiarity".into(), serde_json::json!(familiarity));
+        obj.insert("about_you".into(), serde_json::json!(about_you));
+    }
+
+    let content = serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(config_path.parent().unwrap()).map_err(|e| e.to_string())?;
+    std::fs::write(&config_path, content).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Check which AI editors have the Trojan MCP server configured by looking for
+/// the "trojan" entry in each editor's config file.
+#[tauri::command]
+fn check_mcp_status() -> serde_json::Value {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_default();
+
+    let editors = vec![
+        ("claude_code", std::path::Path::new(&home).join(".claude").join("settings.json")),
+        ("cursor", std::path::Path::new(&home).join(".cursor").join("mcp.json")),
+        ("codex_cli", std::path::Path::new(&home).join(".codex").join("config.toml")),
+    ];
+
+    let mut status = serde_json::Map::new();
+    for (name, path) in &editors {
+        let installed = path.exists();
+        let configured = if installed {
+            std::fs::read_to_string(path)
+                .map(|c| c.contains("trojan"))
+                .unwrap_or(false)
+        } else {
+            false
+        };
+        status.insert(name.to_string(), serde_json::json!({
+            "installed": installed,
+            "configured": configured,
+        }));
+    }
+    serde_json::Value::Object(status)
+}
+
+/// Run `trojan mcp install` to auto-configure all detected AI editors.
+/// Returns the combined stdout+stderr output for display.
+#[tauri::command]
+async fn setup_mcp(app: AppHandle) -> Result<String, String> {
+    let (mut rx, _child) = app
+        .shell()
+        .sidecar("trojan")
+        .map_err(|e| format!("sidecar not found: {e}"))?
+        .args(["mcp", "install"])
+        .spawn()
+        .map_err(|e| format!("spawn failed: {e}"))?;
+
+    let mut output = String::new();
+    while let Some(event) = rx.recv().await {
+        use tauri_plugin_shell::process::CommandEvent;
+        match event {
+            CommandEvent::Stdout(line) => {
+                output.push_str(&String::from_utf8_lossy(&line));
+                output.push('\n');
+            }
+            CommandEvent::Stderr(line) => {
+                output.push_str(&String::from_utf8_lossy(&line));
+                output.push('\n');
+            }
+            CommandEvent::Terminated(_) => break,
+            _ => {}
+        }
+    }
+    Ok(output)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -464,6 +577,10 @@ pub fn run() {
             serve_scan,
             sync_auth,
             start_auth_callback,
+            check_mcp_status,
+            setup_mcp,
+            sync_profile_context,
+            clear_trojan_cache,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
