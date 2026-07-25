@@ -10,10 +10,11 @@ import (
 
 // ScanResult wraps findings with metadata about the scan.
 type ScanResult struct {
-	Timestamp   time.Time `json:"timestamp"`
-	ProjectPath string    `json:"project_path"`
-	Findings    []Finding `json:"findings"`
-	Packages    []Package `json:"packages,omitempty"`
+	Timestamp   time.Time      `json:"timestamp"`
+	ProjectPath string         `json:"project_path"`
+	Findings    []Finding      `json:"findings"`
+	Packages    []Package      `json:"packages,omitempty"`
+	Privacy     *PrivacyReport `json:"privacy,omitempty"`
 }
 
 // NewScanResult creates an in-memory ScanResult without writing anything to disk.

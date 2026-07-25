@@ -6,13 +6,25 @@ import { load } from "@tauri-apps/plugin-store";
 import { createClient } from "@supabase/supabase-js";
 import { TerminalPanel } from "./TerminalPanel";
 import { PrintCertificate } from "./PrintCertificate";
+import { PrintComplianceReport } from "./PrintComplianceReport";
 import "./App.css";
 
-type NavView  = "overview" | "sast" | "dast" | "history" | "dependencies" | "threatlab" | "autofix" | "profile" | "report";
+type NavView  = "overview" | "sast" | "dast" | "dependencies" | "threatlab" | "licenses" | "privacy" | "compliancelab" | "history" | "autofix" | "profile" | "report";
 type ScanType = "sast" | "dast";
 
 interface PackageAdvisory { id: string; severity: string; summary: string; fix_version?: string; }
-interface PkgInfo { name: string; version: string; ecosystem: string; direct: boolean; cve_count: number; highest_severity?: string; fix_version?: string; advisories?: PackageAdvisory[]; }
+interface PkgInfo { name: string; version: string; ecosystem: string; direct: boolean; cve_count: number; highest_severity?: string; fix_version?: string; advisories?: PackageAdvisory[]; license?: string; license_risk?: string; }
+interface PrivacyDataType { name: string; category: string; category_groups: string[]; detection_count: number; locations: { file: string; line: number; column_start: number; column_end: number }[]; }
+interface PrivacyThirdParty { name: string; data_types: string[]; risk_count: number; }
+interface PrivacyReport { data_types: PrivacyDataType[]; third_party: PrivacyThirdParty[]; }
+interface ComplianceLabResult {
+  grade: "A" | "B" | "C" | "D" | "F";
+  score: number;
+  executive_summary: string;
+  license_verdict: string;
+  privacy_verdict: string;
+  recommendations: string[];
+}
 interface Finding { id: string; title: string; severity: string; scanner: string; file?: string; line?: number; description?: string; }
 interface ScanSummary { critical: number; high: number; medium: number; low: number; info: number; total: number; scannedAt: string; }
 
@@ -217,7 +229,7 @@ function AuthForm({
   const [email, setEmail]             = useState("");
   const [password, setPassword]       = useState("");
   const [loading, setLoading]         = useState(false);
-  const [githubLoading, setGithubLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError]             = useState<string | null>(null);
   const [success, setSuccess]         = useState<string | null>(null);
 
@@ -249,36 +261,6 @@ function AuthForm({
     }
   }
 
-  async function handleGitHub() {
-    setGithubLoading(true);
-    setError(null);
-    try {
-      // Start the one-shot TCP callback server and get its port.
-      const port = await invoke<number>("start_auth_callback");
-
-      // Ask Supabase for the GitHub OAuth URL directly — skips the website login
-      // page entirely. The code exchange still happens via /auth/desktop-callback
-      // on the website, which then bounces the token to our local TCP server.
-      //
-      // The TCP callback server (start_auth_callback) is the production auth approach.
-      const { data, error } = await supabase.auth.signInWithOAuth({
-        provider: "github",
-        options: {
-          redirectTo: `https://trojancli.com/auth/desktop-callback?redirect=${encodeURIComponent(`http://127.0.0.1:${port}/callback`)}`,
-          skipBrowserRedirect: true,
-        },
-      });
-      if (error) throw error;
-      if (data.url) await invoke("open_auth", { url: data.url });
-      // githubLoading stays true until the browser completes OAuth and the
-      // parent's auth-callback Tauri event fires (which causes this component
-      // to unmount, naturally resetting all state).
-    } catch (err: unknown) {
-      setError((err as { message?: string }).message ?? "GitHub login failed");
-      setGithubLoading(false);
-    }
-  }
-
   return (
     <>
       {error   && <p className="auth-msg auth-error">{error}</p>}
@@ -295,30 +277,31 @@ function AuthForm({
         </div>
         <div className="ob-field">
           <label className="ob-label ob-label-mono">PASSWORD</label>
-          <input
-            type="password" required value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="••••••••" className="ob-input"
-          />
+          <div style={{ position: "relative" }}>
+            <input
+              type={showPassword ? "text" : "password"} required value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="••••••••" className="ob-input" style={{ paddingRight: 36 }}
+            />
+            <button
+              type="button"
+              onClick={() => setShowPassword(!showPassword)}
+              style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", padding: 4, color: "inherit", opacity: 0.5 }}
+              title={showPassword ? "Hide password" : "Show password"}
+            >
+              {showPassword ? (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/></svg>
+              ) : (
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+              )}
+            </button>
+          </div>
         </div>
-        <button type="submit" disabled={loading || githubLoading} className="ob-btn auth-submit-btn">
+        <button type="submit" disabled={loading} className="ob-btn auth-submit-btn">
           {loading && <span className="auth-spinner" />}
           {loading ? "Please wait…" : mode === "signin" ? "Sign in" : "Create account"}
         </button>
       </form>
-
-      <div className="ob-divider">or</div>
-
-      <button type="button" onClick={handleGitHub} disabled={loading || githubLoading} className="ob-signin-btn">
-        {githubLoading ? (
-          <span className="auth-spinner auth-spinner-dark" />
-        ) : (
-          <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true">
-            <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z" />
-          </svg>
-        )}
-        {githubLoading ? "Opening browser…" : "Continue with GitHub"}
-      </button>
 
       <p className="auth-toggle">
         {mode === "signin" ? (
@@ -452,37 +435,41 @@ const CM = () => (
 );
 
 // ── Nav icons — exact paths from design file ───────────────────────────
-const NAV: { view: NavView; label: string; icon: React.ReactNode; pro?: boolean }[] = [
-  {
-    view: "overview", label: "Overview",
+const NAV: { view: NavView; label: string; icon: React.ReactNode; pro?: boolean; section?: string }[] = [
+  // ── Security ──
+  { view: "overview", label: "Overview", section: "SECURITY",
     icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 14l4-4 M3.34 19a10 10 0 1 1 17.32 0"/></svg>,
   },
-  {
-    view: "sast", label: "Static Analysis",
+  { view: "sast", label: "Static Analysis",
     icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M16 18l6-6-6-6 M8 6l-6 6 6 6"/></svg>,
   },
-  {
-    view: "dast", label: "Dynamic Analysis",
+  { view: "dast", label: "Dynamic Analysis", pro: true,
     icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20 M2 12h20 M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10"/></svg>,
   },
-  {
-    view: "history", label: "Scan History",
-    icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8 M3 3v5h5 M12 7v5l4 2"/></svg>,
-  },
-  {
-    view: "dependencies", label: "Dependencies",
+  { view: "dependencies", label: "Dependencies",
     icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z M3.3 7l8.7 5 8.7-5 M12 22V12"/></svg>,
   },
-  {
-    view: "threatlab", label: "Threat Lab", pro: true,
+  { view: "threatlab", label: "Threat Lab", pro: true,
     icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M10 2v7.53a2 2 0 0 1-.21.9L4.72 20.55a1 1 0 0 0 .9 1.45h12.76a1 1 0 0 0 .9-1.45l-5.07-10.12a2 2 0 0 1-.21-.9V2 M8.5 2h7 M7 16h10"/></svg>,
   },
-  {
-    view: "autofix", label: "Fix with AI",
+  // ── Compliance & Privacy ──
+  { view: "licenses", label: "Licenses", section: "COMPLIANCE",
+    icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M9 15l2 2 4-4"/></svg>,
+  },
+  { view: "privacy", label: "Privacy",
+    icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>,
+  },
+  { view: "compliancelab", label: "Compliance Lab", pro: true,
+    icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 5H2v7l6.29 6.29c.94.94 2.48.94 3.42 0l3.58-3.58c.94-.94.94-2.48 0-3.42L9 5Z M6 9.01V9 M15 5s2-2 4-2 4 2 4 2v7l-4 4"/></svg>,
+  },
+  // ── General ──
+  { view: "history", label: "Scan History", section: "GENERAL",
+    icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8 M3 3v5h5 M12 7v5l4 2"/></svg>,
+  },
+  { view: "autofix", label: "Fix with AI",
     icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z M2 17l10 5 10-5 M2 12l10 5 10-5"/></svg>,
   },
-  {
-    view: "profile", label: "Profile",
+  { view: "profile", label: "Profile",
     icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>,
   },
 ];
@@ -500,9 +487,15 @@ export default function App() {
   const [dastUrl, setDastUrl]             = useState("");
   const [toasts, setToasts]               = useState<Toast[]>([]);
   const [packages, setPackages]           = useState<PkgInfo[]>([]);
+  const [privacyReport, setPrivacyReport] = useState<PrivacyReport | null>(null);
+  const [complianceLabResult, setComplianceLabResult] = useState<ComplianceLabResult | null>(null);
+  const [complianceLabRunning, setComplianceLabRunning] = useState(false);
+  const [complianceLabError, setComplianceLabError] = useState<string | null>(null);
   const [pkgExpanded, setPkgExpanded]     = useState<string | null>(null);
   const [advExpanded, setAdvExpanded]     = useState<Set<string>>(new Set());
   const [depPage, setDepPage]             = useState(0);
+  const [licPages, setLicPages]           = useState<Record<string, number>>({});
+  const [expandedPrivacy, setExpandedPrivacy] = useState<Set<string>>(new Set());
   const [isDepScanning, setIsDepScanning] = useState(false);
   const [depScanError, setDepScanError]   = useState<string | null>(null);
   const [depDragOver, setDepDragOver]     = useState(false);
@@ -616,6 +609,14 @@ export default function App() {
       }
       if (activeProfile?.token && activeProfile.email) {
         syncAuthToGoConfig(activeProfile.token, activeProfile.email, activeProfile.refreshToken ?? "");
+        // Restore Pro status from JWT so Pro gates work before any scan runs.
+        try {
+          const claims = decodeJWT(activeProfile.token);
+          if (claims) {
+            const sub = (claims.subscription_status as string | undefined) ?? "";
+            setAuthStatus({ loggedIn: true, isPro: sub === "pro" || sub === "team", plan: sub || "free", email: activeProfile.email });
+          }
+        } catch {}
       }
     }
     init();
@@ -712,6 +713,15 @@ export default function App() {
     setShowAuthForm(false); // close the in-app sign-in modal if it was open
     setSessionExpired(false);
     await syncAuthToGoConfig(token, p.email, refreshToken);
+    // Set auth status immediately from the JWT so Pro gates work
+    // even before a scan server is running.
+    try {
+      const claims = decodeJWT(token);
+      if (claims) {
+        const sub = (claims.subscription_status as string | undefined) ?? "";
+        setAuthStatus({ loggedIn: true, isPro: sub === "pro" || sub === "team", plan: sub || "free", email: p.email });
+      }
+    } catch {}
     if (currentServerUrl) fetchAndCachePackages(currentServerUrl);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentServerUrl]);
@@ -829,6 +839,7 @@ export default function App() {
       }
       if (!scanRes.ok) return;
       const data = await scanRes.json();
+      if (data.privacy) setPrivacyReport(data.privacy);
       if (Array.isArray(data.packages) && data.packages.length > 0) {
         setPackages(data.packages);
         setDepPage(0);
@@ -875,7 +886,6 @@ export default function App() {
           findings,
           packages: pkgs,
           user_familiarity: profile?.familiarity ?? 1,
-          about_you: profile?.aboutYou ?? "",
         }),
       });
 
@@ -937,7 +947,10 @@ export default function App() {
   }
 
   function exportLabPdf() {
+    const t = document.title;
+    document.title = `Security Assessment - ${scanPath?.split("/").pop() ?? "Report"}`;
     window.print();
+    document.title = t;
   }
 
   function triggerSast(path: string): void {
@@ -991,12 +1004,10 @@ export default function App() {
 
   function openRecent(r: RecentProject): void {
     if (r.cachePath && staleCaches.has(r.path)) {
-      // Cache file was deleted — re-run the scan instead of trying to serve it
       r.type === "sast" ? triggerSast(r.path) : triggerDast(r.path);
       return;
     }
     if (r.cachePath) {
-      // Re-serve cached findings — starts a fresh server, no zombie processes
       const id = crypto.randomUUID();
       addToast(id, r.name, r.type, r.path);
       invoke<string>("serve_scan", { cachePath: r.cachePath })
@@ -1010,7 +1021,15 @@ export default function App() {
     } else if (!isScanning) {
       r.type === "sast" ? triggerSast(r.path) : triggerDast(r.path);
     }
-    // If isScanning and no cache path, do nothing — scan is already running
+  }
+
+  // Load data from a previous scan without navigating away from the current view.
+  // Used by Licenses, Privacy, and Compliance tabs.
+  function loadScanData(r: RecentProject): void {
+    if (!r.cachePath || staleCaches.has(r.path)) return;
+    invoke<string>("serve_scan", { cachePath: r.cachePath })
+      .then((url) => { fetchAndCachePackages(url); })
+      .catch(() => {});
   }
 
   async function deleteRecent(path: string) {
@@ -1118,9 +1137,10 @@ export default function App() {
         </div>
 
         <nav className="sidebar-nav">
-          {NAV.map(({ view: v, label, icon, pro }) => (
+          {NAV.map(({ view: v, label, icon, pro, section }) => (
+            <span key={v} style={{ display: "contents" }}>
+              {section && <div className="sidebar-scan-label" style={{ marginTop: 8 }}>{section}</div>}
             <button
-              key={v}
               className={`sidebar-nav-item ${view === v ? "active" : ""}`}
               onClick={() => setView(v)}
             >
@@ -1130,6 +1150,7 @@ export default function App() {
                 <span style={{ font: "600 9px Inter,sans-serif", letterSpacing: "1px", color: "#a78bfa", border: "1px solid rgba(167,139,250,0.4)", padding: "2px 5px" }}>PRO</span>
               )}
             </button>
+            </span>
           ))}
 
           {/* Dynamic report item — appears once a scan result is available */}
@@ -1543,13 +1564,25 @@ export default function App() {
           )}
 
           {/* ── DAST ── */}
-          {view === "dast" && (
+          {view === "dast" && (() => {
+            const isPro = authStatus?.isPro ?? false;
+            return (
             <div className="content-inner">
               <div className="view-header">
-                <h2 className="view-title">Dynamic Analysis</h2>
-                <p className="view-desc">Scan a running server for runtime vulnerabilities using Nuclei's 6,000+ templates.</p>
+                <h2 className="view-title">Dynamic Analysis <span className="lab-pro-tag">PRO</span></h2>
+                <p className="view-desc">Scan a running server for runtime vulnerabilities using Nuclei's 6,000+ templates plus AI-generated attack patterns.</p>
               </div>
 
+              {!isPro && (
+                <div className="lab-state-card lab-pro-gate">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                  Dynamic Analysis requires a Pro subscription.
+                  <button className="lab-upgrade-btn" onClick={() => setShowAuthForm(true)}>Upgrade →</button>
+                </div>
+              )}
+
+              {isPro && (
+              <>
               <div className={`scan-tip-wrap ${isScanning ? "scanning-active" : ""}`}>
               <div className={`dast-panel ${isScanning ? "scan-locked" : ""}`}>
                 <CM />
@@ -1634,8 +1667,428 @@ export default function App() {
                   </div>
                 </div>
               )}
+              </>
+              )}
+            </div>
+            );
+          })()}
+
+          {/* ── Licenses ── */}
+          {view === "licenses" && (
+            <div className="content-inner">
+              <div className="view-header">
+                <h2 className="view-title">License Compliance</h2>
+                <p className="view-desc">Open-source license risk across your dependency tree. Copyleft licenses may require you to open-source your code.</p>
+              </div>
+              {packages.length === 0 ? (
+                <div className="lab-state-card">
+                  <p className="lab-no-data" style={{ marginBottom: recent.filter(r => r.cachePath).length > 0 ? 10 : 0 }}>No license data loaded.</p>
+                  {recent.filter(r => r.cachePath && r.type === "sast").length > 0 && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                      <span style={{ fontSize: 11, color: "oklch(0.45 0 0)", fontWeight: 500 }}>LOAD FROM PREVIOUS SCAN</span>
+                      {recent.filter(r => r.cachePath && r.type === "sast").slice(0, 5).map(r => (
+                        <button key={r.path} onClick={() => loadScanData(r)} style={{ background: "none", border: "1px solid oklch(0.88 0 0)", padding: "6px 10px", cursor: "pointer", fontSize: 12, color: "oklch(0.30 0 0)", textAlign: "left", display: "flex", justifyContent: "space-between" }}>
+                          <span>{r.name}</span>
+                          <span style={{ color: "oklch(0.55 0 0)", fontSize: 11 }}>{timeAgo(r.scannedAt)}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : (() => {
+                const LIC_PAGE = 50;
+                const codebase = scanPath?.split("/").pop() ?? "project";
+                const copyleft = packages.filter(p => p.license_risk === "copyleft");
+                const weakCopyleft = packages.filter(p => p.license_risk === "weak-copyleft");
+                const unknown = packages.filter(p => p.license_risk === "unknown" || !p.license_risk);
+                const permissive = packages.filter(p => p.license_risk === "permissive");
+                const sections = [
+                  { key: "copyleft", label: "COPYLEFT — may require open-sourcing", items: copyleft, color: "#dc2626" },
+                  { key: "weak", label: "WEAK COPYLEFT — review modification terms", items: weakCopyleft, color: "#d97706" },
+                  { key: "unknown", label: "UNKNOWN — no license declared", items: unknown, color: "#6b7280" },
+                  { key: "permissive", label: "PERMISSIVE — safe to use", items: permissive, color: "#16a34a" },
+                ];
+                return (
+                  <>
+                    {/* Loaded codebase bar */}
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 14px", background: "white", border: "1px solid oklch(0.88 0 0)", marginBottom: 16 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontSize: 12, color: "oklch(0.50 0 0)" }}>Analysing</span>
+                        <span style={{ fontSize: 13, fontWeight: 600, color: "oklch(0.15 0 0)" }}>{codebase}</span>
+                        <span style={{ fontSize: 11, color: "oklch(0.55 0 0)" }}>{packages.length} package{packages.length !== 1 ? "s" : ""}</span>
+                      </div>
+                      <button onClick={() => { setPackages([]); setLicPages({}); }} style={{ background: "none", border: "1px solid oklch(0.88 0 0)", padding: "4px 10px", cursor: "pointer", fontSize: 11, color: "oklch(0.40 0 0)" }}>
+                        Scan another project
+                      </button>
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 16 }}>
+                      {[
+                        { label: "Copyleft", count: copyleft.length, color: "#dc2626" },
+                        { label: "Weak Copyleft", count: weakCopyleft.length, color: "#d97706" },
+                        { label: "Unknown", count: unknown.length, color: "#6b7280" },
+                        { label: "Permissive", count: permissive.length, color: "#16a34a" },
+                      ].map(s => (
+                        <div key={s.label} className="lab-card" style={{ textAlign: "center", padding: 14 }}>
+                          <div style={{ fontSize: 24, fontWeight: 700, color: s.color }}>{s.count}</div>
+                          <div className="lab-card-label" style={{ marginTop: 4 }}>{s.label.toUpperCase()}</div>
+                        </div>
+                      ))}
+                    </div>
+                    {sections.filter(s => s.items.length > 0).map(s => {
+                      const page = licPages[s.key] ?? 0;
+                      const totalPages = Math.ceil(s.items.length / LIC_PAGE);
+                      const pageItems = s.items.slice(page * LIC_PAGE, (page + 1) * LIC_PAGE);
+                      return (
+                        <div key={s.key} style={{ marginBottom: 16 }}>
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                            <div className="lab-card-label" style={{ color: s.color }}>{s.label}</div>
+                            {totalPages > 1 && (
+                              <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "oklch(0.50 0 0)" }}>
+                                <button disabled={page === 0} onClick={() => setLicPages(p => ({ ...p, [s.key]: page - 1 }))} style={{ background: "none", border: "1px solid oklch(0.88 0 0)", padding: "2px 8px", cursor: page === 0 ? "default" : "pointer", opacity: page === 0 ? 0.4 : 1, fontSize: 11 }}>←</button>
+                                <span>{page + 1} / {totalPages}</span>
+                                <button disabled={page >= totalPages - 1} onClick={() => setLicPages(p => ({ ...p, [s.key]: page + 1 }))} style={{ background: "none", border: "1px solid oklch(0.88 0 0)", padding: "2px 8px", cursor: page >= totalPages - 1 ? "default" : "pointer", opacity: page >= totalPages - 1 ? 0.4 : 1, fontSize: 11 }}>→</button>
+                              </div>
+                            )}
+                          </div>
+                          <div className="lab-card" style={{ padding: 0 }}>
+                            {pageItems.map((p, i) => (
+                              <div key={`${p.name}-${p.version}-${i}`} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 14px", borderBottom: i < pageItems.length - 1 ? "1px solid oklch(0.94 0 0)" : "none", fontSize: 13 }}>
+                                <span style={{ fontWeight: 500, color: "oklch(0.18 0 0)", flex: 1 }}>{p.name}</span>
+                                <span style={{ fontFamily: "'Fira Code', monospace", fontSize: 11, color: "oklch(0.50 0 0)" }}>{p.version}</span>
+                                <span style={{ fontFamily: "'Fira Code', monospace", fontSize: 10, color: s.color, border: `1px solid ${s.color}33`, padding: "2px 6px" }}>{p.license || "NONE"}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </>
+                );
+              })()}
             </div>
           )}
+
+          {/* ── Privacy ── */}
+          {view === "privacy" && (() => {
+            const dataTypes = privacyReport?.data_types ?? [];
+            const thirdParty = privacyReport?.third_party ?? [];
+            const codebase = scanPath?.split("/").pop() ?? "";
+            const toggle = (key: string) => setExpandedPrivacy(prev => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n; });
+
+            return (
+            <div className="content-inner">
+              <div className="view-header">
+                <h2 className="view-title">Privacy Data Flows</h2>
+                <p className="view-desc">Where personal data is processed in your code and which third-party services receive it.</p>
+              </div>
+
+              {!privacyReport ? (
+                <div className="lab-state-card">
+                  <p className="lab-no-data" style={{ marginBottom: recent.filter(r => r.cachePath && r.type === "sast").length > 0 ? 10 : 0 }}>No privacy data loaded.</p>
+                  {recent.filter(r => r.cachePath && r.type === "sast").length > 0 && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                      <span style={{ fontSize: 11, color: "oklch(0.45 0 0)", fontWeight: 500 }}>LOAD FROM PREVIOUS SCAN</span>
+                      {recent.filter(r => r.cachePath && r.type === "sast").slice(0, 5).map(r => (
+                        <button key={r.path} onClick={() => loadScanData(r)} style={{ background: "none", border: "1px solid oklch(0.88 0 0)", padding: "6px 10px", cursor: "pointer", fontSize: 12, color: "oklch(0.30 0 0)", textAlign: "left", display: "flex", justifyContent: "space-between" }}>
+                          <span>{r.name}</span>
+                          <span style={{ color: "oklch(0.55 0 0)", fontSize: 11 }}>{timeAgo(r.scannedAt)}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <>
+                  {/* Loaded codebase bar */}
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 14px", background: "white", border: "1px solid oklch(0.88 0 0)", marginBottom: 16 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ fontSize: 12, color: "oklch(0.50 0 0)" }}>Analysing</span>
+                      <span style={{ fontSize: 13, fontWeight: 600, color: "oklch(0.15 0 0)" }}>{codebase || "project"}</span>
+                      <span style={{ fontSize: 11, color: "oklch(0.55 0 0)" }}>{dataTypes.length} data type{dataTypes.length !== 1 ? "s" : ""}, {thirdParty.length} third part{thirdParty.length !== 1 ? "ies" : "y"}</span>
+                    </div>
+                    <button onClick={() => { setPrivacyReport(null); setExpandedPrivacy(new Set()); }} style={{ background: "none", border: "1px solid oklch(0.88 0 0)", padding: "4px 10px", cursor: "pointer", fontSize: 11, color: "oklch(0.40 0 0)" }}>
+                      Scan another project
+                    </button>
+                  </div>
+
+                  {/* Summary cards */}
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 16 }}>
+                    <div className="lab-card" style={{ textAlign: "center", padding: 14 }}>
+                      <div style={{ fontSize: 24, fontWeight: 700, color: "#7c3aed" }}>{dataTypes.length}</div>
+                      <div className="lab-card-label" style={{ marginTop: 4 }}>PII TYPES DETECTED</div>
+                    </div>
+                    <div className="lab-card" style={{ textAlign: "center", padding: 14 }}>
+                      <div style={{ fontSize: 24, fontWeight: 700, color: "#d97706" }}>{thirdParty.length}</div>
+                      <div className="lab-card-label" style={{ marginTop: 4 }}>THIRD-PARTY RECIPIENTS</div>
+                    </div>
+                    <div className="lab-card" style={{ textAlign: "center", padding: 14 }}>
+                      <div style={{ fontSize: 24, fontWeight: 700, color: "#dc2626" }}>{dataTypes.reduce((s, d) => s + d.detection_count, 0)}</div>
+                      <div className="lab-card-label" style={{ marginTop: 4 }}>TOTAL DETECTIONS</div>
+                    </div>
+                  </div>
+
+                  {/* Data types — expandable */}
+                  <div style={{ marginBottom: 16 }}>
+                    <div className="lab-card-label" style={{ marginBottom: 8 }}>PERSONAL DATA DETECTED</div>
+                    {dataTypes.length === 0 ? (
+                      <div className="lab-card" style={{ padding: 14, fontSize: 13, color: "oklch(0.50 0 0)" }}>No personal data flows detected in this codebase.</div>
+                    ) : (
+                      <div className="lab-card" style={{ padding: 0 }}>
+                        {dataTypes.map((dt, i) => {
+                          const key = `dt-${dt.name}-${i}`;
+                          const isOpen = expandedPrivacy.has(key);
+                          return (
+                            <div key={key} style={{ borderBottom: i < dataTypes.length - 1 ? "1px solid oklch(0.94 0 0)" : "none" }}>
+                              <div
+                                onClick={() => toggle(key)}
+                                style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", cursor: "pointer" }}
+                              >
+                                <svg width="10" height="10" viewBox="0 0 10 10" style={{ transform: isOpen ? "rotate(90deg)" : "none", transition: "transform 0.15s", flexShrink: 0 }}>
+                                  <path d="M3 1l4 4-4 4" fill="none" stroke="oklch(0.50 0 0)" strokeWidth="1.5" />
+                                </svg>
+                                <span style={{ fontWeight: 500, fontSize: 13, color: "oklch(0.18 0 0)", flex: 1 }}>{dt.name}</span>
+                                <span style={{ fontSize: 10, fontFamily: "'Fira Code', monospace", color: "#7c3aed", border: "1px solid rgba(124,58,237,0.3)", padding: "2px 5px" }}>{dt.category}</span>
+                                {dt.category_groups?.map(g => (
+                                  <span key={g} style={{ fontSize: 9, fontFamily: "'Fira Code', monospace", color: "oklch(0.50 0 0)", border: "1px solid oklch(0.88 0 0)", padding: "1px 4px" }}>{g}</span>
+                                ))}
+                                <span style={{ fontSize: 11, color: "oklch(0.50 0 0)" }}>{dt.detection_count} detection{dt.detection_count !== 1 ? "s" : ""}</span>
+                              </div>
+                              {isOpen && dt.locations?.length > 0 && (
+                                <div style={{ padding: "0 14px 10px 32px", display: "flex", flexDirection: "column", gap: 3 }}>
+                                  <div style={{ fontSize: 10, fontWeight: 500, color: "oklch(0.45 0 0)", letterSpacing: "0.05em", marginBottom: 2 }}>FILE LOCATIONS</div>
+                                  {dt.locations.map((loc, j) => (
+                                    <span key={j} style={{ fontSize: 11, fontFamily: "'Fira Code', monospace", color: "oklch(0.35 0 0)" }}>
+                                      {loc.file}:{loc.line}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Third-party recipients — expandable */}
+                  {thirdParty.length > 0 && (
+                    <div>
+                      <div className="lab-card-label" style={{ marginBottom: 8 }}>THIRD-PARTY DATA RECIPIENTS</div>
+                      <div className="lab-card" style={{ padding: 0 }}>
+                        {thirdParty.map((tp, i) => {
+                          const key = `tp-${tp.name}-${i}`;
+                          const isOpen = expandedPrivacy.has(key);
+                          const dtList = (tp.data_types ?? []).filter(d => d !== "Unknown");
+                          return (
+                            <div key={key} style={{ borderBottom: i < thirdParty.length - 1 ? "1px solid oklch(0.94 0 0)" : "none" }}>
+                              <div
+                                onClick={() => toggle(key)}
+                                style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", cursor: "pointer" }}
+                              >
+                                <svg width="10" height="10" viewBox="0 0 10 10" style={{ transform: isOpen ? "rotate(90deg)" : "none", transition: "transform 0.15s", flexShrink: 0 }}>
+                                  <path d="M3 1l4 4-4 4" fill="none" stroke="oklch(0.50 0 0)" strokeWidth="1.5" />
+                                </svg>
+                                <span style={{ fontWeight: 500, fontSize: 13, color: "oklch(0.18 0 0)" }}>{tp.name}</span>
+                                <span style={{ fontSize: 11, color: "oklch(0.50 0 0)", flex: 1 }}>{dtList.length > 0 ? dtList.join(", ") : "Data types not identified"}</span>
+                                {tp.risk_count > 0 && <span className="dep-sev-badge dep-sev-medium" style={{ fontSize: 10 }}>{tp.risk_count} risk{tp.risk_count !== 1 ? "s" : ""}</span>}
+                              </div>
+                              {isOpen && (
+                                <div style={{ padding: "0 14px 10px 32px", fontSize: 12, color: "oklch(0.40 0 0)", lineHeight: 1.6 }}>
+                                  <div style={{ fontSize: 10, fontWeight: 500, color: "oklch(0.45 0 0)", letterSpacing: "0.05em", marginBottom: 4 }}>DATA SHARED</div>
+                                  {dtList.length > 0 ? dtList.map(d => <div key={d}>- {d}</div>) : <div>Could not determine specific data types shared with this service.</div>}
+                                  {tp.risk_count > 0 && <div style={{ marginTop: 6, color: "#d97706" }}>{tp.risk_count} privacy rule{tp.risk_count !== 1 ? "s" : ""} flagged for this integration.</div>}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+            );
+          })()}
+
+
+          {/* ── Compliance Lab ── */}
+          {view === "compliancelab" && (() => {
+            const isPro = authStatus?.isPro ?? false;
+            const hasData = packages.length > 0;
+            const codebaseName = scanPath?.split("/").pop() ?? "Unknown";
+            const r = complianceLabResult;
+            const gradeColors: Record<string, string> = { A: "#16a34a", B: "#65a30d", C: "#ca8a04", D: "#ea580c", F: "#dc2626" };
+            const gradeColor = r ? (gradeColors[r.grade] ?? "#6b7280") : "#6b7280";
+            const ringC = 2 * Math.PI * 50;
+
+            async function runComplianceLab() {
+              setComplianceLabRunning(true);
+              setComplianceLabError(null);
+              try {
+                const token = await getFreshToken();
+                if (!token) throw new Error("Sign in to use Compliance Lab");
+
+                const copyleft = packages.filter(p => p.license_risk === "copyleft").map(p => ({ name: p.name, version: p.version, license: p.license || "" }));
+                const weakCopyleft = packages.filter(p => p.license_risk === "weak-copyleft").map(p => ({ name: p.name, license: p.license || "" }));
+                const unknownCount = packages.filter(p => p.license_risk === "unknown" || !p.license_risk).length;
+                const permissiveCount = packages.filter(p => p.license_risk === "permissive").length;
+
+                const res = await fetch(`${SUPABASE_URL}/functions/v1/compliance-lab`, {
+                  method: "POST",
+                  headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    project_path: scanPath ?? "",
+                    licenses: { total_packages: packages.length, copyleft, weak_copyleft: weakCopyleft, unknown_count: unknownCount, permissive_count: permissiveCount },
+                    privacy: { data_types: (privacyReport?.data_types ?? []).map(d => ({ name: d.name, category: d.category, detection_count: d.detection_count })), third_party: (privacyReport?.third_party ?? []).map(t => ({ name: t.name, data_types: t.data_types ?? [] })) },
+                    user_familiarity: profile?.familiarity ?? 1,
+                  }),
+                });
+
+                if (res.status === 403) throw new Error("Compliance Lab requires a Pro subscription.");
+                if (res.status === 429) throw new Error("Daily limit reached. Try again tomorrow.");
+                if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error((err as { error?: string }).error ?? `Request failed (${res.status})`); }
+
+                setComplianceLabResult(await res.json() as ComplianceLabResult);
+              } catch (e) {
+                setComplianceLabError(friendlyError(String(e)));
+              } finally {
+                setComplianceLabRunning(false);
+              }
+            }
+
+            return (
+              <div className="content-inner lab-content" style={{ background: "oklch(0.965 0 0)" }}>
+                <div className="lab-header-row">
+                  <div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 3 }}>
+                      <span className="lab-title-text">Compliance Lab</span>
+                      <span className="lab-pro-tag">PRO</span>
+                    </div>
+                    <p className="lab-subtitle">
+                      {r && scanPath
+                        ? `Compliance report for ${codebaseName} — licensing, privacy, and data handling assessment.`
+                        : "AI-powered compliance assessment combining license analysis and privacy data flows."}
+                    </p>
+                  </div>
+                  <div className="lab-header-actions">
+                    {r && (
+                      <button className="lab-export-btn" onClick={() => { const t = document.title; document.title = `Compliance Report - ${codebaseName}`; window.print(); document.title = t; }}>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                        Export Report
+                      </button>
+                    )}
+                    {hasData && isPro && (
+                      <button className={`lab-run-primary ${complianceLabRunning ? "lab-btn-loading" : ""}`} onClick={runComplianceLab} disabled={complianceLabRunning}>
+                        {complianceLabRunning ? <><span className="lab-spinner" /> Analysing...</> : r ? "Re-run Analysis" : "Run Compliance Lab"}
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {!isPro && (
+                  <div className="lab-state-card lab-pro-gate">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                    Compliance Lab requires a Pro subscription.
+                    <button className="lab-upgrade-btn" onClick={() => setShowAuthForm(true)}>Upgrade →</button>
+                  </div>
+                )}
+
+                {isPro && !hasData && (
+                  <div className="lab-state-card">
+                    <p className="lab-no-data" style={{ marginBottom: recent.filter(r => r.cachePath).length > 0 ? 10 : 0 }}>Load scan data to generate a compliance report.</p>
+                    {recent.filter(r => r.cachePath && r.type === "sast").length > 0 && (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                        <span style={{ fontSize: 11, color: "oklch(0.45 0 0)", fontWeight: 500 }}>LOAD FROM PREVIOUS SCAN</span>
+                        {recent.filter(r => r.cachePath && r.type === "sast").slice(0, 5).map(r => (
+                          <button key={r.path} onClick={() => loadScanData(r)} style={{ background: "none", border: "1px solid oklch(0.88 0 0)", padding: "6px 10px", cursor: "pointer", fontSize: 12, color: "oklch(0.30 0 0)", textAlign: "left", display: "flex", justifyContent: "space-between" }}>
+                            <span>{r.name}</span>
+                            <span style={{ color: "oklch(0.55 0 0)", fontSize: 11 }}>{timeAgo(r.scannedAt)}</span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {isPro && hasData && !r && !complianceLabRunning && (
+                  <div className="lab-state-card">
+                    <p className="lab-no-data">Scan data loaded for <strong>{codebaseName}</strong> ({packages.length} packages). Click "Run Compliance Lab" to generate your AI-powered compliance assessment.</p>
+                  </div>
+                )}
+
+                {complianceLabError && <p className="lab-error">{complianceLabError}</p>}
+
+                {r && (
+                  <>
+                    {/* Score row */}
+                    <div className="lab-score-row-v2">
+                      <div className="lab-index-card">
+                        <div className="corner-marks"><i className="corner-mark cm-tl">+</i><i className="corner-mark cm-tr">+</i><i className="corner-mark cm-bl">+</i><i className="corner-mark cm-br">+</i></div>
+                        <div className="lab-index-card-label">COMPLIANCE SCORE</div>
+                        <div className="lab-index-ring-wrap">
+                          <svg width="120" height="120" viewBox="0 0 120 120" style={{ transform: "rotate(-90deg)" }}>
+                            <circle cx="60" cy="60" r="50" fill="none" stroke="oklch(0.92 0 0)" strokeWidth="8" />
+                            <circle cx="60" cy="60" r="50" fill="none" stroke={gradeColor} strokeWidth="8" strokeDasharray={`${(ringC * r.score / 100).toFixed(1)} ${ringC.toFixed(1)}`} />
+                          </svg>
+                          <div className="lab-ring-center">
+                            <span className="lab-index-num">{r.score}</span>
+                            <span className="lab-ring-denom">/100</span>
+                          </div>
+                        </div>
+                        <div className="lab-index-sub2">higher = more compliant</div>
+                      </div>
+
+                      <div className="lab-grade-card">
+                        <div className="lab-index-card-label">GRADE</div>
+                        <div className="lab-grade-box">
+                          <span className="lab-grade-letter" style={{ borderColor: gradeColor, color: gradeColor }}>{r.grade}</span>
+                        </div>
+                        <div className="lab-index-sub2">
+                          {r.grade === "A" ? "excellent" : r.grade === "B" ? "good" : r.grade === "C" ? "fair" : r.grade === "D" ? "needs attention" : "critical"}
+                        </div>
+                      </div>
+
+                      <div className="lab-verdict-card">
+                        <div className="lab-index-card-label">EXECUTIVE SUMMARY</div>
+                        <p className="lab-verdict-text">{r.executive_summary}</p>
+                      </div>
+                    </div>
+
+                    {/* Verdicts */}
+                    <div className="lab-body-cols">
+                      <div className="lab-body-left">
+                        <div className="lab-card">
+                          <div className="lab-card-label">LICENSE ASSESSMENT</div>
+                          <p style={{ fontSize: 12.5, color: "oklch(0.25 0 0)", lineHeight: 1.65, margin: 0 }}>{r.license_verdict}</p>
+                        </div>
+                      </div>
+                      <div className="lab-body-right">
+                        <div className="lab-card">
+                          <div className="lab-card-label">PRIVACY & DATA HANDLING</div>
+                          <p style={{ fontSize: 12.5, color: "oklch(0.25 0 0)", lineHeight: 1.65, margin: 0 }}>{r.privacy_verdict}</p>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Recommendations */}
+                    {r.recommendations && r.recommendations.length > 0 && (
+                      <div className="lab-card" style={{ position: "relative" }}>
+                        <div className="corner-marks"><i className="corner-mark cm-tl">+</i><i className="corner-mark cm-tr">+</i><i className="corner-mark cm-bl">+</i><i className="corner-mark cm-br">+</i></div>
+                        <div className="lab-card-label">RECOMMENDATIONS</div>
+                        {r.recommendations.map((rec, i) => (
+                          <div key={i} className="lab-fix-v2" style={{ borderBottom: i < r.recommendations.length - 1 ? "1px solid oklch(0.94 0 0)" : "none" }}>
+                            <span className="lab-fix-rank">{i + 1}</span>
+                            <p style={{ fontSize: 12.5, color: "oklch(0.25 0 0)", lineHeight: 1.55, margin: 0, flex: 1 }}>{rec}</p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            );
+          })()}
 
           {/* ── History ── */}
           {view === "history" && (
@@ -2624,13 +3077,22 @@ export default function App() {
         </div>
       )}
 
-      {/* PrintCertificate renders via portal directly into document.body */}
-      <PrintCertificate
-        projectPath={scanPath}
-        scanSummary={scanSummary}
-        threatLabResult={threatLabResult}
-        packages={packages}
-      />
+      {/* Print portals — only one renders at a time based on current view */}
+      {view !== "compliancelab" && (
+        <PrintCertificate
+          projectPath={scanPath}
+          scanSummary={scanSummary}
+          threatLabResult={threatLabResult}
+          packages={packages}
+        />
+      )}
+      {view === "compliancelab" && (
+        <PrintComplianceReport
+          projectPath={scanPath}
+          result={complianceLabResult}
+          packages={packages}
+        />
+      )}
 
     </div>
   );

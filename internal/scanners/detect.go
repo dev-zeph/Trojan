@@ -54,6 +54,8 @@ func RelevantScanners(all []Scanner, p ProjectType) []Scanner {
 		switch s.Name() {
 		case "semgrep":
 			relevant = append(relevant, s) // always run SAST
+		case "bearer":
+			relevant = append(relevant, s) // always run SAST
 		case "trivy":
 			relevant = append(relevant, s) // always run SCA
 		case "gitleaks":

@@ -119,11 +119,22 @@ func tryInstallLatest(s ScannerManifest, pinnedAsset PlatformAsset, dest string)
 // installPipDefensive installs a pip-based scanner with multiple fallback strategies:
 //  1. Try latest version via pip (if python3 is available)
 //  2. Fall back to pinned version via pip
-//  3. Fall back to Homebrew (if available)
+//  3. If no python3: try installing it via Homebrew, then retry pip
+//  4. Fall back to installing the scanner itself via Homebrew
 func installPipDefensive(s ScannerManifest, asset PlatformAsset, binDir string) error {
 	name := strings.SplitN(asset.PipPackage, "==", 2)[0]
 
 	hasPython := exec.Command("python3", "--version").Run() == nil
+
+	// If python3 is missing, try to install it via Homebrew first
+	if !hasPython {
+		if _, err := exec.LookPath("brew"); err == nil {
+			fmt.Print("(installing python3 via brew) ")
+			if err := runCaptured("brew", "install", "--quiet", "python3"); err == nil {
+				hasPython = exec.Command("python3", "--version").Run() == nil
+			}
+		}
+	}
 
 	if hasPython {
 		// Try latest version first
@@ -141,7 +152,7 @@ func installPipDefensive(s ScannerManifest, asset PlatformAsset, binDir string) 
 		}
 	}
 
-	// Fallback: try Homebrew
+	// Fallback: try installing the scanner directly via Homebrew
 	if _, err := exec.LookPath("brew"); err == nil {
 		fmt.Print("(trying brew) ")
 		if err := runCaptured("brew", "install", "--quiet", name); err == nil {

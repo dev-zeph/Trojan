@@ -64,10 +64,11 @@ func RunAll(projectPath string, scanners []Scanner, onProgress func(name string,
 func DefaultScanners() []Scanner {
 	candidates := []Scanner{
 		Semgrep{},
+		Bearer{},
 		&Trivy{},
 		Gitleaks{},
 		Checkov{},
-		Syft{},
+		&Syft{},
 	}
 
 	available := []Scanner{}

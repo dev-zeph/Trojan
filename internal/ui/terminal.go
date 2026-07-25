@@ -26,9 +26,12 @@ var (
 // Call at the start of interactive commands (scan, dast, init, login, update).
 func PrintBanner(version string) {
 	fmt.Println()
-	fmt.Println("  ╔╦╗╦═╗╔═╗ ╦╔═╗╔╗╔")
-	fmt.Println("   ║ ╠╦╝║ ║ ║╠═╣║║║")
-	fmt.Printf("   ╩ ╩╚═╚═╝╚╝╩ ╩╝╚╝   v%s\n", version)
+	fmt.Println("  ████████╗██████╗  ██████╗      ██╗ █████╗ ███╗   ██╗")
+	fmt.Println("  ╚══██╔══╝██╔══██╗██╔═══██╗     ██║██╔══██╗████╗  ██║")
+	fmt.Println("     ██║   ██████╔╝██║   ██║     ██║███████║██╔██╗ ██║")
+	fmt.Println("     ██║   ██╔══██╗██║   ██║██   ██║██╔══██║██║╚██╗██║")
+	fmt.Println("     ██║   ██║  ██║╚██████╔╝╚█████╔╝██║  ██║██║ ╚████║")
+	fmt.Printf("     ╚═╝   ╚═╝  ╚═╝ ╚═════╝  ╚════╝ ╚═╝  ╚═╝╚═╝  ╚═══╝   v%s\n", version)
 	fmt.Println()
 }
 
