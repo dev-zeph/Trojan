@@ -50,7 +50,7 @@ const GRADE_COLOR: Record<string, string> = {
 };
 
 const SEV_COLOR: Record<string, string> = {
-  critical: "#dc2626", high: "#ea580c", medium: "#d97706", low: "#2563eb", info: "#6b7280",
+  critical: "#dc2626", high: "#ea580c", medium: "#a16207", low: "#1d4ed8", info: "#4b5563",
 };
 
 export function PrintCertificate({

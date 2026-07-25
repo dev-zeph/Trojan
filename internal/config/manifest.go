@@ -181,6 +181,39 @@ var Scanners = []ScannerManifest{
 			},
 		},
 	},
+	{
+		Name:       "Bearer",
+		Binary:     "bearer",
+		Version:    "2.0.2",
+		GitHubRepo: "Bearer/bearer",
+		TagPrefix:  "v",
+		Platforms: map[string]PlatformAsset{
+			"linux/amd64": {
+				URL:             "https://github.com/Bearer/bearer/releases/download/v2.0.2/bearer_2.0.2_linux_amd64.tar.gz",
+				SHA256:          "865c80c5f80aaca1f83e98bca4decb0fd5b5d024e13f8ec48e94d69430d0d23b",
+				Archive:         ArchiveTarGz,
+				BinaryInArchive: "bearer",
+			},
+			"linux/arm64": {
+				URL:             "https://github.com/Bearer/bearer/releases/download/v2.0.2/bearer_2.0.2_linux_arm64.tar.gz",
+				SHA256:          "cd6b64990c5df0cdfd88be1417fedfb0118f607897baac2f9cda9cb292f665a2",
+				Archive:         ArchiveTarGz,
+				BinaryInArchive: "bearer",
+			},
+			"darwin/amd64": {
+				URL:             "https://github.com/Bearer/bearer/releases/download/v2.0.2/bearer_2.0.2_darwin_amd64.tar.gz",
+				SHA256:          "1abfa29acd12c5f0157354a6716576e873dc3244b375808cea979603a3ba6303",
+				Archive:         ArchiveTarGz,
+				BinaryInArchive: "bearer",
+			},
+			"darwin/arm64": {
+				URL:             "https://github.com/Bearer/bearer/releases/download/v2.0.2/bearer_2.0.2_darwin_arm64.tar.gz",
+				SHA256:          "84f089005c643271572e45ebd507732b29326f4123602f7d6f5ca41844805717",
+				Archive:         ArchiveTarGz,
+				BinaryInArchive: "bearer",
+			},
+		},
+	},
 }
 
 // DastScanners is the pinned manifest for DAST scanners.

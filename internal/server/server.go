@@ -25,11 +25,12 @@ type licenseResult struct {
 // ScanResult so we can add view-only fields like locked_count without
 // polluting the on-disk format.
 type scanResponse struct {
-	Timestamp   time.Time            `json:"timestamp"`
-	ProjectPath string               `json:"project_path"`
-	Findings    []normalizer.Finding `json:"findings"`
-	LockedCount int                  `json:"locked_count"`
-	Packages    []normalizer.Package `json:"packages,omitempty"`
+	Timestamp   time.Time               `json:"timestamp"`
+	ProjectPath string                  `json:"project_path"`
+	Findings    []normalizer.Finding    `json:"findings"`
+	LockedCount int                     `json:"locked_count"`
+	Packages    []normalizer.Package    `json:"packages,omitempty"`
+	Privacy     *normalizer.PrivacyReport `json:"privacy,omitempty"`
 }
 
 // Server holds the scan results and serves the UI + API.
@@ -198,6 +199,7 @@ func (s *Server) handleLatestScan(w http.ResponseWriter, r *http.Request) {
 		resp.Findings, resp.LockedCount = markFindingsForFree(scan.Findings)
 	}
 	resp.Packages = scan.Packages
+	resp.Privacy = scan.Privacy
 
 	json.NewEncoder(w).Encode(resp)
 }

@@ -71,6 +71,8 @@ func (s Semgrep) Run(projectPath string) ([]normalizer.Finding, error) {
 			CodeSnippet: strings.TrimSpace(r.Extra.Lines),
 			RuleID:      r.CheckID,
 			Status:      normalizer.StatusOpen,
+			CWEIDs:      parseCWEIDs(r.Extra.Metadata.CWE),
+			OWASP:       r.Extra.Metadata.OWASP,
 		})
 	}
 
@@ -95,7 +97,25 @@ type semgrepResult struct {
 		Message  string `json:"message"`
 		Severity string `json:"severity"`
 		Lines    string `json:"lines"`
+		Metadata struct {
+			CWE   []string `json:"cwe"`
+			OWASP []string `json:"owasp"`
+		} `json:"metadata"`
 	} `json:"extra"`
+}
+
+// parseCWEIDs extracts CWE numbers from strings like "CWE-79: Cross-site Scripting".
+func parseCWEIDs(raw []string) []string {
+	var ids []string
+	for _, s := range raw {
+		// Take everything before the colon: "CWE-79: ..." → "CWE-79"
+		if idx := strings.Index(s, ":"); idx > 0 {
+			ids = append(ids, strings.TrimSpace(s[:idx]))
+		} else {
+			ids = append(ids, strings.TrimSpace(s))
+		}
+	}
+	return ids
 }
 
 func normalizeSemgrepSeverity(s string) normalizer.Severity {

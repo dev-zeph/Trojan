@@ -4,23 +4,28 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"sync"
 
 	"github.com/dev-zeph/trojan/internal/normalizer"
 )
 
 // Syft implements the Scanner interface for SBOM generation.
 // Unlike the other scanners, Syft generates an inventory rather than findings.
-// We return one informational finding per artifact as a summary.
-type Syft struct{}
+// It also extracts license data for each package, which is merged into the
+// Package list built by Trivy.
+type Syft struct {
+	mu       sync.Mutex
+	licenses map[string]string // "name@version" → license SPDX ID
+}
 
-func (s Syft) Name() string     { return "syft" }
-func (s Syft) Category() string { return "sbom" }
+func (s *Syft) Name() string     { return "syft" }
+func (s *Syft) Category() string { return "sbom" }
 
-func (s Syft) IsAvailable() bool {
+func (s *Syft) IsAvailable() bool {
 	return IsInstalled("syft")
 }
 
-func (s Syft) Run(projectPath string) ([]normalizer.Finding, error) {
+func (s *Syft) Run(projectPath string) ([]normalizer.Finding, error) {
 	if !s.IsAvailable() {
 		return nil, fmt.Errorf("syft not found: run 'trojan init' to install it")
 	}
@@ -36,8 +41,18 @@ func (s Syft) Run(projectPath string) ([]normalizer.Finding, error) {
 		return nil, fmt.Errorf("failed to parse syft output: %w", err)
 	}
 
-	// Syft produces an SBOM, not vulnerabilities.
-	// Return a single informational finding summarizing the inventory.
+	// Extract license data for each artifact.
+	licMap := make(map[string]string, len(result.Artifacts))
+	for _, a := range result.Artifacts {
+		if len(a.Licenses) > 0 && a.Licenses[0].Value != "" {
+			key := a.Name + "@" + a.Version
+			licMap[key] = a.Licenses[0].Value
+		}
+	}
+	s.mu.Lock()
+	s.licenses = licMap
+	s.mu.Unlock()
+
 	if len(result.Artifacts) == 0 {
 		return []normalizer.Finding{}, nil
 	}
@@ -58,10 +73,22 @@ func (s Syft) Run(projectPath string) ([]normalizer.Finding, error) {
 	return findings, nil
 }
 
+// Licenses returns the license map extracted during the last Run.
+// Keys are "name@version", values are SPDX license identifiers.
+func (s *Syft) Licenses() map[string]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.licenses
+}
+
 type syftOutput struct {
 	Artifacts []struct {
-		Name    string `json:"name"`
-		Version string `json:"version"`
-		Type    string `json:"type"`
+		Name     string `json:"name"`
+		Version  string `json:"version"`
+		Type     string `json:"type"`
+		Licenses []struct {
+			Value          string `json:"value"`
+			SpdxExpression string `json:"spdxExpression"`
+		} `json:"licenses"`
 	} `json:"artifacts"`
 }

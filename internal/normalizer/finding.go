@@ -35,6 +35,11 @@ type Finding struct {
 	RuleID      string   // The scanner rule that triggered this
 	Status      Status   // open, resolved, suppressed
 
+	// CWE and compliance fields
+	CWEIDs     []string            `json:"cwe_ids,omitempty"`    // e.g. ["CWE-79", "CWE-89"]
+	OWASP      []string            `json:"owasp,omitempty"`      // e.g. ["A03:2021 - Injection"]
+	Compliance []ComplianceMapping `json:"compliance,omitempty"` // mapped from CWE IDs
+
 	// Context fields — populated before AI synthesis
 	Language        string // "typescript", "go", "python", "hcl", etc. (from file extension)
 	Framework       string // "nextjs", "express", "gin", "fastapi", etc. (from project files)
@@ -61,8 +66,18 @@ type PackageAdvisory struct {
 	FixVersion string   `json:"fix_version,omitempty"` // version that resolves this advisory
 }
 
+// LicenseRisk classifies how a license affects your project.
+type LicenseRisk string
+
+const (
+	LicensePermissive    LicenseRisk = "permissive"     // MIT, BSD, Apache — do what you want
+	LicenseWeakCopyleft  LicenseRisk = "weak-copyleft"  // LGPL, MPL — OK if not modified
+	LicenseCopyleft      LicenseRisk = "copyleft"       // GPL, AGPL — may require open-sourcing
+	LicenseUnknown       LicenseRisk = "unknown"        // no license declared — review needed
+)
+
 // Package represents a third-party dependency found during scanning.
-// Populated by Trivy and attached to ScanResult.Packages.
+// Populated by Trivy (vulnerabilities) and Syft (licenses).
 type Package struct {
 	Name            string            `json:"name"`
 	Version         string            `json:"version"`
@@ -72,4 +87,40 @@ type Package struct {
 	HighestSeverity Severity          `json:"highest_severity,omitempty"`
 	FixVersion      string            `json:"fix_version,omitempty"` // earliest fix across all advisories
 	Advisories      []PackageAdvisory `json:"advisories,omitempty"`
+	License         string            `json:"license,omitempty"`      // SPDX identifier e.g. "MIT", "GPL-3.0"
+	LicenseRisk     LicenseRisk       `json:"license_risk,omitempty"` // permissive, weak-copyleft, copyleft, unknown
+}
+
+// ComplianceMapping links a finding to a compliance framework control.
+type ComplianceMapping struct {
+	Framework string `json:"framework"` // "SOC 2", "PCI-DSS", "HIPAA", "OWASP"
+	Control   string `json:"control"`   // e.g. "CC6.1", "6.5.1", "§164.312(a)"
+	Title     string `json:"title"`     // human-readable control name
+}
+
+// PrivacyDataType represents a detected PII/sensitive data flow.
+type PrivacyDataType struct {
+	Name           string   `json:"name"`            // e.g. "Email Address", "Password"
+	Category       string   `json:"category"`        // e.g. "Contact", "Authentication"
+	CategoryGroups []string `json:"category_groups"` // e.g. ["PII", "Personal Data"]
+	DetectionCount int      `json:"detection_count"`
+	Locations      []struct {
+		File       string `json:"file"`
+		Line       int    `json:"line"`
+		ColumnStart int   `json:"column_start"`
+		ColumnEnd   int   `json:"column_end"`
+	} `json:"locations"`
+}
+
+// PrivacyThirdParty represents a detected third-party service receiving data.
+type PrivacyThirdParty struct {
+	Name      string   `json:"name"`       // e.g. "Stripe", "Google Analytics"
+	DataTypes []string `json:"data_types"` // what data flows to them
+	RiskCount int      `json:"risk_count"` // total risk failures
+}
+
+// PrivacyReport holds all privacy data flow analysis results.
+type PrivacyReport struct {
+	DataTypes  []PrivacyDataType  `json:"data_types"`
+	ThirdParty []PrivacyThirdParty `json:"third_party"`
 }

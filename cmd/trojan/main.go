@@ -205,6 +205,18 @@ func scanCmd() *cobra.Command {
 						break
 					}
 				}
+				// Merge license data from Syft into the package list.
+				for _, s := range relevant {
+					if sy, ok := s.(*scanners.Syft); ok {
+						if lics := sy.Licenses(); len(lics) > 0 {
+							normalizer.MergeLicenses(pkgs, lics)
+						}
+						break
+					}
+				}
+
+				// Enrich findings with compliance framework mappings.
+				normalizer.EnrichCompliance(findings)
 
 				// Severity counts for results box.
 				counts := map[string]int{}
@@ -305,9 +317,11 @@ func scanCmd() *cobra.Command {
 						color.Yellow("Warning: could not save scan results: %s\n", err)
 						r := normalizer.NewScanResult(path, findings)
 						r.Packages = pkgs
+						r.Privacy = scanners.RunPrivacyScan(path)
 						return r, findings
 					}
 					scanResult.Packages = pkgs
+					scanResult.Privacy = scanners.RunPrivacyScan(path)
 					return scanResult, findings
 				}
 
@@ -319,6 +333,7 @@ func scanCmd() *cobra.Command {
 				}
 				r := normalizer.NewScanResult(path, findings)
 				r.Packages = pkgs
+				r.Privacy = scanners.RunPrivacyScan(path)
 				return r, findings
 			}
 
@@ -444,47 +459,49 @@ func dastCmd() *cobra.Command {
 				os.Exit(1)
 			}
 
-			// ── Step 4: 4-prompt confirmation flow (unchanged) ────────────────────
-			reader := bufio.NewReader(os.Stdin)
-			confirm := func(prompt string) {
-				fmt.Printf("  %s (y/n): ", prompt)
-				ans, _ := reader.ReadString('\n')
-				if a := strings.TrimSpace(strings.ToLower(ans)); a != "y" && a != "yes" {
-					fmt.Println("\nScan cancelled.")
-					os.Exit(0)
+			// ── Step 4: confirmation flow (skipped in desktop mode) ────────────────
+			if !desktop {
+				reader := bufio.NewReader(os.Stdin)
+				confirm := func(prompt string) {
+					fmt.Printf("  %s (y/n): ", prompt)
+					ans, _ := reader.ReadString('\n')
+					if a := strings.TrimSpace(strings.ToLower(ans)); a != "y" && a != "yes" {
+						fmt.Println("\nScan cancelled.")
+						os.Exit(0)
+					}
+					fmt.Println()
 				}
+
+				color.Yellow("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
+
+				fmt.Printf("  IMPORTANT: Only scan servers you own or have explicit written\n")
+				fmt.Printf("  permission to test. Unauthorized scanning is illegal.\n\n")
+
+				fmt.Printf("  Is %s the URL of your localhost instance?\n", targetURL)
+				fmt.Println("  Testing against URLs you don't own is a crime")
+				fmt.Println("  punishable by law.")
 				fmt.Println()
+				confirm("Confirm")
+
+				fmt.Println("  DAST actively probes your server — it sends real attack")
+				fmt.Println("  payloads to your local running app. It's always better")
+				fmt.Println("  to find runtime vulnerabilities now before you push code.")
+				fmt.Println()
+				confirm("Understood")
+
+				fmt.Println("  Your server logs will get spammy, that's expected.")
+				fmt.Println("  Nuclei is firing 6,000+ templates plus AI-generated ones.")
+				fmt.Println("  Don't panic.")
+				fmt.Println()
+				confirm("Got it")
+
+				fmt.Println("  This normally takes 3 - 5 minutes. Take a break and")
+				fmt.Println("  grab some tea, you deserve it. ☕")
+				fmt.Println()
+				confirm("Let's go")
+
+				color.Yellow("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
 			}
-
-			color.Yellow("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
-
-			fmt.Printf("  IMPORTANT: Only scan servers you own or have explicit written\n")
-			fmt.Printf("  permission to test. Unauthorized scanning is illegal.\n\n")
-
-			fmt.Printf("  Is %s the URL of your localhost instance?\n", targetURL)
-			fmt.Println("  Testing against URLs you don't own is a crime")
-			fmt.Println("  punishable by law.")
-			fmt.Println()
-			confirm("Confirm")
-
-			fmt.Println("  DAST actively probes your server — it sends real attack")
-			fmt.Println("  payloads to your local running app. It's always better")
-			fmt.Println("  to find runtime vulnerabilities now before you push code.")
-			fmt.Println()
-			confirm("Understood")
-
-			fmt.Println("  Your server logs will get spammy, that's expected.")
-			fmt.Println("  Nuclei is firing 6,000+ templates plus AI-generated ones.")
-			fmt.Println("  Don't panic.")
-			fmt.Println()
-			confirm("Got it")
-
-			fmt.Println("  This normally takes 3 - 5 minutes. Take a break and")
-			fmt.Println("  grab some tea, you deserve it. ☕")
-			fmt.Println()
-			confirm("Let's go")
-
-			color.Yellow("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n")
 
 			// ── Step 5: Install Nuclei if missing ──────────────────────────────────
 			if err := config.EnsureDastScanners(); err != nil {
