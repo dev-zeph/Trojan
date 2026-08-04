@@ -577,7 +577,64 @@ async fn setup_mcp(app: AppHandle) -> Result<String, String> {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// macOS/Linux apps launched from Finder/Dock inherit a minimal PATH
+/// (`/usr/bin:/bin:/usr/sbin:/sbin`) and never source the user's shell config,
+/// so Homebrew (`/opt/homebrew/bin`) and pyenv/asdf shims are invisible. The Go
+/// sidecar then can't find `python3`/`brew`, Semgrep's pip install silently
+/// fails, and SAST quietly falls back to Bearer only. Resolve the real
+/// login-shell PATH (with a hard timeout so a slow rc file can't hang startup),
+/// fold in the standard Homebrew dirs, and set it on our own process so every
+/// spawned sidecar inherits it. No-op on Windows.
+#[cfg(unix)]
+fn fix_sidecar_path() {
+    use std::collections::HashSet;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    // Ask the login shell for the real PATH, off-thread with a timeout — a
+    // hanging rc file must never block app startup.
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let out = std::process::Command::new(&shell)
+            .args(["-ilc", "printf %s \"$PATH\""])
+            .output();
+        let path = out
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+        let _ = tx.send(path);
+    });
+    let shell_path = rx.recv_timeout(Duration::from_millis(2500)).unwrap_or_default();
+
+    // Homebrew dirs first (guaranteed even if the shell lookup returns nothing),
+    // then the resolved shell PATH, then whatever we already had, then the base
+    // system dirs. Dedup while preserving order.
+    let existing = std::env::var("PATH").unwrap_or_default();
+    let mut seen = HashSet::new();
+    let mut dirs: Vec<String> = Vec::new();
+    for p in ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", "/usr/local/sbin"]
+        .into_iter()
+        .chain(shell_path.split(':'))
+        .chain(existing.split(':'))
+        .chain(["/usr/bin", "/bin", "/usr/sbin", "/sbin"])
+    {
+        if !p.is_empty() && seen.insert(p.to_string()) {
+            dirs.push(p.to_string());
+        }
+    }
+    std::env::set_var("PATH", dirs.join(":"));
+}
+
+#[cfg(not(unix))]
+fn fix_sidecar_path() {}
+
 pub fn run() {
+    // Must run before any sidecar is spawned so the Go binary can find
+    // python3/brew (see fix_sidecar_path docs).
+    fix_sidecar_path();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())

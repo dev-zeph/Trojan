@@ -1,5 +1,6 @@
 import { validateToken, isPro, corsHeaders } from '../_shared/auth.ts'
 import { supabase } from '../_shared/supabase.ts'
+import { parseBody } from '../_shared/body.ts'
 
 // ── Input types (matching Go normalizer types) ─────────────────────────────
 
@@ -128,7 +129,9 @@ async function handleRequest(req: Request): Promise<Response> {
 
   let body: ThreatLabRequest
   try {
-    body = await req.json()
+    // Body is base64-wrapped by the client to slip past Cloudflare's WAF, which
+    // otherwise 403s the attack signatures inside SAST findings. See _shared/body.ts.
+    body = await parseBody<ThreatLabRequest>(req)
   } catch {
     return json({ error: 'Invalid JSON body' }, 400)
   }

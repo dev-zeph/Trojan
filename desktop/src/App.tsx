@@ -72,6 +72,18 @@ function decodeJWT(token: string): Record<string, unknown> | null {
   } catch { return null; }
 }
 
+// Base64-encode a value's JSON. Edge-function request bodies are wrapped as
+// { encoded } so Cloudflare's WAF (in front of Supabase) doesn't false-positive
+// on attack signatures inside SAST findings ("<script>", "' OR 1=1", path
+// traversal, ...) and reject the request with a 403. The functions unwrap it
+// transparently via _shared/body.ts. UTF-8 safe (btoa alone is not).
+function encodeBody(value: unknown): string {
+  const bytes = new TextEncoder().encode(JSON.stringify(value));
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+
 // Write the access token to ~/.trojan/config.json so the Go sidecar and its
 // embedded report UI treat the desktop session as authenticated.
 async function syncAuthToGoConfig(token: string, email: string, refreshToken = ""): Promise<void> {
@@ -359,7 +371,7 @@ function Onboarding({ onDone }: { onDone: (p: UserProfile) => void }) {
           <img src="/logo.png" alt="Trojan" className="ob-left-logo" />
           <span className="ob-left-wordmark">TROJAN</span>
           <p className="ob-left-tagline">
-            Industry-standard vulnerability scanners in one tool. Local-first — your code never leaves your machine.
+            Industry-standard vulnerability scanners in one tool.
           </p>
         </div>
 
@@ -882,10 +894,12 @@ export default function App() {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          project_path: scanData.project_path ?? "",
-          findings,
-          packages: pkgs,
-          user_familiarity: profile?.familiarity ?? 1,
+          encoded: encodeBody({
+            project_path: scanData.project_path ?? "",
+            findings,
+            packages: pkgs,
+            user_familiarity: profile?.familiarity ?? 1,
+          }),
         }),
       });
 
@@ -1938,10 +1952,12 @@ export default function App() {
                   method: "POST",
                   headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
                   body: JSON.stringify({
-                    project_path: scanPath ?? "",
-                    licenses: { total_packages: packages.length, copyleft, weak_copyleft: weakCopyleft, unknown_count: unknownCount, permissive_count: permissiveCount },
-                    privacy: { data_types: (privacyReport?.data_types ?? []).map(d => ({ name: d.name, category: d.category, detection_count: d.detection_count })), third_party: (privacyReport?.third_party ?? []).map(t => ({ name: t.name, data_types: t.data_types ?? [] })) },
-                    user_familiarity: profile?.familiarity ?? 1,
+                    encoded: encodeBody({
+                      project_path: scanPath ?? "",
+                      licenses: { total_packages: packages.length, copyleft, weak_copyleft: weakCopyleft, unknown_count: unknownCount, permissive_count: permissiveCount },
+                      privacy: { data_types: (privacyReport?.data_types ?? []).map(d => ({ name: d.name, category: d.category, detection_count: d.detection_count })), third_party: (privacyReport?.third_party ?? []).map(t => ({ name: t.name, data_types: t.data_types ?? [] })) },
+                      user_familiarity: profile?.familiarity ?? 1,
+                    }),
                   }),
                 });
 

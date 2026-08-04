@@ -1,5 +1,6 @@
 import { validateToken, isPro, corsHeaders } from '../_shared/auth.ts'
 import { supabase } from '../_shared/supabase.ts'
+import { parseBody } from '../_shared/body.ts'
 
 // ── Input types ──────────────────────────────────────────────────────────
 
@@ -79,7 +80,8 @@ async function handleRequest(req: Request): Promise<Response> {
 
   let body: ComplianceLabRequest
   try {
-    body = await req.json()
+    // Base64-wrapped by the client to avoid Cloudflare WAF false-positives. See _shared/body.ts.
+    body = await parseBody<ComplianceLabRequest>(req)
   } catch {
     return json({ error: 'Invalid JSON body' }, 400)
   }
