@@ -10,6 +10,7 @@
     "tauri": "tauri",
     "build:go": "cd .. && go build -o desktop/src-tauri/binaries/trojan-aarch64-apple-darwin ./cmd/trojan/",
     "build:go:linux": "cd .. && GOOS=linux GOARCH=amd64 go build -o desktop/src-tauri/binaries/trojan-x86_64-unknown-linux-gnu ./cmd/trojan/",
+    "build:go:windows": "cd .. && GOOS=windows GOARCH=amd64 go build -o desktop/src-tauri/binaries/trojan-x86_64-pc-windows-msvc.exe ./cmd/trojan/",
     "prebuild:tauri": "npm run build:go",
     "build:tauri": "npm run tauri build"
   },

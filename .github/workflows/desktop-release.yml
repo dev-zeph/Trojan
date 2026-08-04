@@ -16,7 +16,14 @@ jobs:
         include:
           - os: macos-14          # Apple Silicon (M1/M2/M3)
             target: aarch64-apple-darwin
+            goos: darwin
             go-arch: arm64
+            ext: ""
+          - os: windows-latest    # Windows x64 (unsigned for now — SmartScreen warning expected)
+            target: x86_64-pc-windows-msvc
+            goos: windows
+            go-arch: amd64
+            ext: ".exe"
 
     runs-on: ${{ matrix.os }}
 
@@ -39,9 +46,11 @@ jobs:
             desktop/package-lock.json
 
       - name: Build embedded UI
+        shell: bash
         run: cd ui && npm ci && npm run build
 
       - name: Build embedded DAST UI
+        shell: bash
         run: cd dast-ui && npm ci && npm run build && touch dist/.gitkeep
 
       - name: Setup Go
@@ -51,15 +60,16 @@ jobs:
           cache: true
 
       - name: Build Go sidecar
+        shell: bash
         run: |
           VERSION="${{ github.ref_name }}"
-          VERSION="${VERSION#desktop-}"   # strip "desktop-" prefix → v0.1.0
+          VERSION="${VERSION#desktop-}"   # strip "desktop-" prefix → v0.2.0
           mkdir -p desktop/src-tauri/binaries
-          GOOS=darwin GOARCH=${{ matrix.go-arch }} go build \
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.go-arch }} go build \
             -ldflags="-X main.version=${VERSION}" \
-            -o desktop/src-tauri/binaries/trojan-${{ matrix.target }} \
+            -o "desktop/src-tauri/binaries/trojan-${{ matrix.target }}${{ matrix.ext }}" \
             ./cmd/trojan
-          chmod +x desktop/src-tauri/binaries/trojan-${{ matrix.target }}
+          chmod +x "desktop/src-tauri/binaries/trojan-${{ matrix.target }}${{ matrix.ext }}" || true
 
       - name: Install frontend dependencies
         working-directory: desktop
@@ -81,9 +91,14 @@ jobs:
         # prebuild:tauri hook — the Go sidecar is already built above.
         run: npm run tauri build -- --target ${{ matrix.target }}
 
-      - name: Upload DMG to GitHub Release
+      # Uploads whatever this OS produced; globs that match nothing are ignored
+      # (fail_on_unmatched_files defaults to false). macOS → .dmg; Windows →
+      # NSIS .exe + .msi. Both matrix jobs write to the same draft release.
+      - name: Upload installers to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           draft: true
           files: |
             desktop/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe
+            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi

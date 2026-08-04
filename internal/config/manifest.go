@@ -63,6 +63,11 @@ var Scanners = []ScannerManifest{
 				Archive:         ArchiveTarGz,
 				BinaryInArchive: "trivy",
 			},
+			"windows/amd64": {
+				URL:             "https://github.com/aquasecurity/trivy/releases/download/v0.70.0/trivy_0.70.0_windows-64bit.zip",
+				Archive:         ArchiveZip,
+				BinaryInArchive: "trivy.exe",
+			},
 		},
 	},
 	{
@@ -74,10 +79,11 @@ var Scanners = []ScannerManifest{
 		// Semgrep does not ship standalone binaries — installed via pip into ~/.trojan/venv/.
 		// The same pip entry is used for all platforms.
 		Platforms: map[string]PlatformAsset{
-			"linux/amd64":  {Archive: ArchivePip, PipPackage: "semgrep==1.89.0"},
-			"linux/arm64":  {Archive: ArchivePip, PipPackage: "semgrep==1.89.0"},
-			"darwin/amd64": {Archive: ArchivePip, PipPackage: "semgrep==1.89.0"},
-			"darwin/arm64": {Archive: ArchivePip, PipPackage: "semgrep==1.89.0"},
+			"linux/amd64":   {Archive: ArchivePip, PipPackage: "semgrep==1.89.0"},
+			"linux/arm64":   {Archive: ArchivePip, PipPackage: "semgrep==1.89.0"},
+			"darwin/amd64":  {Archive: ArchivePip, PipPackage: "semgrep==1.89.0"},
+			"darwin/arm64":  {Archive: ArchivePip, PipPackage: "semgrep==1.89.0"},
+			"windows/amd64": {Archive: ArchivePip, PipPackage: "semgrep==1.89.0"},
 		},
 	},
 	{
@@ -110,6 +116,11 @@ var Scanners = []ScannerManifest{
 				SHA256:          "b40ab0ae55c505963e365f271a8d3846efbc170aa17f2607f13df610a9aeb6a5",
 				Archive:         ArchiveTarGz,
 				BinaryInArchive: "gitleaks",
+			},
+			"windows/amd64": {
+				URL:             "https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_windows_x64.zip",
+				Archive:         ArchiveZip,
+				BinaryInArchive: "gitleaks.exe",
 			},
 		},
 	},
@@ -146,6 +157,11 @@ var Scanners = []ScannerManifest{
 				Archive:         ArchiveZip,
 				BinaryInArchive: "dist/checkov",
 			},
+			"windows/amd64": {
+				URL:             "https://github.com/bridgecrewio/checkov/releases/download/3.2.529/checkov_windows_X86_64.zip",
+				Archive:         ArchiveZip,
+				BinaryInArchive: "dist/checkov.exe",
+			},
 		},
 	},
 	{
@@ -178,6 +194,11 @@ var Scanners = []ScannerManifest{
 				SHA256:          "24e4d34078ae81da7c82539616f0ccac3e226cf4f74a38ce6fb3463619e50a55",
 				Archive:         ArchiveTarGz,
 				BinaryInArchive: "syft",
+			},
+			"windows/amd64": {
+				URL:             "https://github.com/anchore/syft/releases/download/v1.44.0/syft_1.44.0_windows_amd64.zip",
+				Archive:         ArchiveZip,
+				BinaryInArchive: "syft.exe",
 			},
 		},
 	},
@@ -249,6 +270,11 @@ var DastScanners = []ScannerManifest{
 				SHA256:          "872b49984a014eb6bf9022eb95889c9e5935900624d06880b1d856914606e80f",
 				Archive:         ArchiveZip,
 				BinaryInArchive: "nuclei",
+			},
+			"windows/amd64": {
+				URL:             "https://github.com/projectdiscovery/nuclei/releases/download/v3.8.0/nuclei_3.8.0_windows_amd64.zip",
+				Archive:         ArchiveZip,
+				BinaryInArchive: "nuclei.exe",
 			},
 		},
 	},

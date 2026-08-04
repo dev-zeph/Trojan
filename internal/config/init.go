@@ -32,15 +32,38 @@ func TrojanBinDir() (string, error) {
 }
 
 // ManagedBinaryPath returns the path to a scanner binary managed by Trojan.
-// Returns empty string if not installed.
+// Returns empty string if not installed. On Windows it also checks the ".exe"
+// form so callers can pass the bare name (e.g. "nuclei").
 func ManagedBinaryPath(name string) string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
-	p := filepath.Join(home, ".trojan", "bin", name)
-	if _, err := os.Stat(p); err == nil {
-		return p
+	base := filepath.Join(home, ".trojan", "bin", name)
+	for _, p := range []string{base, base + exeSuffix()} {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
+// exeSuffix is ".exe" on Windows, empty elsewhere — appended to managed
+// scanner-binary filenames so Windows executables are named/found correctly.
+func exeSuffix() string {
+	if runtime.GOOS == "windows" {
+		return ".exe"
+	}
+	return ""
+}
+
+// pythonExe finds a usable Python interpreter across platforms (python3 on
+// Unix/macOS, python or the "py" launcher on Windows). Returns "" if none.
+func pythonExe() string {
+	for _, c := range []string{"python3", "python", "py"} {
+		if exec.Command(c, "--version").Run() == nil {
+			return c
+		}
 	}
 	return ""
 }
@@ -122,16 +145,17 @@ func tryInstallLatest(s ScannerManifest, pinnedAsset PlatformAsset, dest string)
 //  3. If no python3: try installing it via Homebrew, then retry pip
 //  4. Fall back to installing the scanner itself via Homebrew
 func installPipDefensive(s ScannerManifest, asset PlatformAsset, binDir string) error {
-	name := strings.SplitN(asset.PipPackage, "==", 2)[0]
+	name, _, _ := strings.Cut(asset.PipPackage, "=")
 
-	hasPython := exec.Command("python3", "--version").Run() == nil
+	hasPython := pythonExe() != ""
 
-	// If python3 is missing, try to install it via Homebrew first
-	if !hasPython {
+	// If Python is missing, try to install it via Homebrew (macOS/Linux only;
+	// on Windows, Python comes from python.org / winget / the Store).
+	if !hasPython && runtime.GOOS != "windows" {
 		if _, err := exec.LookPath("brew"); err == nil {
-			fmt.Print("(installing python3 via brew) ")
+			fmt.Print("(installing python via brew) ")
 			if err := runCaptured("brew", "install", "--quiet", "python3"); err == nil {
-				hasPython = exec.Command("python3", "--version").Run() == nil
+				hasPython = pythonExe() != ""
 			}
 		}
 	}
@@ -165,6 +189,9 @@ func installPipDefensive(s ScannerManifest, asset PlatformAsset, binDir string) 
 	}
 
 	if !hasPython {
+		if runtime.GOOS == "windows" {
+			return fmt.Errorf("Python not found — install it with: winget install Python.Python.3")
+		}
 		return fmt.Errorf("python3 not found — install with: xcode-select --install")
 	}
 	return fmt.Errorf("pip install failed — try manually: pip3 install %s", asset.PipPackage)
@@ -183,7 +210,7 @@ func EnsureScanners() error {
 
 	missing := []ScannerManifest{}
 	for _, s := range Scanners {
-		dest := filepath.Join(binDir, s.Binary)
+		dest := filepath.Join(binDir, s.Binary+exeSuffix())
 		if _, err := os.Stat(dest); os.IsNotExist(err) {
 			missing = append(missing, s)
 		}
@@ -202,7 +229,7 @@ func EnsureScanners() error {
 			continue
 		}
 
-		dest := filepath.Join(binDir, s.Binary)
+		dest := filepath.Join(binDir, s.Binary+exeSuffix())
 
 		// ── pip-based scanners (e.g. Semgrep) ─────────────────────
 		if asset.Archive == ArchivePip {
@@ -247,31 +274,37 @@ func installViaPip(pipPackage, binDir string) error {
 	}
 	venvDir := filepath.Join(home, ".trojan", "venv")
 
+	// venv layout differs by OS: bin/ on Unix, Scripts/ + .exe on Windows.
+	venvSub := "bin"
+	if runtime.GOOS == "windows" {
+		venvSub = "Scripts"
+	}
+
 	// Create venv if it doesn't exist
 	if _, err := os.Stat(venvDir); os.IsNotExist(err) {
-		if err := runCaptured("python3", "-m", "venv", venvDir); err != nil {
-			return fmt.Errorf("could not create venv (is python3 installed?): %w", err)
+		py := pythonExe()
+		if py == "" {
+			return fmt.Errorf("could not create venv: no Python interpreter found")
+		}
+		if err := runCaptured(py, "-m", "venv", venvDir); err != nil {
+			return fmt.Errorf("could not create venv (is Python installed?): %w", err)
 		}
 	}
 
-	pipBin := filepath.Join(venvDir, "bin", "pip")
+	pipBin := filepath.Join(venvDir, venvSub, "pip"+exeSuffix())
 	if err := runCaptured(pipBin, "install", "--quiet", "--disable-pip-version-check", pipPackage); err != nil {
 		return fmt.Errorf("pip install failed: %w", err)
 	}
 
-	// Symlink venv binary into ~/.trojan/bin/
-	name := pipPackage
-	if idx := len(pipPackage); idx > 0 {
-		for i, c := range pipPackage {
-			if c == '=' {
-				name = pipPackage[:i]
-				break
-			}
-		}
+	// Link the venv binary into ~/.trojan/bin/. Windows symlinks need elevated
+	// privileges, so copy the executable there instead.
+	name, _, _ := strings.Cut(pipPackage, "=")
+	venvBin := filepath.Join(venvDir, venvSub, name+exeSuffix())
+	dest := filepath.Join(binDir, name+exeSuffix())
+	os.Remove(dest) // remove stale link/copy if present
+	if runtime.GOOS == "windows" {
+		return installDirect(venvBin, dest)
 	}
-	venvBin := filepath.Join(venvDir, "bin", name)
-	dest := filepath.Join(binDir, name)
-	os.Remove(dest) // remove stale symlink if present
 	return os.Symlink(venvBin, dest)
 }
 
@@ -437,7 +470,7 @@ func EnsureDastScanners() error {
 
 	missing := []ScannerManifest{}
 	for _, s := range DastScanners {
-		dest := filepath.Join(binDir, s.Binary)
+		dest := filepath.Join(binDir, s.Binary+exeSuffix())
 		if _, err := os.Stat(dest); os.IsNotExist(err) {
 			missing = append(missing, s)
 		}
@@ -456,7 +489,7 @@ func EnsureDastScanners() error {
 			continue
 		}
 
-		dest := filepath.Join(binDir, s.Binary)
+		dest := filepath.Join(binDir, s.Binary+exeSuffix())
 
 		// Try latest version from GitHub first
 		if s.GitHubRepo != "" {

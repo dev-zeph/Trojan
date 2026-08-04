@@ -160,6 +160,24 @@ fn check_cache_exists(path: String) -> bool {
     std::path::Path::new(&path).exists()
 }
 
+/// Gracefully ask a sidecar process to stop so it can kill its own Nuclei child
+/// before exiting. On Unix that's SIGTERM (the Go signal handler catches it); on
+/// Windows there is no SIGTERM, so terminate the whole process tree with taskkill.
+#[cfg(unix)]
+fn signal_terminate(pid: u32) {
+    let _ = std::process::Command::new("kill")
+        .arg("-TERM")
+        .arg(pid.to_string())
+        .status();
+}
+
+#[cfg(windows)]
+fn signal_terminate(pid: u32) {
+    let _ = std::process::Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .status();
+}
+
 /// Kill all previously tracked scan children, freeing their HTTP server ports.
 fn kill_old_scans(app: &AppHandle) {
     if let Ok(mut children) = app.state::<ActiveScans>().0.lock() {
@@ -190,10 +208,7 @@ async fn cancel_scan(app: AppHandle) -> Result<(), String> {
         .map(|children| children.iter().map(|c| c.pid()).collect())
         .unwrap_or_default();
     for pid in &pids {
-        let _ = std::process::Command::new("kill")
-            .arg("-TERM")
-            .arg(pid.to_string())
-            .status();
+        signal_terminate(*pid);
     }
 
     let app2 = app.clone();
