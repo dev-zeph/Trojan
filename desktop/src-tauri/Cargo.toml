@@ -1,6 +1,6 @@
 [package]
 name = "trojan-desktop"
-version = "0.2.0"
+version = "0.2.1"
 description = "Trojan — developer-first security scanner"
 authors = ["Zephaniah Chizulu"]
 edition = "2021"
