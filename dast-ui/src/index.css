@@ -52,3 +52,50 @@
     font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   }
 }
+
+/* ── Agentic run-view animations (§10.3) ──────────────────────────────────── */
+
+/* Reasoning shimmer — a calm sweep while the agent is thinking between actions. */
+.shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--muted) 0%,
+    var(--border) 50%,
+    var(--muted) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+}
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* Live status dot pulse. */
+.pulse-dot { animation: pulse-dot 1.4s ease-in-out infinite; }
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+
+/* Probe pulse — a brief accent as a probe row appears. */
+.probe-pulse { animation: probe-pulse 0.6s ease-out; }
+@keyframes probe-pulse {
+  0% { background-color: color-mix(in oklch, var(--muted) 80%, transparent); }
+  100% { background-color: transparent; }
+}
+
+/* Severity reveal — confirmed findings animate in. */
+.reveal { animation: reveal 0.35s ease-out; }
+@keyframes reveal {
+  0% { opacity: 0; transform: translateY(4px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
+/* Respect reduced-motion: hold the final visual state, no motion. */
+@media (prefers-reduced-motion: reduce) {
+  .shimmer, .pulse-dot, .probe-pulse, .reveal {
+    animation: none;
+  }
+  .shimmer { background: var(--muted); }
+}

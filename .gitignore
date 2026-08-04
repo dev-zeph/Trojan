@@ -2,6 +2,10 @@
 /trojan
 /trojan.exe
 
+# Agentic DAST Phase-0 spike (throwaway prototype)
+/spike-agentic-dast
+cmd/spike-agentic-dast/
+
 # Go build cache
 /vendor/
 

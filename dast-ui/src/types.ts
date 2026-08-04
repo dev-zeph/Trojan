@@ -15,6 +15,9 @@ export interface Finding {
   Status: Status
   Simply?: string
   Actions?: string[]
+  Verdict?: 'confirmed' | 'likely_fp' | 'needs_manual'
+  VerdictReason?: string
+  VerdictConfidence?: number
 }
 
 export interface ScanResult {

@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import { FindingsList } from './components/FindingsList'
 import { FindingDetail } from './components/FindingDetail'
-import { getLatestScan, getAuthStatus } from './api'
-import type { AuthStatus } from './api'
+import { AgenticReport } from './components/AgenticReport'
+import { getLatestScan, getAuthStatus, getAgenticStatus } from './api'
+import type { AuthStatus, RunStatus } from './api'
 import type { Finding, ScanResult } from './types'
 
 export default function App() {
@@ -10,13 +11,28 @@ export default function App() {
   const [error, setError] = useState<string | null>(null)
   const [selected, setSelected] = useState<Finding | null>(null)
   const [auth, setAuth] = useState<AuthStatus | null>(null)
+  // null = still deciding which surface to show (agentic vs one-shot).
+  const [runStatus, setRunStatus] = useState<RunStatus | null>(null)
 
   useEffect(() => {
+    getAgenticStatus().then(s => setRunStatus(s.status))
     getLatestScan()
       .then(setScan)
       .catch(() => setError('Could not load scan results.'))
     getAuthStatus().then(setAuth)
   }, [])
+
+  // An active (or finished) agentic run takes over the whole surface.
+  if (runStatus === null) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <p className="text-sm text-muted-foreground">Loading...</p>
+      </div>
+    )
+  }
+  if (runStatus !== 'idle') {
+    return <AgenticReport />
+  }
 
   async function reload() {
     try {
@@ -104,7 +120,7 @@ export default function App() {
             <div className="flex items-center gap-2">
               <img src="/logo.png" alt="Trojan" className="h-14 w-auto" />
               <span className="text-xs font-medium uppercase tracking-widest text-muted-foreground border border-border rounded px-1.5 py-0.5">
-                DAST
+                PEN TEST
               </span>
             </div>
             {!selected && (
@@ -134,7 +150,7 @@ export default function App() {
             <p className="text-4xl font-bold tracking-tight text-foreground">Great work.</p>
             <p className="text-lg font-medium text-foreground">No runtime vulnerabilities found.</p>
             <p className="text-sm text-muted-foreground max-w-sm mx-auto">
-              {scan.project_path} passed the DAST scan — no known attack patterns matched across 6,000+ templates.
+              {scan.project_path} passed the penetration test — no known attack patterns matched across 6,000+ templates.
             </p>
           </div>
         ) : (

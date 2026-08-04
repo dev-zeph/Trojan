@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { SeverityDot, SeverityBadge } from './SeverityBadge'
+import { VerdictBadge } from './VerdictBadge'
 import type { Finding, Severity } from '@/types'
 
 const SEVERITIES: Severity[] = ['critical', 'high', 'medium', 'low', 'info']
@@ -12,11 +13,13 @@ interface Props {
 
 export function FindingsList({ findings, onSelect }: Props) {
   const [severityFilter, setSeverityFilter] = useState<Severity | 'all'>('all')
+  const [hideFP, setHideFP] = useState(false)
 
   const openFindings = findings.filter(f => f.Status === 'open')
 
   const filtered = openFindings
     .filter(f => severityFilter === 'all' || f.Severity === severityFilter)
+    .filter(f => !hideFP || f.Verdict !== 'likely_fp')
     .sort((a, b) => SEVERITY_ORDER[a.Severity] - SEVERITY_ORDER[b.Severity])
 
   return (
@@ -35,6 +38,7 @@ export function FindingsList({ findings, onSelect }: Props) {
             ))}
           </div>
         </div>
+        <FilterPill active={hideFP} onClick={() => setHideFP(v => !v)}>Hide likely FPs</FilterPill>
         <span className="ml-auto text-xs text-muted-foreground">
           {filtered.length} result{filtered.length !== 1 ? 's' : ''}
         </span>
@@ -76,6 +80,7 @@ function FindingRow({ finding, onClick }: { finding: Finding; onClick: () => voi
         <p className="text-xs text-muted-foreground font-mono truncate">{endpointDisplay}</p>
       </div>
       <div className="flex items-center gap-4 shrink-0">
+        <VerdictBadge verdict={finding.Verdict} confidence={finding.VerdictConfidence} />
         <SeverityBadge severity={finding.Severity} />
         <span className="text-xs text-muted-foreground uppercase tracking-wide">{finding.RuleID.split('-')[0]}</span>
       </div>

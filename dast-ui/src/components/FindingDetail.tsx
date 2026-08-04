@@ -1,4 +1,5 @@
 import { SeverityBadge } from './SeverityBadge'
+import { VerdictBadge } from './VerdictBadge'
 import { reviewFinding, suppressFinding } from '@/api'
 import type { Finding } from '@/types'
 
@@ -9,6 +10,8 @@ interface Props {
 }
 
 export function FindingDetail({ finding, onBack, onAction }: Props) {
+  const isAgentic = finding.Scanner === 'agentic-dast'
+
   async function handleReview() {
     await reviewFinding(finding.ID)
     onAction()
@@ -32,10 +35,13 @@ export function FindingDetail({ finding, onBack, onAction }: Props) {
 
       {/* Header */}
       <div className="space-y-4">
-        <SeverityBadge severity={finding.Severity} />
+        <div className="flex items-center gap-3">
+          <SeverityBadge severity={finding.Severity} />
+          <VerdictBadge verdict={finding.Verdict} confidence={finding.VerdictConfidence} />
+        </div>
         <h1 className="text-3xl font-bold tracking-tight leading-tight">{finding.Title}</h1>
         <div className="flex items-center gap-4 text-xs text-muted-foreground">
-          <span className="uppercase">DAST</span>
+          <span className="uppercase">{isAgentic ? 'Agentic' : 'DAST'}</span>
           <span>·</span>
           <span className="font-mono">{finding.RuleID}</span>
           <span>·</span>
@@ -59,8 +65,8 @@ export function FindingDetail({ finding, onBack, onAction }: Props) {
       {/* HTTP request snippet */}
       {finding.CodeSnippet && (
         <div className="space-y-2 border-t border-border pt-8">
-          <p className="text-xs uppercase tracking-widest text-muted-foreground">Request</p>
-          <pre className="bg-muted rounded p-4 text-xs font-mono overflow-x-auto leading-relaxed">
+          <p className="text-xs uppercase tracking-widest text-muted-foreground">{isAgentic ? 'Evidence' : 'Request'}</p>
+          <pre className="bg-muted rounded p-4 text-xs font-mono overflow-x-auto leading-relaxed whitespace-pre-wrap break-words">
             {finding.CodeSnippet}
           </pre>
         </div>
@@ -71,6 +77,17 @@ export function FindingDetail({ finding, onBack, onAction }: Props) {
         <p className="text-xs uppercase tracking-widest text-muted-foreground">What this means</p>
         <p className="text-sm leading-relaxed text-foreground/80">{finding.RawMessage}</p>
       </div>
+
+      {/* Triage — AI false-positive verdict */}
+      {finding.VerdictReason && (
+        <div className="space-y-3 border-t border-border pt-8">
+          <div className="flex items-center gap-3">
+            <p className="text-xs uppercase tracking-widest text-muted-foreground">Triage</p>
+            <VerdictBadge verdict={finding.Verdict} confidence={finding.VerdictConfidence} />
+          </div>
+          <p className="text-sm leading-relaxed text-foreground/80">{finding.VerdictReason}</p>
+        </div>
+      )}
 
       {/* Simply — AI plain-English explanation */}
       <div className="space-y-4 border-t border-border pt-8">

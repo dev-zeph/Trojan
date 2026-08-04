@@ -2397,6 +2397,11 @@ html, body, #root { height: 100%; overflow: hidden; background: var(--bg); color
   body > * { display: none !important; }
   #print-certificate { display: block !important; }
   #print-compliance-report { display: block !important; }
+  #print-pentest-report { display: block !important; }
+
+  /* Penetration-test report: flow across pages, keep each finding intact. */
+  .ptr-root { overflow: visible !important; height: auto !important; max-width: none !important; padding: 0 !important; }
+  .ptr-finding { break-inside: avoid; }
 
   body, html { background: #fff !important; margin: 0 !important; overflow: visible !important; height: auto !important; }
 
@@ -2422,6 +2427,30 @@ html, body, #root { height: 100%; overflow: hidden; background: var(--bg); color
 
 /* Hide compliance report portal on screen */
 #print-compliance-report { display: none; }
+
+/* Hide pen-test report portal on screen */
+#print-pentest-report { display: none; }
+
+/* Floating Export button over the DAST report iframe */
+.report-export-btn {
+  position: fixed;
+  top: 14px;
+  right: 18px;
+  z-index: 20;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border, rgba(0,0,0,0.15));
+  background: var(--card, #fff);
+  color: inherit;
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.12);
+}
+.report-export-btn:hover { background: rgba(128,128,128,0.08); }
 
 /* Certificate layout — shared between screen-preview and print */
 .cert-root {

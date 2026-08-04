@@ -53,6 +53,12 @@ type Finding struct {
 	IsFalsePositive bool     `json:"IsFalsePositive,omitempty"` // true if AI thinks this is a false positive
 	FixDiff         string   `json:"FixDiff,omitempty"`         // Optional git-style diff for the fix
 
+	// Triage verdict — adversarial false-positive check (agentic DAST Phase 1),
+	// populated for Pro users. See internal/ai/triage.go.
+	Verdict           string  `json:"Verdict,omitempty"`           // "confirmed" | "likely_fp" | "needs_manual"
+	VerdictReason     string  `json:"VerdictReason,omitempty"`     // one- or two-sentence rationale
+	VerdictConfidence float64 `json:"VerdictConfidence,omitempty"` // 0..1
+
 	// Locked is set at serve time (never persisted to disk).
 	// True when the finding is not accessible on the free plan.
 	Locked bool `json:"locked,omitempty"`

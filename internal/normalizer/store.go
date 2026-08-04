@@ -28,11 +28,22 @@ func NewScanResult(projectPath string, findings []Finding) *ScanResult {
 	}
 }
 
-// SaveScanResult writes scan results to .trojan/scans/[timestamp].json
+// SaveScanResult writes scan results to <projectPath>/.trojan/scans/[timestamp].json
 // and returns the ScanResult for use by the local server.
 // Only called for Pro users — free users use NewScanResult instead.
 func SaveScanResult(projectPath string, findings []Finding) (*ScanResult, error) {
-	scansDir := filepath.Join(projectPath, ".trojan", "scans")
+	return SaveScanResultAt(projectPath, projectPath, findings)
+}
+
+// SaveScanResultAt writes scan results under <dir>/.trojan/scans/ while recording
+// `projectPath` as the scan's display path. This splits the two for URL-targeted
+// scans (DAST / agentic pen-tests): the file lands under the current working
+// directory (so `trojan mcp`, run from the same project, can read it) while the
+// ProjectPath shows the scanned URL. The MCP server reads the latest file in
+// <cwd>/.trojan/scans/ (internal/mcpserver/server.go), so persisting here is what
+// makes DAST findings available to MCP clients.
+func SaveScanResultAt(dir, projectPath string, findings []Finding) (*ScanResult, error) {
+	scansDir := filepath.Join(dir, ".trojan", "scans")
 	if err := os.MkdirAll(scansDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create scans directory: %w", err)
 	}

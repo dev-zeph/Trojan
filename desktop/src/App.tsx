@@ -7,6 +7,8 @@ import { createClient } from "@supabase/supabase-js";
 import { TerminalPanel } from "./TerminalPanel";
 import { PrintCertificate } from "./PrintCertificate";
 import { PrintComplianceReport } from "./PrintComplianceReport";
+import { PrintPenTestReport } from "./PrintPenTestReport";
+import type { PentestReport } from "./PrintPenTestReport";
 import "./App.css";
 
 type NavView  = "overview" | "sast" | "dast" | "dependencies" | "threatlab" | "licenses" | "privacy" | "compliancelab" | "history" | "autofix" | "profile" | "report";
@@ -455,7 +457,7 @@ const NAV: { view: NavView; label: string; icon: React.ReactNode; pro?: boolean;
   { view: "sast", label: "Static Analysis",
     icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M16 18l6-6-6-6 M8 6l-6 6 6 6"/></svg>,
   },
-  { view: "dast", label: "Dynamic Analysis", pro: true,
+  { view: "dast", label: "Penetration Testing", pro: true,
     icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20 M2 12h20 M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10"/></svg>,
   },
   { view: "dependencies", label: "Dependencies",
@@ -497,6 +499,13 @@ export default function App() {
   const [isDragOver, setIsDragOver]       = useState(false);
   const [recent, setRecent]               = useState<RecentProject[]>([]);
   const [dastUrl, setDastUrl]             = useState("");
+  const [agenticMode, setAgenticMode]     = useState(false);
+  const [agTier, setAgTier]               = useState<"passive" | "safe-active" | "aggressive">("passive");
+  const [agEnv, setAgEnv]                 = useState<"production" | "staging">("production");
+  const [agAck, setAgAck]                 = useState(false);
+  const [dastFindings, setDastFindings]   = useState<any[]>([]);
+  const [pentestReport, setPentestReport] = useState<PentestReport | null>(null);
+  const [pentestReportRunning, setPentestReportRunning] = useState(false);
   const [toasts, setToasts]               = useState<Toast[]>([]);
   const [packages, setPackages]           = useState<PkgInfo[]>([]);
   const [privacyReport, setPrivacyReport] = useState<PrivacyReport | null>(null);
@@ -1009,11 +1018,110 @@ export default function App() {
       .catch((e) => { if (!String(e).includes("__cancelled__")) updateToastError(id, friendlyError(String(e))); });
   }
 
+  function triggerAgenticDast(url: string): void {
+    if (!url.trim() || isScanning) return;
+    const id = crypto.randomUUID();
+    addToast(id, url, "dast", url);
+
+    saveRecent(url, "dast").then(() => loadRecent().then(setRecent));
+
+    invoke<{ url: string; cachePath: string }>("start_agentic_dast", {
+      url,
+      tier: agTier,
+      environment: agEnv,
+      acceptSideEffects: agAck,
+    })
+      .then(async ({ url: rUrl, cachePath }) => {
+        updateToastDone(id, rUrl, cachePath);
+        await updateRecentUrl(url, rUrl);
+        await updateRecentCachePath(url, cachePath);
+        setRecent(await loadRecent());
+        // Auto-navigate to the live run view (the embedded UI self-routes to it).
+        openReport(rUrl, url, "dast");
+      })
+      .catch((e) => {
+        const msg = String(e);
+        if (msg.includes("__cancelled__")) return;
+        if (msg.includes("__consent__")) {
+          const domain = msg.split("__consent__")[1]?.trim() || "the target";
+          updateToastError(id, `Prove you own ${domain} first — verification steps are in the terminal panel below.`);
+          return;
+        }
+        updateToastError(id, friendlyError(msg));
+      });
+  }
+
   function openReport(url: string, path: string, type: ScanType): void {
     setScanPath(path);
     setScanType(type);
     setReportUrl(url);
     setView("report");
+    // Clear any prior pen-test report so a stale grade can't print for a new target.
+    setPentestReport(null);
+    setDastFindings([]);
+  }
+
+  // Generate the graded, stakeholder-facing penetration-test report: pull the
+  // latest findings from the report server, ask the (server-side cached)
+  // pentest-report edge function for a grade + narrative, then open the print
+  // dialog so it can be saved as PDF. A cache hit costs zero tokens.
+  async function generatePentestReport(url: string): Promise<void> {
+    if (pentestReportRunning) return;
+    setPentestReportRunning(true);
+    const id = crypto.randomUUID();
+    addToast(id, scanPath, "dast", scanPath);
+    try {
+      const scanRes = await fetch(`${url}/api/scans/latest`);
+      if (!scanRes.ok) throw new Error("Could not load findings from the report.");
+      const scan = await scanRes.json();
+      const findings: any[] = Array.isArray(scan?.findings) ? scan.findings : [];
+      setDastFindings(findings);
+
+      const token = await getFreshToken();
+      if (!token) throw new Error("Sign in with Pro to generate a report.");
+
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/pentest-report`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          encoded: encodeBody({
+            target: scan?.project_path ?? scanPath,
+            findings: findings.map((f) => ({
+              id: f.ID,
+              title: f.Title,
+              severity: String(f.Severity ?? "").toLowerCase(),
+              verdict: f.Verdict,
+              matchedAt: f.FilePath,
+              evidence: f.CodeSnippet,
+              rationale: f.RawMessage,
+            })),
+            user_familiarity: profile?.familiarity ?? 1,
+          }),
+        }),
+      });
+      if (res.status === 403) throw new Error("Report generation requires a Pro subscription.");
+      if (res.status === 429) throw new Error("Daily AI limit reached. Try again tomorrow.");
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error((err as { error?: string }).error ?? `Request failed (${res.status})`);
+      }
+
+      const report = await res.json() as PentestReport;
+      setPentestReport(report);
+      dismissToast(id);
+
+      // Let the portal render with the report + findings, then open print → PDF.
+      setTimeout(() => {
+        const t = document.title;
+        document.title = `Trojan Pen Test — ${scan?.project_path ?? scanPath}`;
+        window.print();
+        document.title = t;
+      }, 150);
+    } catch (e) {
+      updateToastError(id, friendlyError(String(e)));
+    } finally {
+      setPentestReportRunning(false);
+    }
   }
 
   function openRecent(r: RecentProject): void {
@@ -1240,6 +1348,19 @@ export default function App() {
                   <span className="status-dot status-dot-ok" />
                   REPORT READY
                 </div>
+                {scanType === "dast" && reportUrl && (
+                  <button
+                    className="rescan-btn"
+                    onClick={() => generatePentestReport(reportUrl)}
+                    disabled={pentestReportRunning}
+                    title="Generate a graded stakeholder report (PDF)"
+                  >
+                    {pentestReportRunning
+                      ? <span className="lab-spinner" />
+                      : <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M9 15l2 2 4-4"/></svg>}
+                    {pentestReportRunning ? "Generating…" : "Generate Report"}
+                  </button>
+                )}
                 <button
                   className="rescan-btn"
                   onClick={() => scanType === "sast" ? triggerSast(scanPath) : triggerDast(scanPath)}
@@ -1446,8 +1567,8 @@ export default function App() {
                           </svg>
                         </div>
                         <div>
-                          <div className="station-code">STATION 02 — DYNAMIC</div>
-                          <div className="station-title">Dynamic Analysis</div>
+                          <div className="station-code">STATION 02 — PENETRATION</div>
+                          <div className="station-title">Penetration Testing</div>
                         </div>
                         <div className="station-desc">
                           Probe a live server: 6,618 Nuclei templates, CORS, headers, endpoint discovery.
@@ -1455,7 +1576,7 @@ export default function App() {
                         <div className="station-tech">nuclei · cors · headers · endpoints</div>
                         <div className="station-footer">
                           <button className="station-btn" onClick={() => setView("dast")} disabled={isScanning}>
-                            New DAST scan
+                            New pen test
                           </button>
                           <span className="station-last">
                             {recent.filter(r => r.type === "dast")[0]
@@ -1583,14 +1704,14 @@ export default function App() {
             return (
             <div className="content-inner">
               <div className="view-header">
-                <h2 className="view-title">Dynamic Analysis <span className="lab-pro-tag">PRO</span></h2>
+                <h2 className="view-title">Penetration Testing <span className="lab-pro-tag">PRO</span></h2>
                 <p className="view-desc">Scan a running server for runtime vulnerabilities using Nuclei's 6,000+ templates plus AI-generated attack patterns.</p>
               </div>
 
               {!isPro && (
                 <div className="lab-state-card lab-pro-gate">
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-                  Dynamic Analysis requires a Pro subscription.
+                  Penetration Testing requires a Pro subscription.
                   <button className="lab-upgrade-btn" onClick={() => setShowAuthForm(true)}>Upgrade →</button>
                 </div>
               )}
@@ -1601,7 +1722,7 @@ export default function App() {
               <div className={`dast-panel ${isScanning ? "scan-locked" : ""}`}>
                 <CM />
                 <span className="scanner-grid-label">TARGET URL</span>
-                <form className="dast-row-form" onSubmit={(e) => { e.preventDefault(); triggerDast(dastUrl); }}>
+                <form className="dast-row-form" onSubmit={(e) => { e.preventDefault(); (agenticMode ? triggerAgenticDast : triggerDast)(dastUrl); }}>
                   <input
                     className="dast-input dast-input-lg"
                     type="url"
@@ -1613,9 +1734,56 @@ export default function App() {
                     style={{ fontFamily: "'Fira Code', monospace" }}
                   />
                   <button type="submit" className="station-btn" disabled={isScanning || !dastUrl.trim()} style={{ whiteSpace: "nowrap", padding: "0 20px" }}>
-                    {isScanning ? "Scan in progress…" : "Start Dynamic Scan"}
+                    {isScanning ? "Scan in progress…" : agenticMode ? "Start Agent" : "Start Penetration Test"}
                   </button>
                 </form>
+
+                {/* Agentic (AI agent) mode — adaptive pen-test that streams live */}
+                <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 14, marginTop: 12 }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
+                    <input type="checkbox" checked={agenticMode} onChange={(e) => setAgenticMode(e.target.checked)} disabled={isScanning} />
+                    AI agent pen-test <span style={{ opacity: 0.55, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.08em" }}>adaptive</span>
+                  </label>
+                  {agenticMode && (
+                    <>
+                      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+                        Environment
+                        <select
+                          value={agEnv}
+                          onChange={(e) => {
+                            const next = e.target.value as typeof agEnv;
+                            setAgEnv(next);
+                            // Aggressive is staging-only — the CLI rejects it on prod.
+                            if (next === "production" && agTier === "aggressive") setAgTier("passive");
+                          }}
+                          disabled={isScanning}
+                        >
+                          <option value="production">production</option>
+                          <option value="staging">staging</option>
+                        </select>
+                      </label>
+                      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+                        Intensity
+                        <select
+                          value={agTier}
+                          onChange={(e) => setAgTier(e.target.value as typeof agTier)}
+                          disabled={isScanning}
+                        >
+                          <option value="passive">passive</option>
+                          <option value="safe-active">safe-active</option>
+                          <option value="aggressive" disabled={agEnv === "production"}>aggressive (staging)</option>
+                        </select>
+                      </label>
+                      {agTier === "safe-active" && agEnv === "production" && (
+                        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#d97706" }}>
+                          <input type="checkbox" checked={agAck} onChange={(e) => setAgAck(e.target.checked)} disabled={isScanning} />
+                          Accept possible side effects
+                        </label>
+                      )}
+                    </>
+                  )}
+                </div>
+
                 <div className="dast-warning">
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#d97706" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                     <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3 M12 9v4 M12 17h.01"/>
@@ -1631,7 +1799,7 @@ export default function App() {
                   {([
                     {
                       name: "Nuclei", extra: "6,618 templates", pro: false,
-                      desc: "Curated vulnerability templates — CVE probes, exposures, takeovers.",
+                      desc: "Baseline sweep run up front for breadth — CVE probes, exposures, takeovers.",
                       icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></svg>,
                     },
                     {
@@ -1650,8 +1818,8 @@ export default function App() {
                       icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M10 4a6 6 0 1 0 0 12 6 6 0 0 0 0-12 M21 21l-6.65-6.65"/></svg>,
                     },
                     {
-                      name: "AI patterns", extra: undefined, pro: true,
-                      desc: "Model-driven probes for logic flaws template libraries miss.",
+                      name: "Agentic brain", extra: "Claude", pro: true,
+                      desc: "An AI agent that reasons over responses and probes adaptively — chaining steps to find auth-bypass, IDOR and business-logic flaws no template can express.",
                       icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9.94 3.94 12 2l2.06 1.94L16 2l1 4 4 1-1.94 2.06L21 12l-1.94 2.06L21 16l-4 1-1 4-2.06-1.94L12 22l-2.06-1.94L8 22l-1-4-4-1 1.94-2.06L3 12l1.94-2.06L3 8l4-1 1-4z"/></svg>,
                     },
                   ] as { name: string; extra?: string; pro: boolean; desc: string; icon: React.ReactNode }[]).map((f) => (
@@ -2142,7 +2310,7 @@ export default function App() {
                 const filteredRecent = historyFilter === "all" ? recent : recent.filter(r => r.type === historyFilter);
                 return filteredRecent.length === 0 ? (
                   <div className="empty-state">
-                    <p>Run your first scan from Overview or Static / Dynamic Analysis.</p>
+                    <p>Run your first scan from Overview or Static / Penetration Testing.</p>
                   </div>
                 ) : (
                   <ul className="history-list">
@@ -3094,7 +3262,7 @@ export default function App() {
       )}
 
       {/* Print portals — only one renders at a time based on current view */}
-      {view !== "compliancelab" && (
+      {view !== "compliancelab" && !(view === "report" && scanType === "dast") && (
         <PrintCertificate
           projectPath={scanPath}
           scanSummary={scanSummary}
@@ -3108,6 +3276,9 @@ export default function App() {
           result={complianceLabResult}
           packages={packages}
         />
+      )}
+      {view === "report" && scanType === "dast" && (
+        <PrintPenTestReport targetUrl={scanPath} findings={dastFindings} report={pentestReport} />
       )}
 
     </div>

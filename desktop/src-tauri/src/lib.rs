@@ -48,6 +48,10 @@ async fn await_ready(app: &AppHandle, mut rx: Receiver<CommandEvent>) -> Result<
     let mut last_stdout: Vec<String> = Vec::new();
     let mut last_stderr: Vec<String> = Vec::new();
     let mut cache_path = String::new();
+    // Set when an agentic run reports the target isn't ownership-verified. The
+    // sidecar prints the full token + placement instructions to the terminal
+    // panel (via terminal-output); this just lets us return a distinct error.
+    let mut consent_domain = String::new();
 
     while let Some(event) = rx.recv().await {
         match event {
@@ -75,6 +79,13 @@ async fn await_ready(app: &AppHandle, mut rx: Receiver<CommandEvent>) -> Result<
                     }
                 }
 
+                if let Some(pos) = line.find("CONSENT_REQUIRED ") {
+                    let rest = line[pos + 17..].trim();
+                    if let Some(domain) = rest.split_whitespace().next() {
+                        if !domain.is_empty() { consent_domain = domain.to_string(); }
+                    }
+                }
+
                 if !line.is_empty() {
                     last_stdout.push(line);
                     if last_stdout.len() > 6 { last_stdout.remove(0); }
@@ -99,6 +110,12 @@ async fn await_ready(app: &AppHandle, mut rx: Receiver<CommandEvent>) -> Result<
                     .unwrap_or(false);
                 if was_cancelled {
                     return Err("__cancelled__".to_string());
+                }
+
+                // Agentic run blocked on the ownership gate — surface it so the
+                // UI can point the user at the instructions in the terminal.
+                if !consent_domain.is_empty() {
+                    return Err(format!("__consent__ {}", consent_domain));
                 }
 
                 let detail = if !last_stderr.is_empty() {
@@ -160,7 +177,31 @@ async fn cancel_scan(app: AppHandle) -> Result<(), String> {
     if let Ok(mut flag) = app.state::<CancelFlag>().0.lock() {
         *flag = true;
     }
-    kill_old_scans(&app);
+
+    // Send a graceful SIGTERM to each tracked sidecar first. The Go sidecar
+    // catches it and force-kills its Nuclei child (and process group) before
+    // exiting — a plain SIGKILL of the sidecar would orphan Nuclei, leaving it
+    // hammering the target. A detached thread SIGKILLs anything still alive
+    // shortly after, so cancel is both immediate and guaranteed.
+    let pids: Vec<u32> = app
+        .state::<ActiveScans>()
+        .0
+        .lock()
+        .map(|children| children.iter().map(|c| c.pid()).collect())
+        .unwrap_or_default();
+    for pid in &pids {
+        let _ = std::process::Command::new("kill")
+            .arg("-TERM")
+            .arg(pid.to_string())
+            .status();
+    }
+
+    let app2 = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(800));
+        kill_old_scans(&app2);
+    });
+
     let _ = app.emit("terminal-output", "\x1b[33m⚡ Scan cancelled by user.\x1b[0m\r\n");
     let _ = app.emit("scan-cancelled", ());
     Ok(())
@@ -179,12 +220,12 @@ async fn start_scan(app: AppHandle, path: String) -> Result<ScanReturn, String> 
         .args(["scan", &path, "--desktop"])
         .spawn()
         .map_err(|e| format!("spawn failed: {e}"))?;
-    let result = await_ready(&app, rx).await;
-    let _ = app.emit("terminal-scan-done", ());
-    let (url, cache_path) = result?;
     if let Ok(mut children) = app.state::<ActiveScans>().0.lock() {
         children.push(child);
     }
+    let result = await_ready(&app, rx).await;
+    let _ = app.emit("terminal-scan-done", ());
+    let (url, cache_path) = result?;
     Ok(ScanReturn { url, cache_path })
 }
 
@@ -201,12 +242,56 @@ async fn start_dast(app: AppHandle, url: String) -> Result<ScanReturn, String> {
         .args(["dast", &url, "--desktop"])
         .spawn()
         .map_err(|e| format!("spawn failed: {e}"))?;
-    let result = await_ready(&app, rx).await;
-    let _ = app.emit("terminal-scan-done", ());
-    let (report_url, cache_path) = result?;
+    // Track the child before awaiting READY so a mid-scan cancel can kill it.
     if let Ok(mut children) = app.state::<ActiveScans>().0.lock() {
         children.push(child);
     }
+    let result = await_ready(&app, rx).await;
+    let _ = app.emit("terminal-scan-done", ());
+    let (report_url, cache_path) = result?;
+    Ok(ScanReturn { url: report_url, cache_path })
+}
+
+/// Run the adaptive AI agent pen-tester against a live URL (agentic DAST).
+/// Starts the embedded UI early and streams the run to it; the report loads the
+/// live "Penetration Testing" view. Consent (for non-local targets) is enforced
+/// by the sidecar and surfaced as an "__consent__ <domain>" error.
+#[tauri::command]
+async fn start_agentic_dast(
+    app: AppHandle,
+    url: String,
+    tier: String,
+    environment: String,
+    accept_side_effects: bool,
+) -> Result<ScanReturn, String> {
+    kill_old_scans(&app);
+    let _ = app.emit(
+        "terminal-output",
+        format!("\x1b[1;35m$ trojan dast {} --agentic --tier {}\x1b[0m\r\n", url, tier),
+    );
+
+    let mut args: Vec<String> = vec![
+        "dast".into(), url.clone(), "--agentic".into(), "--desktop".into(),
+        "--tier".into(), tier, "--env".into(), environment,
+    ];
+    if accept_side_effects {
+        args.push("--accept-side-effects".into());
+    }
+
+    let (rx, child) = app
+        .shell()
+        .sidecar("trojan")
+        .map_err(|e| format!("sidecar not found: {e}"))?
+        .args(args)
+        .spawn()
+        .map_err(|e| format!("spawn failed: {e}"))?;
+    // Track the child before awaiting READY so a mid-scan cancel can kill it.
+    if let Ok(mut children) = app.state::<ActiveScans>().0.lock() {
+        children.push(child);
+    }
+    let result = await_ready(&app, rx).await;
+    let _ = app.emit("terminal-scan-done", ());
+    let (report_url, cache_path) = result?;
     Ok(ScanReturn { url: report_url, cache_path })
 }
 
@@ -223,12 +308,12 @@ async fn serve_scan(app: AppHandle, cache_path: String) -> Result<String, String
         .args(["serve", &cache_path, "--desktop"])
         .spawn()
         .map_err(|e| format!("spawn failed: {e}"))?;
-    let result = await_ready(&app, rx).await;
-    let _ = app.emit("terminal-scan-done", ());
-    let (url, _) = result?;
     if let Ok(mut children) = app.state::<ActiveScans>().0.lock() {
         children.push(child);
     }
+    let result = await_ready(&app, rx).await;
+    let _ = app.emit("terminal-scan-done", ());
+    let (url, _) = result?;
     Ok(url)
 }
 
@@ -246,12 +331,12 @@ async fn scan_deps(app: AppHandle, path: String) -> Result<ScanReturn, String> {
         .args(["deps", &path, "--desktop"])
         .spawn()
         .map_err(|e| format!("spawn failed: {e}"))?;
-    let result = await_ready(&app, rx).await;
-    let _ = app.emit("terminal-scan-done", ());
-    let (url, cache_path) = result?;
     if let Ok(mut children) = app.state::<ActiveScans>().0.lock() {
         children.push(child);
     }
+    let result = await_ready(&app, rx).await;
+    let _ = app.emit("terminal-scan-done", ());
+    let (url, cache_path) = result?;
     Ok(ScanReturn { url, cache_path })
 }
 
@@ -667,6 +752,7 @@ pub fn run() {
             check_cache_exists,
             start_scan,
             start_dast,
+            start_agentic_dast,
             scan_deps,
             cancel_scan,
             open_auth,

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -24,6 +25,7 @@ import (
 	"github.com/dev-zeph/trojan/internal/ci"
 	"github.com/dev-zeph/trojan/internal/config"
 	"github.com/dev-zeph/trojan/internal/dast"
+	"github.com/dev-zeph/trojan/internal/dast/agent"
 	"github.com/dev-zeph/trojan/internal/hook"
 	"github.com/dev-zeph/trojan/internal/mcpserver"
 	"github.com/dev-zeph/trojan/internal/normalizer"
@@ -411,6 +413,10 @@ func dastCmd() *cobra.Command {
 	var crawlDepth int
 	var crawlTimeout int
 	var desktop bool
+	var agentic bool
+	var tierStr, envStr string
+	var acceptSideEffects bool
+	var maxRunTokens int
 
 	cmd := &cobra.Command{
 		Use:   "dast <url>",
@@ -447,9 +453,72 @@ func dastCmd() *cobra.Command {
 				os.Exit(1)
 			}
 
+			// ── Step 2.5: consent / ownership gate ─────────────────────────────────
+			// No scan traffic reaches a non-local target until the user has proven
+			// they control it. Enforced in desktop mode too — this is a legal gate,
+			// not a nicety. localhost / private-IP targets bypass it (labelled).
+			userEmail := ""
+			if cfg != nil {
+				userEmail = cfg.UserEmail
+			}
+			allowed, isLocalTarget, consentRec, gateDomain, gateErr := dast.GateStatus(targetURL, userEmail)
+			if gateErr != nil {
+				color.Red("\nError: %s\n", gateErr)
+				os.Exit(1)
+			}
+			if isLocalTarget {
+				color.New(color.Faint).Printf("  Local target (%s) — no ownership check required.\n", gateDomain)
+			} else if allowed {
+				color.Green("  Ownership verified for %s (%s).\n", gateDomain, consentRec.Method)
+			} else {
+				domain, token, _, mErr := dast.MintToken(targetURL, userEmail)
+				if mErr != nil {
+					color.Red("\nError preparing ownership check: %s\n", mErr)
+					os.Exit(1)
+				}
+				if desktop {
+					// Machine-readable signal for the desktop app (Phase 5 UI).
+					fmt.Printf("CONSENT_REQUIRED %s %s\n", domain, token)
+				}
+				printConsentGate(targetURL, domain, token)
+				os.Exit(1)
+			}
+
 			config.NotifyIfOutdated(version)
 
+			// ── Agentic branch (Phase 4/5): the adaptive AI pen-tester ─────────────
+			// Consent (Step 2.5) has already passed. Hand off to the agent loop,
+			// which streams its run to the embedded "Penetration Testing" UI.
+			if agentic {
+				tier, terr := agent.ParseTier(tierStr)
+				if terr != nil {
+					color.Red("Error: %s\n", terr)
+					os.Exit(1)
+				}
+				envv, eerr := agent.ParseEnvironment(envStr)
+				if eerr != nil {
+					color.Red("Error: %s\n", eerr)
+					os.Exit(1)
+				}
+				runAgenticDast(agenticParams{
+					targetURL:         targetURL,
+					accessToken:       accessToken,
+					tier:              tier,
+					env:               envv,
+					acceptSideEffects: acceptSideEffects,
+					maxRunTokens:      maxRunTokens,
+					desktop:           desktop,
+					crawlDepth:        crawlDepth,
+					crawlTimeout:      crawlTimeout,
+				})
+				return
+			}
+
 			fmt.Printf("\n  → Starting Trojan DAST (Pro)\n\n")
+
+			// Cancel (desktop) / Ctrl+C aborts Nuclei immediately instead of
+			// orphaning it against the target.
+			installDastCancelHandler()
 
 			// ── Step 3: Reachability check ─────────────────────────────────────────
 			httpClient := &http.Client{Timeout: 5 * time.Second}
@@ -572,6 +641,25 @@ func dastCmd() *cobra.Command {
 
 			fmt.Println()
 
+			// ── Step 8.5: false-positive triage ────────────────────────────────────
+			// Adversarially verify each finding against its own evidence so real
+			// issues are separated from scanner noise (agentic DAST Phase 1).
+			if len(findings) > 0 {
+				fmt.Printf("  → Triaging %d finding(s) for false positives...\n", len(findings))
+				if verdicts, terr := ai.TriageFindings(findings, accessToken); terr != nil {
+					color.Yellow("  Triage skipped (%s)\n\n", terr)
+				} else {
+					for i := range findings {
+						if v, ok := verdicts[findings[i].ID]; ok {
+							findings[i].Verdict = v.Verdict
+							findings[i].VerdictReason = v.Rationale
+							findings[i].VerdictConfidence = v.Confidence
+						}
+					}
+					fmt.Printf("      done\n\n")
+				}
+			}
+
 			// ── Step 9: AI synthesis ───────────────────────────────────────────────
 			if len(findings) > 0 {
 				total := len(findings)
@@ -626,7 +714,8 @@ func dastCmd() *cobra.Command {
 			color.New(color.FgBlue).Printf("%d low", counts[normalizer.SeverityLow])
 			fmt.Printf(")\n")
 
-			scanResult := normalizer.NewScanResult(targetURL, findings)
+			// Persist under the cwd so MCP clients can read DAST findings too.
+			scanResult := persistScan(targetURL, findings)
 
 			dastUI, _ := fs.Sub(trojan.DastUIAssets, "dast-ui/dist")
 			srv := server.New(scanResult, dastUI)
@@ -665,7 +754,436 @@ func dastCmd() *cobra.Command {
 	cmd.Flags().IntVar(&crawlTimeout, "timeout", 90, "Crawler timeout in seconds")
 	cmd.Flags().BoolVar(&desktop, "desktop", false, "Desktop app mode: skip browser, emit READY signal to stdout")
 	cmd.Flags().MarkHidden("desktop") //nolint:errcheck
+	cmd.Flags().BoolVar(&agentic, "agentic", false, "Run the adaptive AI agent pen-tester instead of the one-shot scan (Pro)")
+	cmd.Flags().StringVar(&tierStr, "tier", "passive", "Agentic scan intensity: passive | safe-active | aggressive")
+	cmd.Flags().StringVar(&envStr, "env", "production", "Agentic target environment: production | staging")
+	cmd.Flags().BoolVar(&acceptSideEffects, "accept-side-effects", false, "Acknowledge possible side effects (required for safe-active POST on production)")
+	cmd.Flags().IntVar(&maxRunTokens, "max-run-tokens", 0, "Cumulative token ceiling for the agentic run (0 = rely on step/request/time caps)")
+	cmd.AddCommand(dastVerifyCmd())
 	return cmd
+}
+
+// dastVerifyCmd implements `trojan dast verify <url>` — the domain-ownership
+// flow that unlocks scanning of a non-local target. With no --method it prints
+// the token and the three placement options; with --method it checks that the
+// token is live and persists a consent record on success.
+func dastVerifyCmd() *cobra.Command {
+	var method string
+
+	cmd := &cobra.Command{
+		Use:   "verify <url>",
+		Short: "Prove you own a domain before pen-testing it (Pro)",
+		Long: "Prove you control a domain before Trojan will scan it.\n\n" +
+			"Run without --method to get your verification token and placement\n" +
+			"instructions, then re-run with --method dns|file|meta to confirm.",
+		Args: cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			targetURL := args[0]
+			ui.PrintBanner(version)
+
+			// Pro gate — same as the scan path.
+			cfg, _ := config.LoadConfig()
+			accessToken := ""
+			userEmail := ""
+			if cfg != nil {
+				accessToken = cfg.AccessToken
+				userEmail = cfg.UserEmail
+			}
+			if accessToken == "" {
+				printDastProMessage(targetURL)
+				return
+			}
+			if info, err := ai.FetchLicense(accessToken); err != nil || !info.IsPro {
+				printDastProMessage(targetURL)
+				return
+			}
+
+			if !strings.HasPrefix(targetURL, "http://") && !strings.HasPrefix(targetURL, "https://") {
+				color.Red("Error: URL must start with http:// or https://\n")
+				os.Exit(1)
+			}
+
+			// Already verified?
+			if allowed, isLocal, rec, domain, gerr := dast.GateStatus(targetURL, userEmail); gerr == nil {
+				if isLocal {
+					color.New(color.Faint).Printf("\n  %s is a local target — no ownership check needed. Scan it directly.\n\n", domain)
+					return
+				}
+				if allowed {
+					color.Green("\n  Already verified: %s (%s, %s).\n\n", domain, rec.Method, rec.VerifiedAt.Format(time.RFC3339))
+					return
+				}
+			}
+
+			domain, token, isLocal, err := dast.MintToken(targetURL, userEmail)
+			if err != nil {
+				color.Red("\nError: %s\n", err)
+				os.Exit(1)
+			}
+			if isLocal {
+				color.New(color.Faint).Printf("\n  %s is a local target — no ownership check needed. Scan it directly.\n\n", domain)
+				return
+			}
+
+			// No method → show instructions and the token.
+			if method == "" {
+				printConsentGate(targetURL, domain, token)
+				return
+			}
+
+			// Run the requested check.
+			m := dast.VerifyMethod(strings.ToLower(method))
+			fmt.Printf("\n  Checking %s ownership via %s...\n", domain, m)
+			rec, verr := dast.VerifyOwnership(targetURL, m, userEmail)
+			if verr != nil {
+				color.Red("\n  Verification failed: %s\n\n", verr)
+				fmt.Printf("  Double-check the token is placed, then re-run:\n")
+				fmt.Printf("    trojan dast verify %s --method %s\n\n", targetURL, m)
+				os.Exit(1)
+			}
+			color.Green("\n  ✓ Verified ownership of %s via %s.\n", rec.Domain, rec.Method)
+			fmt.Printf("  You can now run: trojan dast %s\n\n", targetURL)
+		},
+	}
+	cmd.Flags().StringVar(&method, "method", "", "Check ownership now via: dns | file | meta")
+	return cmd
+}
+
+// printConsentGate explains why a scan is blocked and how to prove ownership.
+func printConsentGate(targetURL, domain, token string) {
+	fmt.Println()
+	color.Yellow("  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	fmt.Println()
+	color.New(color.Bold).Printf("  Prove you own %s before scanning it.\n", domain)
+	fmt.Println()
+	fmt.Println("  Pen-testing a domain you don't control is illegal. Trojan")
+	fmt.Println("  won't send a single probe until you verify ownership — the")
+	fmt.Println("  same model as Google Search Console.")
+	fmt.Println()
+	color.New(color.Bold).Println("  Your verification token:")
+	color.Cyan("    %s\n", token)
+	fmt.Println()
+	fmt.Println("  Place it using ANY ONE of these, then verify:")
+	fmt.Println()
+	color.New(color.Bold).Println("  1. DNS TXT record")
+	fmt.Printf("     Add a TXT record on %s with value:\n", domain)
+	color.Cyan("       %s%s\n", dast.TXTPrefix, token)
+	fmt.Println()
+	color.New(color.Bold).Println("  2. Well-known file")
+	fmt.Printf("     Serve this file with the token as its body:\n")
+	color.Cyan("       %s%s\n", strings.TrimSuffix(targetURL, "/"), dast.WellKnownPath)
+	fmt.Println()
+	color.New(color.Bold).Println("  3. Homepage meta tag")
+	fmt.Printf("     Add to the <head> of your homepage:\n")
+	color.Cyan("       <meta name=\"%s\" content=\"%s\">\n", dast.MetaName, token)
+	fmt.Println()
+	color.New(color.Bold).Println("  Then verify (pick the method you used):")
+	fmt.Printf("    trojan dast verify %s --method dns\n", targetURL)
+	fmt.Printf("    trojan dast verify %s --method file\n", targetURL)
+	fmt.Printf("    trojan dast verify %s --method meta\n", targetURL)
+	fmt.Println()
+	color.Yellow("  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	fmt.Println()
+}
+
+// agenticParams bundles everything runAgenticDast needs.
+type agenticParams struct {
+	targetURL         string
+	accessToken       string
+	tier              agent.Tier
+	env               agent.Environment
+	acceptSideEffects bool
+	maxRunTokens      int
+	desktop           bool
+	crawlDepth        int
+	crawlTimeout      int
+}
+
+// runAgenticDast drives the adaptive AI pen-test (docs/agentic-dast.md Phase 4/5).
+// It crawls, runs the deterministic Nuclei pre-pass for breadth (locked decision
+// #3), starts the embedded "Penetration Testing" UI early so the run streams
+// live, drives the agent loop, then merges + triages the findings.
+// installDastCancelHandler makes SIGINT/SIGTERM (sent by the desktop's Cancel
+// button, or Ctrl+C) force-kill any in-flight Nuclei scan and exit immediately,
+// so cancelling aborts the scan instead of orphaning Nuclei against the target.
+func installDastCancelHandler() {
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		scanners.TerminateDastScans()
+		os.Exit(130)
+	}()
+}
+
+func runAgenticDast(p agenticParams) {
+	installDastCancelHandler()
+	fmt.Printf("\n  → Starting Trojan agentic pen-test (Pro)\n\n")
+
+	// Reachability.
+	httpClient := &http.Client{Timeout: 5 * time.Second}
+	if _, err := httpClient.Get(p.targetURL); err != nil { //nolint:noctx
+		color.Red("\nCannot reach %s\n", p.targetURL)
+		fmt.Println("Is the server running?")
+		os.Exit(1)
+	}
+
+	// Crawl.
+	fmt.Printf("  → Crawling application (depth %d)...\n", p.crawlDepth)
+	crawlResult := dast.Crawl(p.targetURL, p.crawlDepth, p.crawlTimeout)
+	fmt.Printf("  → Discovered %d endpoint(s)\n\n", len(crawlResult.Endpoints))
+
+	// Deterministic Nuclei pre-pass for breadth (zero tokens).
+	if err := config.EnsureDastScanners(); err != nil {
+		color.Yellow("Warning: could not install DAST scanners: %s\n", err)
+	}
+	fmt.Printf("  → Running Nuclei baseline...\n")
+	baseline := scanners.RunDast(p.targetURL, []scanners.DastScanner{scanners.Nuclei{}}, func(_ string, _ bool, _ int, _ error) {})
+	fmt.Printf("  → Baseline: %d finding(s)\n\n", len(baseline))
+
+	// Start the UI server early so the run view can watch the agent live.
+	scanResult := normalizer.NewScanResult(p.targetURL, baseline)
+	dastUI, _ := fs.Sub(trojan.DastUIAssets, "dast-ui/dist")
+	srv := server.New(scanResult, dastUI)
+	reportURL, err := srv.Start()
+	if err != nil {
+		color.Yellow("Warning: could not start UI server: %s\n", err)
+		return
+	}
+	srv.ResetAgenticRun()
+
+	// Deterministic cache path for this target. We emit CACHE_PATH *before*
+	// READY (the desktop's await_ready only captures it pre-READY), seed the
+	// file with the baseline so it exists, and overwrite it with the full
+	// results on completion. This lets "recent targets" re-serve the finished
+	// report instead of starting a brand-new scan.
+	cacheFile := desktopCachePath(p.targetURL)
+	if p.desktop {
+		writeDesktopCache(cacheFile, scanResult)
+		fmt.Printf("\nCACHE_PATH %s\n", cacheFile)
+		fmt.Printf("\nREADY %s\n", reportURL)
+	} else {
+		fmt.Printf("  → Live run at %s\n", reportURL)
+		fmt.Printf("  → Press Ctrl+C to close\n\n")
+		browser.OpenURL(reportURL)
+	}
+
+	// Drive the loop, streaming every action to the UI and the terminal.
+	srv.BroadcastAgentEvent(server.AgentEvent{Type: "run", Status: "running"})
+	res, rerr := agent.RunAgentic(context.Background(), agent.Config{
+		TargetURL:         p.targetURL,
+		AccessToken:       p.accessToken,
+		Crawl:             crawlResult,
+		Tier:              p.tier,
+		Env:               p.env,
+		AcceptSideEffects: p.acceptSideEffects,
+		MaxRunTokens:      p.maxRunTokens,
+		Task:              buildAgenticTask(p.targetURL, p.tier, p.env, crawlResult, baseline),
+		OnEvent: func(e agent.Event) {
+			srv.BroadcastAgentEvent(server.AgentEvent{Type: string(e.Type), Step: e.Step, Tool: e.Tool, Detail: e.Detail})
+			printAgentEvent(e)
+		},
+	})
+
+	if rerr != nil {
+		srv.BroadcastAgentEvent(server.AgentEvent{Type: "run", Status: "error", Detail: rerr.Error()})
+		color.Red("\n  Agentic run failed: %s\n", rerr)
+	} else {
+		// Merge the agent's evidence-anchored candidates with the Nuclei baseline,
+		// then run everything through adversarial triage (Phase 1).
+		all := append(baseline, agenticFindingsFromCandidates(res.Findings)...) //nolint:gocritic
+		if len(all) > 0 {
+			if verdicts, terr := ai.TriageFindings(all, p.accessToken); terr == nil {
+				for i := range all {
+					if v, ok := verdicts[all[i].ID]; ok {
+						all[i].Verdict = v.Verdict
+						all[i].VerdictReason = v.Rationale
+						all[i].VerdictConfidence = v.Confidence
+					}
+				}
+			}
+		}
+
+		// AI synthesis — plain-English explanation + fix actions per finding, the
+		// same pass the one-shot scan runs. Without it, Simply/Actions are empty
+		// and the report shows the Pro upsell even to logged-in Pro users.
+		synthesizeFindings(all, p.accessToken)
+
+		// Persist under the cwd so `trojan mcp` (run from the same project) can
+		// read these DAST findings; ProjectPath keeps the scanned URL for display.
+		scan := persistScan(p.targetURL, all)
+		srv.UpdateScan(scan)
+		// Overwrite the desktop cache with the finished results so re-opening
+		// this target from "recent" shows the full report (not a new scan).
+		if p.desktop {
+			writeDesktopCache(cacheFile, scan)
+		}
+		srv.BroadcastAgentEvent(server.AgentEvent{Type: "run", Status: "complete", Detail: res.Summary})
+		fmt.Printf("\n  → Agentic pen-test complete — %d candidate finding(s); %s\n", len(res.Findings), stopLabel(res))
+	}
+
+	// Keep the server alive until cancelled/closed — installDastCancelHandler
+	// (installed at the top) handles SIGINT/SIGTERM and exits the process.
+	select {}
+}
+
+// buildAgenticTask composes the seed message: the goal, the run's tier +
+// allowed methods (so the agent doesn't waste turns on rejected probes), and a
+// summary of the crawl + Nuclei baseline.
+func buildAgenticTask(url string, tier agent.Tier, env agent.Environment, crawl dast.CrawlResult, baseline []normalizer.Finding) string {
+	methods := "GET, HEAD, OPTIONS"
+	if tier >= agent.TierSafeActive {
+		methods += ", POST (non-destructive confirmation only)"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Penetration-test %s.\n", url)
+	fmt.Fprintf(&b, "Environment: %s. Scan-intensity tier: %s. Allowed HTTP methods: %s.\n", env, tier, methods)
+	fmt.Fprintf(&b, "The crawler found %d endpoint(s) and %d technology hint(s) — call get_crawl_map for the full map.\n", len(crawl.Endpoints), len(crawl.TechHints))
+	if len(baseline) > 0 {
+		fmt.Fprintf(&b, "A Nuclei baseline scan already flagged %d issue(s) for breadth; spend your reasoning on the multi-step and business-logic flaws those templates can't express.\n", len(baseline))
+	}
+	b.WriteString("Review the crawl map first, then probe adaptively. Record findings with note_finding anchored on the evidence you observe, and call finish when you have tested the hypotheses worth testing.")
+	return b.String()
+}
+
+// agenticFindingsFromCandidates maps the agent's evidence-anchored candidates
+// into normalized findings so they flow through triage and the report UI.
+func agenticFindingsFromCandidates(cs []agent.Candidate) []normalizer.Finding {
+	out := make([]normalizer.Finding, 0, len(cs))
+	for i, c := range cs {
+		h := sha256.Sum256([]byte(c.Title + "|" + c.URL + "|" + fmt.Sprint(i)))
+		out = append(out, normalizer.Finding{
+			ID:          "agentic-" + fmt.Sprintf("%x", h)[:12],
+			Scanner:     "agentic-dast",
+			Category:    "dast",
+			Severity:    parseAgentSeverity(c.Severity),
+			Title:       c.Title,
+			RawMessage:  c.Rationale,
+			FilePath:    c.URL,
+			CodeSnippet: c.Evidence,
+			RuleID:      "agentic",
+			Status:      normalizer.StatusOpen,
+		})
+	}
+	return out
+}
+
+// synthesizeFindings populates Simply/Actions/etc. on each finding via the AI
+// synthesis edge function (Pro). Mirrors the one-shot scan's Step 9. Familiarity
+// and profile come from local config so explanations match the user's level.
+func synthesizeFindings(findings []normalizer.Finding, accessToken string) {
+	if len(findings) == 0 {
+		return
+	}
+	fam, about := 1, ""
+	if cfg, _ := config.LoadConfig(); cfg != nil {
+		fam, about = cfg.Familiarity, cfg.AboutYou
+	}
+
+	fmt.Printf("  → Synthesizing %d finding(s)...\n", len(findings))
+	const maxConcurrent = 8
+	sem := make(chan struct{}, maxConcurrent)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	for i := range findings {
+		idx := i
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			s, serr := ai.SynthesizeFinding(findings[idx], accessToken, fam, about)
+			if serr != nil {
+				return
+			}
+			mu.Lock()
+			findings[idx].Simply = s.Simply
+			findings[idx].Actions = s.Actions
+			findings[idx].Confidence = s.Confidence
+			findings[idx].IsFalsePositive = s.IsFalsePositive
+			findings[idx].FixDiff = s.FixDiff
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+}
+
+// persistScan writes the findings under the cwd's .trojan/scans/ (so MCP can read
+// them) with the scanned URL as the display path, falling back to in-memory if
+// the write fails.
+func persistScan(targetURL string, findings []normalizer.Finding) *normalizer.ScanResult {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return normalizer.NewScanResult(targetURL, findings)
+	}
+	if scan, serr := normalizer.SaveScanResultAt(cwd, targetURL, findings); serr == nil {
+		return scan
+	}
+	return normalizer.NewScanResult(targetURL, findings)
+}
+
+func parseAgentSeverity(s string) normalizer.Severity {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "critical":
+		return normalizer.SeverityCritical
+	case "high":
+		return normalizer.SeverityHigh
+	case "medium":
+		return normalizer.SeverityMedium
+	case "low":
+		return normalizer.SeverityLow
+	default:
+		return normalizer.SeverityInfo
+	}
+}
+
+func printAgentEvent(e agent.Event) {
+	switch e.Type {
+	case agent.EventStep:
+		fmt.Printf("  [step %d]\n", e.Step)
+	case agent.EventText:
+		fmt.Printf("    · %s\n", truncateLine(e.Detail, 100))
+	case agent.EventToolUse:
+		fmt.Printf("    → %s\n", e.Tool)
+	case agent.EventToolResult:
+		fmt.Printf("      %s\n", truncateLine(e.Detail, 100))
+	case agent.EventFinding:
+		color.Green("    ✓ finding: %s\n", e.Detail)
+	case agent.EventStopped:
+		color.Yellow("  stopped: %s\n", e.Detail)
+	case agent.EventFinish:
+		if e.Detail != "" {
+			fmt.Printf("  finished: %s\n", truncateLine(e.Detail, 120))
+		}
+	}
+}
+
+func stopLabel(res *agent.RunResult) string {
+	if res.EndedBy == agent.EventStopped {
+		return "stopped: " + string(res.StopReason)
+	}
+	return "agent finished"
+}
+
+func truncateLine(s string, n int) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
+}
+
+// writeDesktopCache serializes a scan result to the desktop cache file so the
+// desktop app can re-serve it later via `trojan serve` (no re-scan). Best-effort.
+func writeDesktopCache(path string, scan *normalizer.ScanResult) {
+	data, err := json.Marshal(scan)
+	if err != nil {
+		return
+	}
+	if dir := filepath.Dir(path); os.MkdirAll(dir, 0755) != nil {
+		return
+	}
+	os.WriteFile(path, data, 0644) //nolint:errcheck
 }
 
 // desktopCachePath returns the path for the desktop cache file for a given target.

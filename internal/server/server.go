@@ -51,14 +51,25 @@ type Server struct {
 	sseMu     sync.Mutex
 	sseNextID int
 	sseConns  map[int]chan struct{}
+
+	// Agentic-DAST live run stream (Phase 5 §10.2). The run itself executes in
+	// the CLI process that owns this server; it broadcasts progress events here
+	// and the "Penetration Testing" run view subscribes over SSE.
+	agenticMu      sync.Mutex
+	agenticNextID  int
+	agenticClients map[int]chan AgentEvent
+	agenticBuffer  []AgentEvent // replay buffer for late subscribers
+	agenticStatus  string       // "idle" | "running" | "complete" | "error"
 }
 
 // New creates a new server with the given scan result and embedded UI assets.
 func New(scan *normalizer.ScanResult, uiAssets fs.FS) *Server {
 	return &Server{
-		scan:     scan,
-		uiAssets: uiAssets,
-		sseConns: make(map[int]chan struct{}),
+		scan:           scan,
+		uiAssets:       uiAssets,
+		sseConns:       make(map[int]chan struct{}),
+		agenticClients: make(map[int]chan AgentEvent),
+		agenticStatus:  "idle",
 	}
 }
 
@@ -89,6 +100,13 @@ func (s *Server) Start() (string, error) {
 	mux.HandleFunc("/api/auth/status", s.handleAuthStatus)
 	mux.HandleFunc("/api/events", s.handleSSE)
 	mux.HandleFunc("/api/install-progress", s.handleInstallProgress)
+
+	// Agentic-DAST (Phase 5): consent gate + live run stream.
+	mux.HandleFunc("/api/dast/consent/status", s.handleConsentStatus)
+	mux.HandleFunc("/api/dast/consent/mint", s.handleConsentMint)
+	mux.HandleFunc("/api/dast/consent/verify", s.handleConsentVerify)
+	mux.HandleFunc("/api/dast/agentic/status", s.handleAgenticStatus)
+	mux.HandleFunc("/api/dast/agentic/events", s.handleAgenticEvents)
 
 	// Serve embedded UI assets (caller passes an already-subbed fs.FS)
 	mux.Handle("/", http.FileServer(http.FS(s.uiAssets)))

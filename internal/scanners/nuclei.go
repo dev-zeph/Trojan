@@ -8,9 +8,51 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 
 	"github.com/dev-zeph/trojan/internal/normalizer"
 )
+
+// Running Nuclei scans are tracked so the CLI's signal handler can force-kill
+// them (and their process groups) the instant a desktop scan is cancelled —
+// otherwise killing the sidecar orphans Nuclei and it keeps hammering the target.
+var (
+	dastProcMu sync.Mutex
+	dastProcs  = map[int]*os.Process{}
+)
+
+func registerDastProc(p *os.Process) {
+	if p == nil {
+		return
+	}
+	dastProcMu.Lock()
+	dastProcs[p.Pid] = p
+	dastProcMu.Unlock()
+}
+
+func unregisterDastProc(p *os.Process) {
+	if p == nil {
+		return
+	}
+	dastProcMu.Lock()
+	delete(dastProcs, p.Pid)
+	dastProcMu.Unlock()
+}
+
+// TerminateDastScans force-kills every in-flight Nuclei scan and its process
+// group. Called from the CLI signal handler on cancel/Ctrl+C.
+func TerminateDastScans() {
+	dastProcMu.Lock()
+	defer dastProcMu.Unlock()
+	for pid, p := range dastProcs {
+		// Nuclei is started as its own process-group leader (Setpgid), so a
+		// negative PID signals the whole group; also kill the process directly.
+		_ = syscall.Kill(-pid, syscall.SIGKILL)
+		_ = p.Kill()
+		delete(dastProcs, pid)
+	}
+}
 
 // Nuclei implements DastScanner using the Nuclei v3 vulnerability scanner.
 type Nuclei struct {
@@ -71,9 +113,19 @@ func (n Nuclei) Run(targetURL string) ([]normalizer.Finding, error) {
 	// it here prevents the raw JSON blobs from flooding the user's terminal.
 	cmd.Stdout = io.Discard
 	cmd.Stderr = os.Stderr
+	// Own process group so TerminateDastScans can kill Nuclei (and any child it
+	// spawns) as a group on cancel, rather than orphaning it.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
-	// Run blocks until the scan finishes. All nuclei output streams to the terminal.
-	cmd.Run() //nolint:errcheck — nuclei exits non-zero even when findings exist
+	// Start + register + Wait (instead of Run) so a cancel can find and kill the
+	// process mid-scan. Nuclei exits non-zero even when it finds issues, so the
+	// error from Wait is intentionally ignored.
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("nuclei: could not start: %w", err)
+	}
+	registerDastProc(cmd.Process)
+	cmd.Wait() //nolint:errcheck — nuclei exits non-zero even when findings exist
+	unregisterDastProc(cmd.Process)
 
 	// Parse the output file.
 	data, err := os.ReadFile(outPath)
