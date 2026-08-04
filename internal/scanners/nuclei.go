@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 
 	"github.com/dev-zeph/trojan/internal/normalizer"
 )
@@ -46,10 +45,9 @@ func TerminateDastScans() {
 	dastProcMu.Lock()
 	defer dastProcMu.Unlock()
 	for pid, p := range dastProcs {
-		// Nuclei is started as its own process-group leader (Setpgid), so a
-		// negative PID signals the whole group; also kill the process directly.
-		_ = syscall.Kill(-pid, syscall.SIGKILL)
-		_ = p.Kill()
+		// killProcessTree is platform-specific: process-group kill on Unix,
+		// taskkill /T on Windows (see procgroup_{unix,windows}.go).
+		killProcessTree(p)
 		delete(dastProcs, pid)
 	}
 }
@@ -114,8 +112,8 @@ func (n Nuclei) Run(targetURL string) ([]normalizer.Finding, error) {
 	cmd.Stdout = io.Discard
 	cmd.Stderr = os.Stderr
 	// Own process group so TerminateDastScans can kill Nuclei (and any child it
-	// spawns) as a group on cancel, rather than orphaning it.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// spawns) as a group on cancel, rather than orphaning it. Platform-specific.
+	setProcGroup(cmd)
 
 	// Start + register + Wait (instead of Run) so a cancel can find and kill the
 	// process mid-scan. Nuclei exits non-zero even when it finds issues, so the
