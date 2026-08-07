@@ -758,7 +758,7 @@ func dastCmd() *cobra.Command {
 	cmd.Flags().StringVar(&tierStr, "tier", "passive", "Agentic scan intensity: passive | safe-active | aggressive")
 	cmd.Flags().StringVar(&envStr, "env", "production", "Agentic target environment: production | staging")
 	cmd.Flags().BoolVar(&acceptSideEffects, "accept-side-effects", false, "Acknowledge possible side effects (required for safe-active POST on production)")
-	cmd.Flags().IntVar(&maxRunTokens, "max-run-tokens", 0, "Cumulative token ceiling for the agentic run (0 = rely on step/request/time caps)")
+	cmd.Flags().IntVar(&maxRunTokens, "max-run-tokens", agent.DefaultMaxRunTokens, "Cumulative token ceiling for the agentic run (0 = rely only on step/request/time caps)")
 	cmd.AddCommand(dastVerifyCmd())
 	return cmd
 }
