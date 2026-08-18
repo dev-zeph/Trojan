@@ -29,6 +29,7 @@ import (
 	"github.com/dev-zeph/trojan/internal/hook"
 	"github.com/dev-zeph/trojan/internal/mcpserver"
 	"github.com/dev-zeph/trojan/internal/normalizer"
+	"github.com/dev-zeph/trojan/internal/rag"
 	"github.com/dev-zeph/trojan/internal/scanners"
 	"github.com/dev-zeph/trojan/internal/server"
 	"github.com/dev-zeph/trojan/internal/ui"
@@ -58,6 +59,7 @@ func main() {
 	rootCmd.AddCommand(verifyCmd())
 	rootCmd.AddCommand(serveCmd())
 	rootCmd.AddCommand(depsCmd())
+	rootCmd.AddCommand(indexCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -656,7 +658,7 @@ func dastCmd() *cobra.Command {
 			// issues are separated from scanner noise (agentic DAST Phase 1).
 			if len(findings) > 0 {
 				fmt.Printf("  → Triaging %d finding(s) for false positives...\n", len(findings))
-				if verdicts, terr := ai.TriageFindings(findings, accessToken); terr != nil {
+				if verdicts, terr := ai.TriageWithContext(findings, accessToken, loadRetriever(".", accessToken)); terr != nil {
 					color.Yellow("  Triage skipped (%s)\n\n", terr)
 				} else {
 					for i := range findings {
@@ -1003,7 +1005,7 @@ func runAgenticDast(p agenticParams) {
 		// then run everything through adversarial triage (Phase 1).
 		all := append(baseline, agenticFindingsFromCandidates(res.Findings)...) //nolint:gocritic
 		if len(all) > 0 {
-			if verdicts, terr := ai.TriageFindings(all, p.accessToken); terr == nil {
+			if verdicts, terr := ai.TriageWithContext(all, p.accessToken, loadRetriever(".", p.accessToken)); terr == nil {
 				for i := range all {
 					if v, ok := verdicts[all[i].ID]; ok {
 						all[i].Verdict = v.Verdict
@@ -1394,6 +1396,108 @@ func updateCmd() *cobra.Command {
 			}
 		},
 	}
+}
+
+func indexCmd() *cobra.Command {
+	var yes bool
+	cmd := &cobra.Command{
+		Use:   "index [path]",
+		Short: "Build a local code index for AI-assisted triage (Pro)",
+		Long: `Chunk this project's source into a local semantic index that gives AI triage
+richer context — the custom sanitizer, guard, or caller a single finding can't
+see on its own — so false positives are caught and real issues confirmed.
+
+Privacy: building the index sends source-code chunks to Trojan's embedding
+service to be turned into vectors. The vectors and the index are stored locally
+under .trojan/index/ and never leave your machine. Nothing is indexed unless you
+run this command; re-run it after significant changes (only changed files are
+re-embedded).`,
+		Args: cobra.MaximumNArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			path := "."
+			if len(args) > 0 {
+				path = args[0]
+			}
+
+			cfg, err := config.LoadConfig()
+			if err != nil || cfg.AccessToken == "" {
+				color.Yellow("Log in first: `trojan login`\n")
+				os.Exit(1)
+			}
+			if info, lerr := ai.FetchLicense(cfg.AccessToken); lerr != nil || !info.IsPro {
+				color.Yellow("Indexing is a Pro feature. Visit https://trojancli.com/pricing to upgrade.\n")
+				os.Exit(1)
+			}
+
+			files, err := rag.WalkSource(path)
+			if err != nil {
+				color.Red("Could not enumerate source files: %s\n", err)
+				os.Exit(1)
+			}
+			if len(files) == 0 {
+				fmt.Println("No source files found to index.")
+				return
+			}
+
+			// Disclosure + explicit opt-in (docs §4 privacy boundary).
+			fmt.Printf("About to index %d source file(s) under %s.\n", len(files), path)
+			color.Yellow("Code chunks will be sent to Trojan's embedding service; the resulting vectors are stored locally in .trojan/index/.\n")
+			if !yes {
+				fmt.Print("Proceed? [y/N] ")
+				line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+				if strings.ToLower(strings.TrimSpace(line)) != "y" {
+					fmt.Println("Aborted — nothing was indexed.")
+					return
+				}
+			}
+
+			ix := &rag.Indexer{Embedder: ai.NewEmbedder(cfg.AccessToken)}
+			fmt.Printf("Indexing %d file(s)...\n", len(files))
+			stats, err := ix.IndexProject(path, files)
+			if err != nil {
+				color.Red("Index failed: %s\n", err)
+				os.Exit(1)
+			}
+			color.Green("✓ Indexed %d file(s), %d chunk(s) — %d unchanged, %d pruned.\n",
+				stats.FilesIndexed, stats.ChunksAdded, stats.FilesSkipped, stats.FilesPruned)
+		},
+	}
+	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "Skip the confirmation prompt")
+	return cmd
+}
+
+// ragRetriever adapts *rag.Retriever to ai.ContextRetriever so the ai package
+// (which owns triage) needs no import of rag. main is the composition root.
+type ragRetriever struct{ r *rag.Retriever }
+
+func (a ragRetriever) Retrieve(query string, k int) ([]ai.RetrievedChunk, error) {
+	res, err := a.r.Retrieve(query, k)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ai.RetrievedChunk, len(res))
+	for i, c := range res {
+		out[i] = ai.RetrievedChunk{
+			FilePath:  c.Chunk.FilePath,
+			StartLine: c.Chunk.StartLine,
+			EndLine:   c.Chunk.EndLine,
+			Text:      c.Chunk.Text,
+		}
+	}
+	return out, nil
+}
+
+// loadRetriever returns a context retriever backed by the project's code index,
+// or nil when no index exists — triage then degrades gracefully to a plain pass.
+func loadRetriever(projectPath, accessToken string) ai.ContextRetriever {
+	if !rag.ProjectHasIndex(projectPath) {
+		return nil
+	}
+	r, err := rag.NewRetriever(projectPath, ai.NewEmbedder(accessToken))
+	if err != nil {
+		return nil
+	}
+	return ragRetriever{r}
 }
 
 func proCmd() *cobra.Command {

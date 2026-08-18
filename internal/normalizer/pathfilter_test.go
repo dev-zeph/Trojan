@@ -37,8 +37,8 @@ func TestIsNonShipping(t *testing.T) {
 		{"src/attestation/verify.go", false},
 	}
 	for _, tt := range tests {
-		if got := isNonShipping(tt.path); got != tt.drop {
-			t.Errorf("isNonShipping(%q) = %v, want %v", tt.path, got, tt.drop)
+		if got := IsNonShipping(tt.path); got != tt.drop {
+			t.Errorf("IsNonShipping(%q) = %v, want %v", tt.path, got, tt.drop)
 		}
 	}
 }

@@ -46,7 +46,7 @@ var dropDirs = map[string]bool{
 func FilterPaths(findings []Finding) (kept []Finding, dropped int) {
 	kept = make([]Finding, 0, len(findings))
 	for _, f := range findings {
-		if f.FilePath != "" && isNonShipping(f.FilePath) {
+		if f.FilePath != "" && IsNonShipping(f.FilePath) {
 			dropped++
 			continue
 		}
@@ -55,9 +55,9 @@ func FilterPaths(findings []Finding) (kept []Finding, dropped int) {
 	return kept, dropped
 }
 
-// isNonShipping reports whether a path is dependency, build, generated, or test
-// code that should be excluded from results.
-func isNonShipping(path string) bool {
+// IsNonShipping reports whether a path is dependency, build, generated, or test
+// code that should be excluded from results (and from the code index).
+func IsNonShipping(path string) bool {
 	p := filepath.ToSlash(filepath.Clean(path))
 	for seg := range strings.SplitSeq(p, "/") {
 		if dropDirs[seg] {
