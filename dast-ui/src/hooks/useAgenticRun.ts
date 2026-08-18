@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { agenticEventsURL, getAgenticStatus } from '@/api'
-import type { AgentEvent, GraphEdge, GraphNode, RunStatus } from '@/api'
+import type { AgentEvent, GraphEdge, GraphNode, PendingApproval, RunStatus } from '@/api'
 
 // GraphState is the folded attack graph — nodes keyed by id, insertion order
 // preserved for a stable layout, plus edges (§9.3).
@@ -21,6 +21,7 @@ export interface RunState {
   stopReason: string
   errorDetail: string
   graph: GraphState
+  pendingApprovals: PendingApproval[] // §8 actions awaiting an operator decision
 }
 
 const initial: RunState = {
@@ -34,6 +35,7 @@ const initial: RunState = {
   stopReason: '',
   errorDetail: '',
   graph: { nodes: {}, order: [], edges: [] },
+  pendingApprovals: [],
 }
 
 // useAgenticRun subscribes to the live run SSE stream and folds events into a
@@ -108,6 +110,18 @@ function fold(prev: RunState, evt: AgentEvent): RunState {
       break
     case 'finish':
       if (evt.detail) next.summary = evt.detail
+      break
+    case 'approval_request':
+      // Queue the gated action if we haven't already (replayed streams can
+      // repeat it). Resolution removes it below.
+      if (evt.approval && !prev.pendingApprovals.some(a => a.id === evt.approval!.id)) {
+        next.pendingApprovals = [...prev.pendingApprovals, evt.approval]
+      }
+      break
+    case 'approval_resolved':
+      if (evt.approval) {
+        next.pendingApprovals = prev.pendingApprovals.filter(a => a.id !== evt.approval!.id)
+      }
       break
   }
   return next

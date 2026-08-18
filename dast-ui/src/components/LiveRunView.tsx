@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import type { AgentEvent, GraphNode } from '@/api'
+import { decideApproval } from '@/api'
+import type { AgentEvent, GraphNode, PendingApproval } from '@/api'
 import { graphCounts, type RunState } from '@/hooks/useAgenticRun'
 import { AttackGraphView } from './AttackGraphView'
 import { NodeDetail } from './NodeDetail'
@@ -53,6 +54,8 @@ export function LiveRunView({ targetUrl, tier, run, onViewFindings }: Props) {
         <Counter label="Elapsed" value={fmtElapsed(elapsed)} />
       </div>
 
+      {run.pendingApprovals.length > 0 && <ApprovalPanel approvals={run.pendingApprovals} />}
+
       {terminal && <TerminalBanner run={run} onViewFindings={onViewFindings} />}
 
       {/* Two surfaces: narrative + graph/detail */}
@@ -102,6 +105,78 @@ function Legend() {
         <svg width="16" height="6" aria-hidden><line x1="0" y1="3" x2="16" y2="3" className="text-red-500" stroke="currentColor" strokeWidth="2" strokeDasharray="4 3" /></svg>
         chain
       </span>
+    </div>
+  )
+}
+
+// ApprovalPanel is the §8 human-in-the-loop signal bar: a red-accented banner
+// that surfaces every state-changing action the agent has queued for approval,
+// with the exact request and the agent's reason (§8.4 — never a bare approve/deny).
+// The run keeps testing other hypotheses while these wait.
+function ApprovalPanel({ approvals }: { approvals: PendingApproval[] }) {
+  return (
+    <div className="border border-red-500/40 bg-red-500/5 rounded-lg overflow-hidden">
+      <div className="flex items-center gap-2 px-4 py-2 border-b border-red-500/30 bg-red-500/10">
+        <span className="w-1.5 h-1.5 rounded-full bg-red-500 pulse-dot" />
+        <span className="text-[11px] font-semibold uppercase tracking-widest text-red-600 dark:text-red-400">
+          {approvals.length} action{approvals.length > 1 ? 's' : ''} need your approval
+        </span>
+      </div>
+      <div className="divide-y divide-border">
+        {approvals.map(a => <ApprovalCard key={a.id} approval={a} />)}
+      </div>
+    </div>
+  )
+}
+
+function ApprovalCard({ approval }: { approval: PendingApproval }) {
+  const [submitting, setSubmitting] = useState<null | 'approve' | 'deny'>(null)
+  const [error, setError] = useState('')
+
+  async function decide(approve: boolean) {
+    setSubmitting(approve ? 'approve' : 'deny')
+    setError('')
+    try {
+      await decideApproval(approval.id, approve)
+      // Success: leave the card disabled; the approval_resolved event removes it.
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'could not send decision')
+      setSubmitting(null)
+    }
+  }
+
+  return (
+    <div className="p-4 space-y-2.5">
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-[10px] font-semibold uppercase tracking-widest text-red-600 dark:text-red-400 border border-red-500/40 rounded px-1.5 py-0.5">
+          {approval.method}
+        </span>
+        <span className="font-mono text-xs break-all">{approval.url}</span>
+        {approval.identity && (
+          <span className="text-[10px] text-muted-foreground">as <span className="font-mono">{approval.identity}</span></span>
+        )}
+      </div>
+      {approval.body && (
+        <pre className="bg-muted rounded p-2 text-[11px] font-mono overflow-x-auto whitespace-pre-wrap break-all">{approval.body}</pre>
+      )}
+      <p className="text-xs text-muted-foreground leading-relaxed">
+        <span className="text-foreground/70 font-medium">Why gated:</span> {approval.reason}
+      </p>
+      {error && <p className="text-xs text-red-500">{error}</p>}
+      <div className="flex items-center gap-2 pt-0.5">
+        <button
+          type="button" disabled={submitting !== null}
+          onClick={() => decide(true)}
+          className="text-xs font-medium rounded px-3 py-1.5 bg-foreground text-background disabled:opacity-50 hover:opacity-90 transition">
+          {submitting === 'approve' ? 'Approving…' : 'Approve'}
+        </button>
+        <button
+          type="button" disabled={submitting !== null}
+          onClick={() => decide(false)}
+          className="text-xs font-medium rounded px-3 py-1.5 border border-border disabled:opacity-50 hover:bg-muted transition">
+          {submitting === 'deny' ? 'Denying…' : 'Deny'}
+        </button>
+      </div>
     </div>
   )
 }
@@ -212,6 +287,14 @@ function TimelineRow({ event }: { event: AgentEvent }) {
       )
     case 'stopped':
       return <p className="pl-4 py-2 text-xs uppercase tracking-widest text-yellow-600 dark:text-yellow-400">stopped: {event.detail}</p>
+    case 'approval_request':
+      return <p className="pl-4 py-1.5 text-xs text-red-600 dark:text-red-400 flex items-center gap-2"><span>⏸</span><span className="break-all">awaiting approval — {event.detail}</span></p>
+    case 'approval_resolved':
+      return (
+        <p className={`pl-4 py-1.5 text-xs flex items-center gap-2 ${event.approved ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'}`}>
+          <span>{event.approved ? '✓' : '✗'}</span><span className="break-all">{event.detail}</span>
+        </p>
+      )
     default:
       return null
   }

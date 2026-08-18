@@ -76,9 +76,23 @@ export interface GreyBoxSummary {
   reflects_input: boolean
 }
 
+// PendingApproval mirrors agent.PendingAction — a state-changing action gated for
+// operator review (§8). Carries everything the approval card needs to show.
+export interface PendingApproval {
+  id: number
+  tool: string
+  method: string
+  url: string
+  body?: string
+  identity?: string
+  reason: string
+  step?: number
+}
+
 // AgentEvent mirrors internal/server.AgentEvent — one streamed run action.
 export interface AgentEvent {
   type: 'step' | 'text' | 'tool_use' | 'tool_result' | 'finding' | 'graph' | 'stopped' | 'finish' | 'run'
+    | 'approval_request' | 'approval_resolved'
   step?: number
   tool?: string
   detail?: string
@@ -89,6 +103,21 @@ export interface AgentEvent {
   source?: HandlerRef
   summary?: GreyBoxSummary
   mode?: string
+  // §8 human-in-the-loop: the gated action (approval_request) / resolved one
+  // (approval_resolved, with `approved` = the decision).
+  approval?: PendingApproval
+  approved?: boolean
+}
+
+// decideApproval sends an operator's §8 decision to the reverse channel. The run
+// loop executes the vetted action (approve) or skips it (deny) and reports back.
+export async function decideApproval(id: number, approve: boolean, note?: string): Promise<void> {
+  const res = await fetch(`${BASE}/dast/approval`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id, approve, note: note ?? '' }),
+  })
+  if (!res.ok) throw new Error((await safeError(res)) ?? 'could not send decision')
 }
 
 export interface AgenticStatus {

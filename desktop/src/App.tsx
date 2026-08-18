@@ -507,6 +507,11 @@ export default function App() {
   const [agFocus, setAgFocus]             = useState<"" | "api" | "web" | "llm">("");
   const [agIdentities, setAgIdentities]   = useState<{ name: string; header: string }[]>([]);
   const [agApiSpec, setAgApiSpec]         = useState("");
+  const [agRequireApproval, setAgRequireApproval] = useState(false);
+  const [agAllowEndpoints, setAgAllowEndpoints]   = useState("");
+  const [agDenyEndpoints, setAgDenyEndpoints]     = useState("");
+  const [agLimitToAllowlist, setAgLimitToAllowlist] = useState(false);
+  const [agAllowDangerous, setAgAllowDangerous]   = useState(false);
   const [dastFindings, setDastFindings]   = useState<any[]>([]);
   const [pentestReport, setPentestReport] = useState<PentestReport | null>(null);
   const [pentestReportRunning, setPentestReportRunning] = useState(false);
@@ -1038,6 +1043,11 @@ export default function App() {
       focus: agFocus,
       identities: agIdentities.filter((i) => i.name.trim() && i.header.trim()),
       apiSpec: agApiSpec.trim(),
+      requireApproval: agRequireApproval,
+      allowEndpoints: agAllowEndpoints.split("\n").map((s) => s.trim()).filter(Boolean),
+      denyEndpoints: agDenyEndpoints.split("\n").map((s) => s.trim()).filter(Boolean),
+      limitToAllowlist: agLimitToAllowlist,
+      allowDangerous: agAllowDangerous,
     })
       .then(async ({ url: rUrl, cachePath }) => {
         updateToastDone(id, rUrl, cachePath);
@@ -1888,6 +1898,47 @@ export default function App() {
                         onChange={(e) => setAgApiSpec(e.target.value)}
                       />
                       <p className="pt-idhint">Optional. Blank = auto-probe /openapi.json, /swagger.json, /v3/api-docs on the target.</p>
+                    </div>
+
+                    {/* Rules of engagement + human-in-the-loop (§8) */}
+                    <div className="pt-idhead">
+                      <span className="scanner-grid-label" style={{ margin: 0 }}>RULES OF ENGAGEMENT</span>
+                      <span className="pt-info" data-tip="Require approval pauses the agent before every state-changing request so you approve or deny it in the run view. Allow/deny lists scope which endpoints it may touch (one path per line; trailing * = prefix). Read-only probes always run automatically.">i</span>
+                    </div>
+                    <div className="pt-card" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                      <label className="pt-roe-check">
+                        <input type="checkbox" checked={agRequireApproval} disabled={isScanning}
+                          onChange={(e) => setAgRequireApproval(e.target.checked)} />
+                        <span>Require my approval before state-changing actions</span>
+                      </label>
+                      <div>
+                        <p className="pt-idhint" style={{ marginTop: 0 }}>Allowed endpoints (one per line, trailing * = prefix; blank = all in scope)</p>
+                        <textarea
+                          className="pt-id-header" style={{ width: "100%", minHeight: 46, resize: "vertical", fontFamily: "var(--font-mono, monospace)" }}
+                          placeholder={"/api/*\n/orders/*"}
+                          value={agAllowEndpoints} disabled={isScanning}
+                          onChange={(e) => setAgAllowEndpoints(e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <p className="pt-idhint" style={{ marginTop: 0 }}>Denied endpoints (never touched)</p>
+                        <textarea
+                          className="pt-id-header" style={{ width: "100%", minHeight: 46, resize: "vertical", fontFamily: "var(--font-mono, monospace)" }}
+                          placeholder={"/admin/*\n/internal/*"}
+                          value={agDenyEndpoints} disabled={isScanning}
+                          onChange={(e) => setAgDenyEndpoints(e.target.value)}
+                        />
+                      </div>
+                      <label className="pt-roe-check">
+                        <input type="checkbox" checked={agLimitToAllowlist} disabled={isScanning || !agAllowEndpoints.trim()}
+                          onChange={(e) => setAgLimitToAllowlist(e.target.checked)} />
+                        <span>Hard-limit to the allowed list (block everything else)</span>
+                      </label>
+                      <label className="pt-roe-check">
+                        <input type="checkbox" checked={agAllowDangerous} disabled={isScanning}
+                          onChange={(e) => setAgAllowDangerous(e.target.checked)} />
+                        <span>Allow dangerous patterns (account deletion, password/credential, payment)</span>
+                      </label>
                     </div>
                   </>
                 )}

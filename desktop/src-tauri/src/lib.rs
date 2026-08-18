@@ -290,6 +290,11 @@ async fn start_agentic_dast(
     focus: String,
     identities: Vec<PtIdentity>,
     api_spec: String,
+    require_approval: bool,
+    allow_endpoints: Vec<String>,
+    deny_endpoints: Vec<String>,
+    limit_to_allowlist: bool,
+    allow_dangerous: bool,
 ) -> Result<ScanReturn, String> {
     kill_old_scans(&app);
     let _ = app.emit(
@@ -322,6 +327,30 @@ async fn start_agentic_dast(
     if !api_spec.trim().is_empty() {
         args.push("--api-spec".into());
         args.push(api_spec.trim().into());
+    }
+    // §8 human-in-the-loop + rules of engagement.
+    if require_approval {
+        args.push("--require-approval".into());
+    }
+    for ep in &allow_endpoints {
+        let ep = ep.trim();
+        if !ep.is_empty() {
+            args.push("--allow-endpoint".into());
+            args.push(ep.into());
+        }
+    }
+    for ep in &deny_endpoints {
+        let ep = ep.trim();
+        if !ep.is_empty() {
+            args.push("--deny-endpoint".into());
+            args.push(ep.into());
+        }
+    }
+    if limit_to_allowlist {
+        args.push("--limit-to-allowlist".into());
+    }
+    if allow_dangerous {
+        args.push("--allow-dangerous".into());
     }
 
     let (rx, child) = app
