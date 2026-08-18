@@ -629,6 +629,9 @@ type Config struct {
 	// Approvals enables §8 human-in-the-loop: state-changing / out-of-scope actions
 	// are gated for operator approval instead of auto-executing. Nil = HITL off.
 	Approvals *Approvals
+	// AttackTemplate is the selected Attack Market playbook (§9.4), folded into the
+	// task as RoE-subordinate guidance. Nil = no template (free-form pen test).
+	AttackTemplate *AttackTemplate
 }
 
 // RunAgentic wires a safety envelope, budget, toolbox, and edge transport from
@@ -665,8 +668,15 @@ func RunAgentic(ctx context.Context, cfg Config) (*RunResult, error) {
 	}
 	tr := NewEdgeTransport(cfg.AccessToken)
 
+	// Fold the selected Attack Market playbook into the seed task as RoE-subordinate
+	// guidance (§9.4). The envelope/RoE still governs every probe it inspires.
+	task := cfg.Task
+	if hint := attackTemplateHint(cfg.AttackTemplate); hint != "" {
+		task += "\n\n" + hint
+	}
+
 	return Run(ctx, tb, tr, RunOptions{
-		Task:         cfg.Task,
+		Task:         task,
 		MaxRunTokens: cfg.MaxRunTokens,
 		OnEvent:      cfg.OnEvent,
 	})
