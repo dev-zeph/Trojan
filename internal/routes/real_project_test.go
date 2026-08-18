@@ -6,14 +6,14 @@ import (
 )
 
 // TestRealProject runs the resolver against a real project on disk. Gated on
-// TROJAN_REAL_NEXTJS_DIR so it never runs in CI — a sanity check that extraction
+// TROJAN_REAL_PROJECT_DIR so it never runs in CI — a sanity check that extraction
 // survives real-world route trees, not just fixtures.
 //
-//	TROJAN_REAL_NEXTJS_DIR=/path/to/app go test ./internal/routes -run TestRealProject -v
+//	TROJAN_REAL_PROJECT_DIR=/path/to/app go test ./internal/routes -run TestRealProject -v
 func TestRealProject(t *testing.T) {
-	dir := os.Getenv("TROJAN_REAL_NEXTJS_DIR")
+	dir := os.Getenv("TROJAN_REAL_PROJECT_DIR")
 	if dir == "" {
-		t.Skip("set TROJAN_REAL_NEXTJS_DIR to run against a real project")
+		t.Skip("set TROJAN_REAL_PROJECT_DIR to run against a real project")
 	}
 	r := NewResolver(dir)
 	t.Logf("framework=%q, %d routes extracted", r.Framework(), len(r.Routes()))

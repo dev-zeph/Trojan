@@ -43,6 +43,12 @@ func extractFor(fw Framework, projectPath string) []Route {
 	switch fw {
 	case FrameworkNextjs:
 		return extractNextjs(projectPath)
+	case FrameworkExpress:
+		return extractExpress(projectPath)
+	case FrameworkFastAPI:
+		return extractFastAPI(projectPath)
+	case FrameworkGin:
+		return extractGin(projectPath)
 	default:
 		return nil
 	}
