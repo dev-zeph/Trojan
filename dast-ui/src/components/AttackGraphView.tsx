@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import type { GraphNode, NodeStatus } from '@/api'
+import type { GraphEdge, GraphNode, NodeStatus } from '@/api'
 import type { GraphState } from '@/hooks/useAgenticRun'
 
 interface Props {
@@ -57,20 +57,24 @@ export function AttackGraphView({ graph, selectedId, onSelect }: Props) {
         role="img"
         aria-label="Attack coverage graph"
       >
-        {/* Edges first so nodes sit on top. */}
+        {/* Edges first so nodes sit on top. Chain edges (the kill chain) get a
+            distinct animated broken line; other links stay quiet. */}
         {edges.map((e, i) => {
           const a = posOf(e.from)
           const b = posOf(e.to)
           if (!a || !b) return null
+          const s = edgeStyle(e.kind)
           return (
             <line
               key={i}
               x1={a.x} y1={a.y} x2={b.x} y2={b.y}
-              className="text-border"
+              className={`${s.cls} ${e.kind === 'chain' ? 'chain-flow' : ''}`}
               stroke="currentColor"
-              strokeWidth={1.5}
-              strokeDasharray={e.confirmed ? undefined : '4 3'}
-            />
+              strokeWidth={s.width}
+              strokeDasharray={e.kind === 'chain' ? undefined : s.dash}
+            >
+              <title>{e.kind}{e.rationale ? `: ${e.rationale}` : ''}</title>
+            </line>
           )
         })}
 
@@ -169,6 +173,22 @@ function layout(graph: GraphState): { placed: Placed[]; width: number; height: n
   const width = Math.max(cols * CELL_W + PAD, 320)
   const height = Math.max(rows * CELL_H + PAD, 320)
   return { placed, width, height, edges: graph.edges }
+}
+
+// edgeStyle colors an edge by kind. Chain (kill chain) is the loud one — a red
+// animated broken line (dash comes from the .chain-flow CSS class). Dataflow and
+// trust stay quiet and dashed; a plain finding link is a faint solid line.
+function edgeStyle(kind: GraphEdge['kind']): { cls: string; width: number; dash?: string } {
+  switch (kind) {
+    case 'chain':
+      return { cls: 'text-red-500', width: 2 }
+    case 'dataflow':
+      return { cls: 'text-indigo-500 dark:text-indigo-400', width: 1.5, dash: '3 3' }
+    case 'trust':
+      return { cls: 'text-muted-foreground', width: 1.5, dash: '1 4' }
+    default:
+      return { cls: 'text-border', width: 1.5 }
+  }
 }
 
 function truncate(s: string, n: number): string {

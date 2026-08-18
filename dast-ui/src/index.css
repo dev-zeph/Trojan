@@ -92,10 +92,22 @@
   100% { opacity: 1; transform: translateY(0); }
 }
 
+/* Kill-chain edge: a broken line that "flows" from one exploited node to the
+   next, so a chained attack path reads as movement, not a static link (§9). */
+@keyframes chain-flow {
+  to { stroke-dashoffset: -14; }
+}
+.chain-flow {
+  stroke-dasharray: 6 4;
+  animation: chain-flow 0.9s linear infinite;
+}
+
 /* Respect reduced-motion: hold the final visual state, no motion. */
 @media (prefers-reduced-motion: reduce) {
   .shimmer, .pulse-dot, .probe-pulse, .reveal {
     animation: none;
   }
   .shimmer { background: var(--muted); }
+  /* Keep the dashed look, drop the flow. */
+  .chain-flow { animation: none; }
 }

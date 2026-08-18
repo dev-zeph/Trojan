@@ -98,6 +98,10 @@ function Legend() {
         <span className="inline-block w-1.5 h-1.5" style={{ background: 'var(--source,#7c7cf0)' }} />
         source mapped
       </span>
+      <span className="inline-flex items-center gap-1.5 text-[10px] text-muted-foreground">
+        <svg width="16" height="6" aria-hidden><line x1="0" y1="3" x2="16" y2="3" className="text-red-500" stroke="currentColor" strokeWidth="2" strokeDasharray="4 3" /></svg>
+        chain
+      </span>
     </div>
   )
 }
