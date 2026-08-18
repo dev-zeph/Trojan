@@ -214,6 +214,35 @@ func (g *AttackGraph) AddFinding(id, label, severity, attack, evidence string, h
 	return *n, true
 }
 
+// AddCredentialNode adds a credential/data node captured during chaining (§6.5
+// #5 / §9). Keyed by id so repeats are no-ops.
+func (g *AttackGraph) AddCredentialNode(id, label string, nodeType NodeType) (GraphNode, bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	nid := "cred:" + id
+	if _, ok := g.nodes[nid]; ok {
+		return *g.nodes[nid], false
+	}
+	n := &GraphNode{ID: nid, Type: nodeType, Label: label, Status: StatusChained}
+	g.nodes[nid] = n
+	g.order = append(g.order, nid)
+	return *n, true
+}
+
+// EndpointNodeByPath returns the id of the first endpoint node whose path matches,
+// so chaining edges can connect real nodes. ok is false when no endpoint matches.
+func (g *AttackGraph) EndpointNodeByPath(path string) (string, bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for _, id := range g.order {
+		n := g.nodes[id]
+		if n.Type == NodeEndpoint && n.Label == path {
+			return id, true
+		}
+	}
+	return "", false
+}
+
 // AddEdge adds a deduplicated edge. Returns whether it was new.
 func (g *AttackGraph) AddEdge(from, to string, kind EdgeKind, confirmed bool, rationale string) (GraphEdge, bool) {
 	g.mu.Lock()

@@ -43,6 +43,20 @@ type Candidate struct {
 	Rationale string `json:"rationale"`
 }
 
+// Fact is something the agent learned during the run and may reuse to chain
+// into a further attack — a captured credential/token, an object identifier, a
+// trust relationship, or a missing check (§6.5 #5, state/memory). Facts are the
+// pen-test-vs-scanner differentiator: they let the agent use step 3's discovery
+// to attack in step 7, and the From→Enables links render as the attack graph's
+// kill-chain edges (§9).
+type Fact struct {
+	Kind    string `json:"kind"`              // credential | token | identifier | endpoint | trust | observation
+	Summary string `json:"summary"`           // human-readable ("admin JWT obtained via SQLi on /rest/user/login")
+	Value   string `json:"value,omitempty"`   // the concrete token/id/cred, for reuse
+	From    string `json:"from,omitempty"`     // URL/path this fact came from
+	Enables string `json:"enables,omitempty"`  // URL/path this fact could help attack (a chain step)
+}
+
 // Identity is a named authenticated session the agent can send probes as, for
 // testing authorization boundaries — IDOR / BOLA (§6.5 #2). Headers (typically an
 // Authorization bearer or a Cookie) are attached to a probe when the agent
@@ -92,6 +106,7 @@ type Toolbox struct {
 
 	mu       sync.Mutex
 	findings []Candidate
+	facts    []Fact
 	finished bool
 	summary  string
 }
@@ -256,6 +271,26 @@ func (t *Toolbox) Findings() []Candidate {
 	defer t.mu.Unlock()
 	out := make([]Candidate, len(t.findings))
 	copy(out, t.findings)
+	return out
+}
+
+// RememberFact records a chaining fact and returns the full accumulated list, so
+// the agent's working memory stays salient in the tool result it reads back.
+func (t *Toolbox) RememberFact(f Fact) []Fact {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.facts = append(t.facts, f)
+	out := make([]Fact, len(t.facts))
+	copy(out, t.facts)
+	return out
+}
+
+// Facts returns a copy of the chaining facts recorded so far.
+func (t *Toolbox) Facts() []Fact {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make([]Fact, len(t.facts))
+	copy(out, t.facts)
 	return out
 }
 

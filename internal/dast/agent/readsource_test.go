@@ -114,6 +114,59 @@ func TestRunStreamsGraphDeltas(t *testing.T) {
 	}
 }
 
+func TestRunChainingFacts(t *testing.T) {
+	tb, _ := newTestbox(t, DefaultLimits(), http.NotFoundHandler())
+	// Seed two endpoint nodes the chain will connect.
+	tb.Graph().UpsertEndpoint("POST", "/rest/user/login")
+	tb.Graph().UpsertEndpoint("GET", "/api/orders/1")
+
+	var graphEvents []Event
+	onEvt := func(e Event) {
+		if e.Type == EventGraph {
+			graphEvents = append(graphEvents, e)
+		}
+	}
+
+	tr := &fakeTransport{turns: []*TurnResult{
+		turn("tool_use", toolUseBlock("m1", toolRememberFact, Fact{
+			Kind: "token", Summary: "admin JWT via SQLi", Value: "eyJ...",
+			From: "http://x/rest/user/login", Enables: "http://x/api/orders/1",
+		})),
+		turn("tool_use", toolUseBlock("f1", toolFinish, map[string]any{"summary": "done"})),
+	}}
+
+	_, err := Run(context.Background(), tb, tr, RunOptions{Task: "go", OnEvent: onEvt})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Fact was remembered.
+	if facts := tb.Facts(); len(facts) != 1 || facts[0].Summary != "admin JWT via SQLi" {
+		t.Fatalf("expected 1 remembered fact, got %+v", facts)
+	}
+
+	// Graph gained: a credential node, a dataflow edge (login -> cred), and a
+	// chain edge (login -> orders) — the kill chain.
+	var credNode bool
+	var dataflowEdge, chainEdge bool
+	for _, e := range graphEvents {
+		if n := e.Payload.Node; n != nil && n.Type == NodeCredential {
+			credNode = true
+		}
+		if ed := e.Payload.Edge; ed != nil {
+			if ed.Kind == EdgeDataflow {
+				dataflowEdge = true
+			}
+			if ed.Kind == EdgeChain {
+				chainEdge = true
+			}
+		}
+	}
+	if !credNode || !dataflowEdge || !chainEdge {
+		t.Errorf("chaining graph incomplete: credNode=%v dataflowEdge=%v chainEdge=%v", credNode, dataflowEdge, chainEdge)
+	}
+}
+
 func TestRunReadSourceBlackBoxFallback(t *testing.T) {
 	tb, _ := newTestbox(t, DefaultLimits(), http.NotFoundHandler())
 	// No source set — read_source must degrade to a note, not error.

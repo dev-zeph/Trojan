@@ -129,7 +129,9 @@ export function AttackGraphView({ graph, selectedId, onSelect }: Props) {
 // beside the endpoint they link to. Deterministic — no physics, no dependency.
 function layout(graph: GraphState): { placed: Placed[]; width: number; height: number; edges: GraphState['edges'] } {
   const endpoints = graph.order.map(id => graph.nodes[id]).filter(n => n.type === 'endpoint')
-  const findings = graph.order.map(id => graph.nodes[id]).filter(n => n.type === 'finding')
+  // Findings, credentials, and data nodes are all satellites anchored to the
+  // node they link to (or gridded below when unlinked).
+  const satellites = graph.order.map(id => graph.nodes[id]).filter(n => n.type !== 'endpoint')
 
   const cols = Math.max(1, Math.ceil(Math.sqrt(endpoints.length || 1)))
   const placed: Placed[] = []
@@ -142,17 +144,28 @@ function layout(graph: GraphState): { placed: Placed[]; width: number; height: n
     placed.push({ node: n, x, y })
   })
 
-  // Place each finding beside the endpoint it links to (via a finding→endpoint edge).
-  findings.forEach((n, i) => {
-    const link = graph.edges.find(e => e.from === n.id)
-    const anchor = link ? pos[link.to] : undefined
-    const x = anchor ? anchor.x + 34 : PAD + (i % cols) * CELL_W + CELL_W / 2
-    const y = anchor ? anchor.y - 30 : PAD + (Math.ceil(endpoints.length / cols) + Math.floor(i / cols)) * CELL_H + CELL_H / 2
+  // Place each satellite beside the node it links to (an edge from OR to it),
+  // fanning duplicates so they don't stack on the same point.
+  const fan: Record<string, number> = {}
+  satellites.forEach((n, i) => {
+    const link = graph.edges.find(e => e.from === n.id) ?? graph.edges.find(e => e.to === n.id)
+    const anchorId = link ? (link.from === n.id ? link.to : link.from) : undefined
+    const anchor = anchorId ? pos[anchorId] : undefined
+    let x: number, y: number
+    if (anchor) {
+      const k = anchorId as string
+      const nth = (fan[k] = (fan[k] ?? 0) + 1)
+      x = anchor.x + 30 + nth * 6
+      y = anchor.y - 34 - nth * 4
+    } else {
+      x = PAD + (i % cols) * CELL_W + CELL_W / 2
+      y = PAD + (Math.ceil((endpoints.length || 1) / cols) + Math.floor(i / cols)) * CELL_H + CELL_H / 2
+    }
     pos[n.id] = { x, y }
     placed.push({ node: n, x, y })
   })
 
-  const rows = Math.ceil(endpoints.length / cols) + 1
+  const rows = Math.ceil((endpoints.length || 1) / cols) + 1
   const width = Math.max(cols * CELL_W + PAD, 320)
   const height = Math.max(rows * CELL_H + PAD, 320)
   return { placed, width, height, edges: graph.edges }

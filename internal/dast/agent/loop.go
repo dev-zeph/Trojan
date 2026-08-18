@@ -22,9 +22,10 @@ import (
 const (
 	toolGetCrawlMap = "get_crawl_map"
 	toolHTTPProbe   = "http_probe"
-	toolNoteFinding = "note_finding"
-	toolReadSource  = "read_source"
-	toolFinish      = "finish"
+	toolNoteFinding  = "note_finding"
+	toolReadSource   = "read_source"
+	toolRememberFact = "remember_fact"
+	toolFinish       = "finish"
 )
 
 // EventType classifies a progress event streamed during a run (§10.2 live view).
@@ -245,6 +246,16 @@ func executeTool(ctx context.Context, tb *Toolbox, b blockPeek, step int, emit f
 		emit(Event{Type: EventToolResult, Step: step, Tool: toolReadSource, Detail: readSourceDetail(rs, res), Payload: payload})
 		return marshalResult(res), false, false
 
+	case toolRememberFact:
+		var f Fact
+		if err := json.Unmarshal(b.Input, &f); err != nil || f.Summary == "" {
+			return "invalid remember_fact input: need at least a summary", true, false
+		}
+		facts := tb.RememberFact(f)
+		onRememberFact(tb, f, step, emit)
+		emit(Event{Type: EventText, Step: step, Detail: "🧠 " + f.Summary})
+		return marshalResult(map[string]any{"ok": true, "facts": facts}), false, false
+
 	case toolFinish:
 		var f struct {
 			Summary string `json:"summary"`
@@ -374,6 +385,43 @@ func onReadSource(tb *Toolbox, req greybox.ReadSourceRequest, res greybox.ReadSo
 		}
 	}
 	return p
+}
+
+// onRememberFact renders a chaining fact into the attack graph: captured
+// credentials/tokens become credential nodes (with a dataflow edge from the
+// endpoint that leaked them), and a fact that links one endpoint to another
+// becomes a chain edge — the kill-chain the graph visualizes (§9). Facts that
+// don't map to known nodes are still remembered; they just don't draw an edge.
+func onRememberFact(tb *Toolbox, f Fact, step int, emit func(Event)) {
+	g := tb.Graph()
+	if g == nil {
+		return
+	}
+	fromID, fromOK := "", false
+	if f.From != "" {
+		fromID, fromOK = g.EndpointNodeByPath(pathOf(f.From))
+	}
+
+	// Captured credential/token -> a credential node, fed by its source endpoint.
+	if f.Kind == "credential" || f.Kind == "token" {
+		if n, created := g.AddCredentialNode(f.Summary, f.Summary, NodeCredential); created {
+			emit(graphNodeEvent(step, n))
+			if fromOK {
+				if e, isNew := g.AddEdge(fromID, n.ID, EdgeDataflow, true, "leaked "+f.Kind); isNew {
+					emit(graphEdgeEvent(step, e))
+				}
+			}
+		}
+	}
+
+	// A fact linking one endpoint to another is a chain step.
+	if f.From != "" && f.Enables != "" && fromOK {
+		if toID, toOK := g.EndpointNodeByPath(pathOf(f.Enables)); toOK {
+			if e, isNew := g.AddEdge(fromID, toID, EdgeChain, true, f.Summary); isNew {
+				emit(graphEdgeEvent(step, e))
+			}
+		}
+	}
 }
 
 func marshalResult(v any) string {
