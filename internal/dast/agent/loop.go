@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"time"
 
 	"github.com/dev-zeph/trojan/internal/dast"
 	"github.com/dev-zeph/trojan/internal/greybox"
@@ -41,6 +42,11 @@ const (
 	EventGraph      EventType = "graph"       // an attack-graph node/edge delta (§9)
 	EventStopped    EventType = "stopped"     // a cap tripped — run bounded early
 	EventFinish     EventType = "finish"      // the agent called finish / ended cleanly
+	// EventApprovalRequest — a state-changing action was gated and awaits an
+	// operator decision (§8). Payload.Approval carries the card data.
+	EventApprovalRequest EventType = "approval_request"
+	// EventApprovalResolved — a gated action was approved (and executed) or denied.
+	EventApprovalResolved EventType = "approval_resolved"
 )
 
 // GreyBoxSummary is the structural read of a handler, flattened for the wire so
@@ -63,6 +69,10 @@ type EventPayload struct {
 	Source  *HandlerRef     `json:"source,omitempty"`  // grey-box handler (read_source / finding)
 	Summary *GreyBoxSummary `json:"summary,omitempty"` // grey-box chips (read_source)
 	Mode    string          `json:"mode,omitempty"`    // read_source mode: endpoint|symbol|query
+	// Approval carries the gated action for an EventApprovalRequest so the UI can
+	// render the approval card (§8.4); on EventApprovalResolved it identifies which.
+	Approval *PendingAction `json:"approval,omitempty"`
+	Approved bool           `json:"approved,omitempty"` // EventApprovalResolved: the decision
 }
 
 // Event is one streamed progress update. OnEvent is called synchronously in
@@ -160,16 +170,26 @@ func Run(ctx context.Context, tb *Toolbox, tr Transport, opts RunOptions) (*RunR
 
 		toolResults, finished := dispatchBlocks(ctx, tb, turn.Content, step, emit)
 
-		if finished {
-			return finish(result, tb, cum, EventFinish, "", emit), nil
-		}
-		// The agent stopped requesting tools (end_turn, refusal, max_tokens, …):
-		// treat the run as complete rather than looping forever.
-		if turn.StopReason != "tool_use" || len(toolResults) == 0 {
-			return finish(result, tb, cum, EventFinish, "", emit), nil
+		// The agent wants to end when it called finish, or stopped requesting tools
+		// (end_turn, refusal, max_tokens, …).
+		wantEnd := finished || turn.StopReason != "tool_use" || len(toolResults) == 0
+
+		// §8 Model A: pull in any operator decisions and feed the executed/denied
+		// outcomes back. If the agent is trying to end while actions are still
+		// queued, block (bounded by the approval timeout) so we never conclude an
+		// engagement with an approval left dangling; otherwise just drain what has
+		// arrived and keep the agent moving (non-blocking).
+		outcomes := tb.resolveApprovals(ctx, step, emit, wantEnd)
+
+		if len(toolResults) > 0 || len(outcomes) > 0 {
+			messages = append(messages, followupMessage(toolResults, outcomes))
 		}
 
-		messages = append(messages, toolResultMessage(toolResults))
+		// End only when the agent is done AND nothing was just resolved that it
+		// should get a turn to react to.
+		if wantEnd && len(outcomes) == 0 {
+			return finish(result, tb, cum, EventFinish, "", emit), nil
+		}
 	}
 }
 
@@ -212,6 +232,25 @@ func executeTool(ctx context.Context, tb *Toolbox, b blockPeek, step int, emit f
 		var pr ProbeRequest
 		if err := json.Unmarshal(b.Input, &pr); err != nil {
 			return fmt.Sprintf("invalid http_probe input: %v", err), true, false
+		}
+		// §8 human-in-the-loop gate (only when enabled): classify the action.
+		// Block → tool error; Approve → queue it and hand back PENDING (the agent
+		// defers and explores elsewhere); Auto → fall through to execute.
+		if tb.approvals != nil {
+			switch disp := tb.Envelope().Classify(pr.Method, pr.URL, len(pr.Body)); disp.Action {
+			case ActionBlock:
+				emit(Event{Type: EventToolResult, Step: step, Tool: toolHTTPProbe, Detail: "blocked: " + disp.Reason})
+				return "blocked by rules of engagement: " + disp.Reason, true, false
+			case ActionApprove:
+				act := tb.approvals.Request(PendingAction{
+					Tool: toolHTTPProbe, Method: pr.Method, URL: pr.URL,
+					Body: pr.Body, Identity: pr.Identity, Reason: disp.Reason, Step: step,
+				})
+				emit(Event{Type: EventApprovalRequest, Step: step, Tool: toolHTTPProbe,
+					Detail:  fmt.Sprintf("approval #%d: %s %s — %s", act.ID, act.Method, act.URL, disp.Reason),
+					Payload: &EventPayload{Approval: &act}})
+				return fmt.Sprintf("PENDING_APPROVAL#%d: %s. This state-changing action needs operator approval and has been queued. Do NOT retry it — continue testing other hypotheses; you'll be given the result once the operator decides.", act.ID, disp.Reason), false, false
+			}
 		}
 		res, err := tb.HTTPProbe(ctx, pr)
 		if err != nil {
@@ -284,6 +323,94 @@ func executeTool(ctx context.Context, tb *Toolbox, b blockPeek, step int, emit f
 	default:
 		return fmt.Sprintf("unknown tool %q", b.Name), true, false
 	}
+}
+
+// resolveApprovals turns operator decisions into conversation outcomes (§8, Model
+// A). Non-blocking, it drains decisions that have already arrived. Blocking (used
+// when the agent is trying to end), it waits for every queued action to be decided
+// — bounded by the approval timeout, after which the remainder auto-denies (the
+// safe default; never auto-approve, §8.4). Returns the outcome text blocks to feed
+// back to the agent. No-op (nil) when HITL is off or nothing is pending.
+func (t *Toolbox) resolveApprovals(ctx context.Context, step int, emit func(Event), blocking bool) []string {
+	a := t.approvals
+	if a == nil || !a.HasPending() {
+		return nil
+	}
+	var outcomes []string
+	if !blocking {
+		for {
+			select {
+			case d := <-a.ch:
+				if o := t.applyDecision(ctx, d, step, emit); o != "" {
+					outcomes = append(outcomes, o)
+				}
+			default:
+				return outcomes
+			}
+		}
+	}
+	timer := time.NewTimer(a.timeout)
+	defer timer.Stop()
+	for a.HasPending() {
+		select {
+		case d := <-a.ch:
+			if o := t.applyDecision(ctx, d, step, emit); o != "" {
+				outcomes = append(outcomes, o)
+			}
+		case <-ctx.Done():
+			return append(outcomes, t.autoDenyRemaining(step, emit, "run cancelled")...)
+		case <-timer.C:
+			return append(outcomes, t.autoDenyRemaining(step, emit, fmt.Sprintf("no operator response within %s", a.timeout))...)
+		}
+	}
+	return outcomes
+}
+
+// applyDecision resolves one operator decision. On approval it executes the EXACT
+// queued action (Model A — the request runs as the operator saw it) and returns
+// the result; on denial it returns a do-not-retry note. Empty string if the id was
+// already resolved (a late or duplicate decision).
+func (t *Toolbox) applyDecision(ctx context.Context, d ApprovalDecision, step int, emit func(Event)) string {
+	act, ok := t.approvals.take(d.ID)
+	if !ok {
+		return ""
+	}
+	if !d.Approve {
+		emit(Event{Type: EventApprovalResolved, Step: step, Tool: act.Tool,
+			Detail:  fmt.Sprintf("approval #%d denied", act.ID),
+			Payload: &EventPayload{Approval: &act, Approved: false}})
+		note := ""
+		if d.Note != "" {
+			note = " (" + d.Note + ")"
+		}
+		return fmt.Sprintf("APPROVAL #%d DENIED by the operator%s. Do not retry %s %s; treat it as out of scope for this engagement.", act.ID, note, act.Method, act.URL)
+	}
+	res, err := t.HTTPProbe(ctx, ProbeRequest{Method: act.Method, URL: act.URL, Body: act.Body, Identity: act.Identity})
+	emit(Event{Type: EventApprovalResolved, Step: step, Tool: act.Tool,
+		Detail:  fmt.Sprintf("approval #%d granted", act.ID),
+		Payload: &EventPayload{Approval: &act, Approved: true}})
+	if err != nil {
+		return fmt.Sprintf("APPROVAL #%d GRANTED — but executing %s %s failed: %v", act.ID, act.Method, act.URL, err)
+	}
+	onProbe(t, act.Method, act.URL, step, emit)
+	ident := ""
+	if act.Identity != "" {
+		ident = " as " + act.Identity
+	}
+	return fmt.Sprintf("APPROVAL #%d GRANTED — executed %s %s%s → HTTP %d. Response: %s", act.ID, act.Method, act.URL, ident, res.Status, marshalResult(res))
+}
+
+// autoDenyRemaining resolves every still-pending action as a safe deny, used when
+// the wait times out or the run is cancelled.
+func (t *Toolbox) autoDenyRemaining(step int, emit func(Event), reason string) []string {
+	var out []string
+	for _, act := range t.approvals.takeAll() {
+		emit(Event{Type: EventApprovalResolved, Step: step, Tool: act.Tool,
+			Detail:  fmt.Sprintf("approval #%d auto-denied (%s)", act.ID, reason),
+			Payload: &EventPayload{Approval: &act, Approved: false}})
+		out = append(out, fmt.Sprintf("APPROVAL #%d AUTO-DENIED — %s; the action was NOT performed (safe default). Do not retry %s %s.", act.ID, reason, act.Method, act.URL))
+	}
+	return out
 }
 
 // diffDetail renders a compact one-line summary of a diff_responses result for

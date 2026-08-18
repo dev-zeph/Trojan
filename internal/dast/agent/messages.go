@@ -64,12 +64,21 @@ func userTextMessage(text string) Message {
 	return Message{Role: "user", Content: []json.RawMessage{block}}
 }
 
-func toolResultMessage(blocks []toolResultBlock) Message {
-	raw := make([]json.RawMessage, len(blocks))
-	for i, b := range blocks {
+// followupMessage is the user turn sent after an assistant turn: this turn's
+// tool_result blocks plus any §8 approval-outcome text blocks. Combining both in
+// ONE user message keeps user/assistant roles strictly alternating — an approval
+// resolved several turns after it was requested rides back with the current tool
+// results instead of forming an illegal second consecutive user message.
+func followupMessage(toolResults []toolResultBlock, outcomes []string) Message {
+	content := make([]json.RawMessage, 0, len(toolResults)+len(outcomes))
+	for _, b := range toolResults {
 		b.Type = "tool_result"
 		j, _ := json.Marshal(b)
-		raw[i] = j
+		content = append(content, j)
 	}
-	return Message{Role: "user", Content: raw}
+	for _, text := range outcomes {
+		block, _ := json.Marshal(map[string]string{"type": "text", "text": text})
+		content = append(content, block)
+	}
+	return Message{Role: "user", Content: content}
 }

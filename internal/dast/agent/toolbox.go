@@ -127,6 +127,7 @@ type Toolbox struct {
 	graph      *AttackGraph        // live attack-graph / coverage map (§9)
 	identities map[string]Identity // named auth sessions for IDOR/BOLA (§6.5 #2)
 	identOrder []string            // identity insertion order, for stable listing
+	approvals  *Approvals          // §8 runtime approval queue; nil = HITL off (auto-execute)
 
 	mu       sync.Mutex
 	findings []Candidate
@@ -183,6 +184,16 @@ func (t *Toolbox) Budget() *Budget { return t.budget }
 
 // SetSource wires grey-box source access into the toolbox (composition root).
 func (t *Toolbox) SetSource(s SourceReader) { t.source = s }
+
+// SetApprovals enables §8 human-in-the-loop: state-changing/out-of-scope actions
+// are gated through this queue instead of executing immediately. nil = off.
+func (t *Toolbox) SetApprovals(a *Approvals) { t.approvals = a }
+
+// Approvals returns the runtime approval queue (nil when HITL is off).
+func (t *Toolbox) Approvals() *Approvals { return t.approvals }
+
+// Envelope returns the run's safety envelope, so the loop can Classify an action.
+func (t *Toolbox) Envelope() *Envelope { return t.env }
 
 // SetIdentities registers the named auth sessions the agent may probe as.
 func (t *Toolbox) SetIdentities(ids []Identity) {
