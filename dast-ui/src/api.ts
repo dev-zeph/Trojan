@@ -37,13 +37,58 @@ export async function getAuthStatus(): Promise<AuthStatus> {
 
 export type RunStatus = 'idle' | 'running' | 'complete' | 'error'
 
+// Attack-graph wire types — mirror internal/dast/agent (§9.3).
+export type NodeStatus = 'untested' | 'testing' | 'safe' | 'vulnerable' | 'chained'
+export type NodeType = 'endpoint' | 'finding' | 'credential' | 'data'
+export type EdgeKind = 'chain' | 'dataflow' | 'trust'
+
+export interface HandlerRef {
+  file: string
+  line: number
+  symbol?: string
+}
+
+export interface GraphNode {
+  id: string
+  type: NodeType
+  label: string
+  method?: string
+  status: NodeStatus
+  severity?: string
+  attack?: string
+  handler?: HandlerRef
+  evidence?: string
+}
+
+export interface GraphEdge {
+  from: string
+  to: string
+  kind: EdgeKind
+  confirmed: boolean
+  rationale?: string
+}
+
+// GreyBoxSummary is the structural read of a handler, rendered as chips (§6.6).
+export interface GreyBoxSummary {
+  has_auth_check: boolean
+  sanitizes_input: boolean
+  raw_query: boolean
+  reflects_input: boolean
+}
+
 // AgentEvent mirrors internal/server.AgentEvent — one streamed run action.
 export interface AgentEvent {
-  type: 'step' | 'text' | 'tool_use' | 'tool_result' | 'finding' | 'stopped' | 'finish' | 'run'
+  type: 'step' | 'text' | 'tool_use' | 'tool_result' | 'finding' | 'graph' | 'stopped' | 'finish' | 'run'
   step?: number
   tool?: string
   detail?: string
   status?: RunStatus
+  // Structured payload for the two-surface UI (§9); set by type.
+  node?: GraphNode
+  edge?: GraphEdge
+  source?: HandlerRef
+  summary?: GreyBoxSummary
+  mode?: string
 }
 
 export interface AgenticStatus {

@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
-import type { AgentEvent } from '@/api'
-import type { RunState } from '@/hooks/useAgenticRun'
+import type { AgentEvent, GraphNode } from '@/api'
+import { graphCounts, type RunState } from '@/hooks/useAgenticRun'
+import { AttackGraphView } from './AttackGraphView'
+import { NodeDetail } from './NodeDetail'
 
 interface Props {
   targetUrl: string
@@ -9,15 +11,22 @@ interface Props {
   onViewFindings?: () => void
 }
 
-// LiveRunView is the centerpiece of the "Penetration Testing" UI (§10.2 screen
-// 3): a timeline of the agent's actions as they stream, running counters, and a
-// distinct terminal state for finished / stopped / errored runs.
+// LiveRunView is the two-surface "Penetration Testing" run view (§9): a narrative
+// stream (hypothesis → action → result → verdict) beside a live attack-coverage
+// graph, with a click-through detail panel. Chat is linear; a chain is a graph —
+// so both surfaces render the same run, one for reasoning, one for structure.
 export function LiveRunView({ targetUrl, tier, run, onViewFindings }: Props) {
   const elapsed = useElapsed(run.status === 'running')
   const terminal = run.status === 'complete' || run.status === 'error'
+  const counts = graphCounts(run.graph)
+  const [selected, setSelected] = useState<GraphNode | null>(null)
+
+  // Keep the selected node's data fresh as deltas update it (e.g. an endpoint
+  // going untested → vulnerable while its detail panel is open).
+  const selectedLive = selected ? run.graph.nodes[selected.id] ?? selected : null
 
   return (
-    <div className="max-w-3xl mx-auto space-y-10">
+    <div className="space-y-8">
       {/* Header */}
       <div className="space-y-3">
         <div className="flex items-center gap-3">
@@ -29,31 +38,66 @@ export function LiveRunView({ targetUrl, tier, run, onViewFindings }: Props) {
           )}
         </div>
         <h1 className="text-2xl font-bold tracking-tight">Penetration test</h1>
-        <a
-          href={targetUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-sm font-mono text-muted-foreground break-all hover:underline underline-offset-4"
-        >
+        <a href={targetUrl} target="_blank" rel="noopener noreferrer"
+          className="text-sm font-mono text-muted-foreground break-all hover:underline underline-offset-4">
           {targetUrl}
         </a>
       </div>
 
       {/* Counters */}
-      <div className="grid grid-cols-4 gap-px bg-border border border-border rounded overflow-hidden">
+      <div className="grid grid-cols-5 gap-px bg-border border border-border rounded overflow-hidden">
         <Counter label="Steps" value={String(run.steps)} />
         <Counter label="Probes" value={String(run.probes)} />
-        <Counter label="Findings" value={String(run.findings)} />
+        <Counter label="Coverage" value={`${counts.tested}/${counts.endpoints}`} />
+        <Counter label="Vulnerable" value={String(counts.vulnerable)} accent={counts.vulnerable > 0} />
         <Counter label="Elapsed" value={fmtElapsed(elapsed)} />
       </div>
 
-      {/* Terminal banner */}
-      {terminal && (
-        <TerminalBanner run={run} onViewFindings={onViewFindings} />
-      )}
+      {terminal && <TerminalBanner run={run} onViewFindings={onViewFindings} />}
 
-      {/* Timeline */}
-      <Timeline events={run.events} running={run.status === 'running'} />
+      {/* Two surfaces: narrative + graph/detail */}
+      <div className="grid lg:grid-cols-[1fr_minmax(340px,42%)] gap-6 items-start">
+        <div className="min-w-0">
+          <SurfaceLabel>Narrative</SurfaceLabel>
+          <Timeline events={run.events} running={run.status === 'running'} />
+        </div>
+        <div className="min-w-0 lg:sticky lg:top-6">
+          <SurfaceLabel>{selectedLive ? 'Node detail' : 'Attack surface'}</SurfaceLabel>
+          <div className="h-[440px]">
+            {selectedLive
+              ? <NodeDetail node={selectedLive} onClose={() => setSelected(null)} />
+              : <AttackGraphView graph={run.graph} selectedId={null} onSelect={setSelected} />}
+          </div>
+          <Legend />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function SurfaceLabel({ children }: { children: React.ReactNode }) {
+  return <div className="text-[10px] uppercase tracking-widest text-muted-foreground mb-2">{children}</div>
+}
+
+function Legend() {
+  const items: Array<[string, string]> = [
+    ['untested', 'text-muted-foreground'],
+    ['testing', 'text-yellow-500'],
+    ['safe', 'text-emerald-600 dark:text-emerald-400'],
+    ['vulnerable', 'text-red-500'],
+  ]
+  return (
+    <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2.5">
+      {items.map(([label, cls]) => (
+        <span key={label} className="inline-flex items-center gap-1.5 text-[10px] text-muted-foreground">
+          <span className={`${cls} inline-block w-2 h-2 rounded-full`} style={{ background: 'currentColor' }} />
+          {label}
+        </span>
+      ))}
+      <span className="inline-flex items-center gap-1.5 text-[10px] text-muted-foreground">
+        <span className="inline-block w-1.5 h-1.5" style={{ background: 'var(--source,#7c7cf0)' }} />
+        source mapped
+      </span>
     </div>
   )
 }
@@ -74,11 +118,11 @@ function StatusPill({ status, connected }: { status: RunState['status']; connect
   )
 }
 
-function Counter({ label, value }: { label: string; value: string }) {
+function Counter({ label, value, accent }: { label: string; value: string; accent?: boolean }) {
   return (
     <div className="bg-background px-4 py-3">
       <div className="text-[10px] uppercase tracking-widest text-muted-foreground">{label}</div>
-      <div className="text-lg font-semibold tabular-nums mt-0.5">{value}</div>
+      <div className={`text-lg font-semibold tabular-nums mt-0.5 ${accent ? 'text-red-500' : ''}`}>{value}</div>
     </div>
   )
 }
@@ -87,30 +131,15 @@ function TerminalBanner({ run, onViewFindings }: { run: RunState; onViewFindings
   const isError = run.status === 'error'
   const stopped = run.stopReason !== ''
   return (
-    <div
-      className={`rounded border p-5 space-y-2 ${
-        isError
-          ? 'border-red-500/40 bg-red-500/10'
-          : stopped
-            ? 'border-yellow-500/40 bg-yellow-500/10'
-            : 'border-emerald-500/40 bg-emerald-500/10'
-      }`}
-    >
+    <div className={`rounded border p-5 space-y-2 ${isError ? 'border-red-500/40 bg-red-500/10' : stopped ? 'border-yellow-500/40 bg-yellow-500/10' : 'border-emerald-500/40 bg-emerald-500/10'}`}>
       <p className="text-sm font-semibold">
-        {isError
-          ? 'Run failed'
-          : stopped
-            ? `Stopped — ${run.stopReason} (partial results)`
-            : 'Run complete'}
+        {isError ? 'Run failed' : stopped ? `Stopped — ${run.stopReason} (partial results)` : 'Run complete'}
       </p>
       {(run.summary || run.errorDetail) && (
         <p className="text-sm text-foreground/70 leading-relaxed">{run.errorDetail || run.summary}</p>
       )}
       {!isError && onViewFindings && (
-        <button
-          onClick={onViewFindings}
-          className="text-xs font-medium underline underline-offset-4 hover:text-muted-foreground transition-colors"
-        >
+        <button onClick={onViewFindings} className="text-xs font-medium underline underline-offset-4 hover:text-muted-foreground transition-colors">
           View findings →
         </button>
       )}
@@ -119,20 +148,15 @@ function TerminalBanner({ run, onViewFindings }: { run: RunState; onViewFindings
 }
 
 function Timeline({ events, running }: { events: AgentEvent[]; running: boolean }) {
-  // Drop 'run' lifecycle events — they're surfaced by the pill/banner, not the timeline.
-  const rows = events.filter(e => e.type !== 'run')
+  // Graph deltas render on the other surface; drop them and lifecycle events here.
+  const rows = events.filter(e => e.type !== 'run' && e.type !== 'graph')
   const lastIsStep = rows.length > 0 && rows[rows.length - 1].type === 'step'
 
-  if (rows.length === 0) {
-    return <SkeletonTimeline />
-  }
+  if (rows.length === 0) return <SkeletonTimeline />
 
   return (
     <div className="space-y-1">
-      {rows.map((e, i) => (
-        <TimelineRow key={i} event={e} />
-      ))}
-      {/* Reasoning shimmer while the model is thinking between actions. */}
+      {rows.map((e, i) => <TimelineRow key={i} event={e} />)}
       {running && lastIsStep && (
         <div className="flex items-center gap-2 pl-4 py-2 text-xs text-muted-foreground">
           <span className="shimmer inline-block w-24 h-3 rounded" aria-hidden />
@@ -147,11 +171,7 @@ function Timeline({ events, running }: { events: AgentEvent[]; running: boolean 
 function TimelineRow({ event }: { event: AgentEvent }) {
   switch (event.type) {
     case 'step':
-      return (
-        <div className="pt-6 pb-1">
-          <span className="text-[10px] uppercase tracking-widest text-muted-foreground">Step {event.step}</span>
-        </div>
-      )
+      return <div className="pt-6 pb-1"><span className="text-[10px] uppercase tracking-widest text-muted-foreground">Step {event.step}</span></div>
     case 'text':
       return <p className="text-sm text-foreground/80 leading-relaxed pl-4">{event.detail}</p>
     case 'tool_use':
@@ -159,38 +179,80 @@ function TimelineRow({ event }: { event: AgentEvent }) {
         <details className="pl-4 group probe-pulse">
           <summary className="text-sm cursor-pointer list-none flex items-center gap-2">
             <span className="text-muted-foreground">→</span>
-            <span className="font-mono text-xs">{event.tool}</span>
+            <span className={`font-mono text-xs ${event.tool === 'read_source' ? 'text-indigo-600 dark:text-indigo-400' : ''}`}>{event.tool}</span>
             {event.detail && <span className="text-[10px] text-muted-foreground group-open:hidden">expand</span>}
           </summary>
           {event.detail && (
-            <pre className="mt-2 ml-6 bg-muted rounded p-3 text-[11px] font-mono overflow-x-auto leading-relaxed whitespace-pre-wrap break-all">
-              {event.detail}
-            </pre>
+            <pre className="mt-2 ml-6 bg-muted rounded p-3 text-[11px] font-mono overflow-x-auto leading-relaxed whitespace-pre-wrap break-all">{event.detail}</pre>
           )}
         </details>
       )
     case 'tool_result':
-      return (
-        <p className="pl-10 text-xs font-mono text-muted-foreground break-all">
-          {event.detail}
-        </p>
-      )
+      // Grey-box read_source result renders as first-class chips + source loc.
+      if (event.tool === 'read_source' && (event.summary || event.source)) {
+        return <GreyBoxResult event={event} />
+      }
+      return <p className="pl-10 text-xs font-mono text-muted-foreground break-all">{event.detail}</p>
     case 'finding':
       return (
-        <div className="reveal pl-4 py-2 flex items-center gap-2 border-l-2 border-emerald-500/50">
-          <span className="text-emerald-600 dark:text-emerald-400 text-sm">✓</span>
+        <div className="reveal pl-4 py-2 flex items-center gap-2 flex-wrap border-l-2 border-red-500/50">
+          <span className="text-red-500 text-sm">✓</span>
           <span className="text-sm font-medium">{event.detail}</span>
+          {event.source && (
+            <span className="inline-flex text-[10px] font-semibold rounded overflow-hidden border border-border">
+              <span className="px-1.5 py-0.5 bg-indigo-500/10 text-indigo-600 dark:text-indigo-400">source predicted</span>
+              <span className="px-1.5 py-0.5 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">runtime proved</span>
+            </span>
+          )}
         </div>
       )
     case 'stopped':
-      return (
-        <p className="pl-4 py-2 text-xs uppercase tracking-widest text-yellow-600 dark:text-yellow-400">
-          stopped: {event.detail}
-        </p>
-      )
+      return <p className="pl-4 py-2 text-xs uppercase tracking-widest text-yellow-600 dark:text-yellow-400">stopped: {event.detail}</p>
     default:
       return null
   }
+}
+
+function GreyBoxResult({ event }: { event: AgentEvent }) {
+  const s = event.summary
+  const chips: Array<[string, boolean, boolean]> = s
+    // label, active, "active means bad" (red) vs good (green)
+    ? [
+        ['auth', s.has_auth_check, false],
+        ['sanitized', s.sanitizes_input, false],
+        ['raw query', s.raw_query, true],
+        ['reflects input', s.reflects_input, true],
+      ]
+    : []
+  return (
+    <div className="pl-10 py-1.5 space-y-1.5">
+      {event.source && (
+        <div className="font-mono text-[11px] text-indigo-600 dark:text-indigo-400">
+          {event.source.file}:{event.source.line}{event.source.symbol ? ` · ${event.source.symbol}` : ''}
+        </div>
+      )}
+      {chips.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {chips.map(([label, active, badWhenActive]) => (
+            <span key={label}
+              className={`font-mono text-[10px] px-1.5 py-0.5 rounded border ${chipCls(active, badWhenActive)}`}>
+              {label} {active ? '✓' : '✗'}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// chipCls colors a structural-summary chip: a present guard (auth/sanitized) is
+// reassuring (green when on, muted when off); a risky trait (raw query/reflects)
+// is alarming (red when on, muted when off).
+function chipCls(active: boolean, badWhenActive: boolean): string {
+  if (!active) return 'border-border text-muted-foreground'
+  return badWhenActive
+    ? 'border-red-500/40 bg-red-500/10 text-red-500'
+    : 'border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
 }
 
 function SkeletonTimeline() {
@@ -216,7 +278,6 @@ function useElapsed(running: boolean): number {
     const id = setInterval(() => setTicks(t => t + 1), 1000)
     return () => clearInterval(id)
   }, [running])
-  // ticks referenced so the interval re-renders; value derived from wall clock.
   void ticks
   return Math.floor((Date.now() - start) / 1000)
 }
