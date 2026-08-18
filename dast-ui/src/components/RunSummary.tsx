@@ -35,7 +35,7 @@ export function RunSummary({ findings, summary, onBackToRun }: Props) {
         {likelyFp > 0 && <Stat value={likelyFp} label="likely FP" cls="text-muted-foreground" />}
       </div>
 
-      {summary && <p className="text-sm text-foreground/70 leading-relaxed max-w-2xl">{summary}</p>}
+      {summary && <p className="text-sm text-foreground/70 leading-relaxed max-w-2xl whitespace-pre-line">{summary}</p>}
     </div>
   )
 }

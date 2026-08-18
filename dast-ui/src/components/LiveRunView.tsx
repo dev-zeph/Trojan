@@ -136,7 +136,7 @@ function TerminalBanner({ run, onViewFindings }: { run: RunState; onViewFindings
         {isError ? 'Run failed' : stopped ? `Stopped — ${run.stopReason} (partial results)` : 'Run complete'}
       </p>
       {(run.summary || run.errorDetail) && (
-        <p className="text-sm text-foreground/70 leading-relaxed">{run.errorDetail || run.summary}</p>
+        <p className="text-sm text-foreground/70 leading-relaxed max-w-2xl whitespace-pre-line">{run.errorDetail || run.summary}</p>
       )}
       {!isError && onViewFindings && (
         <button onClick={onViewFindings} className="text-xs font-medium underline underline-offset-4 hover:text-muted-foreground transition-colors">
