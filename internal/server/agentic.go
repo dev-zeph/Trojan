@@ -8,6 +8,7 @@ import (
 
 	"github.com/dev-zeph/trojan/internal/config"
 	"github.com/dev-zeph/trojan/internal/dast"
+	"github.com/dev-zeph/trojan/internal/dast/agent"
 )
 
 // Agentic-DAST server surface (Phase 5 §10). Two concerns live here:
@@ -26,11 +27,19 @@ const agenticBufferCap = 2000 // cap the replay buffer so a long run can't grow 
 // AgentEvent is the wire form of one live run event streamed to the UI. It
 // mirrors agent.Event plus a run-lifecycle Status for "run" events.
 type AgentEvent struct {
-	Type   string `json:"type"`             // step|text|tool_use|tool_result|finding|stopped|finish|run
+	Type   string `json:"type"`             // step|text|tool_use|tool_result|finding|graph|stopped|finish|run
 	Step   int    `json:"step,omitempty"`
 	Tool   string `json:"tool,omitempty"`
 	Detail string `json:"detail,omitempty"`
 	Status string `json:"status,omitempty"` // for Type=="run": running|complete|error
+
+	// Structured payload for the two-surface UI (§9): graph deltas, grey-box
+	// handler + chips. Optional; set by type. Reuses the agent wire types.
+	Node    *agent.GraphNode      `json:"node,omitempty"`
+	Edge    *agent.GraphEdge      `json:"edge,omitempty"`
+	Source  *agent.HandlerRef     `json:"source,omitempty"`
+	Summary *agent.GreyBoxSummary `json:"summary,omitempty"`
+	Mode    string                `json:"mode,omitempty"`
 }
 
 // ── Live run stream ──────────────────────────────────────────────────────────

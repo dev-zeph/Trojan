@@ -73,6 +73,7 @@ type Toolbox struct {
 	client  *http.Client
 	maxResp int64
 	source  SourceReader // grey-box source access; nil = black-box only
+	graph   *AttackGraph // live attack-graph / coverage map (§9)
 
 	mu       sync.Mutex
 	findings []Candidate
@@ -97,6 +98,12 @@ func NewToolbox(env *Envelope, budget *Budget, limits Limits, crawl dast.CrawlRe
 			return nil
 		},
 	}
+	g := NewAttackGraph()
+	// Seed the graph with the crawl's endpoints so the coverage map is populated
+	// before the first probe (§9.2).
+	for _, e := range crawl.Endpoints {
+		g.UpsertEndpoint(e.Method, pathOf(e.URL))
+	}
 	return &Toolbox{
 		env:     env,
 		budget:  budget,
@@ -104,8 +111,12 @@ func NewToolbox(env *Envelope, budget *Budget, limits Limits, crawl dast.CrawlRe
 		crawl:   crawl,
 		client:  client,
 		maxResp: limits.MaxResponseBytes,
+		graph:   g,
 	}
 }
+
+// Graph returns the live attack graph the loop streams to the UI.
+func (t *Toolbox) Graph() *AttackGraph { return t.graph }
 
 // Budget exposes the run budget so the loop can BeginStep / read Stats.
 func (t *Toolbox) Budget() *Budget { return t.budget }

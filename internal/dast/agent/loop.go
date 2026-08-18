@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 
 	"github.com/dev-zeph/trojan/internal/dast"
 	"github.com/dev-zeph/trojan/internal/greybox"
@@ -35,17 +36,41 @@ const (
 	EventToolUse    EventType = "tool_use"    // the agent invoked a tool
 	EventToolResult EventType = "tool_result" // a tool returned
 	EventFinding    EventType = "finding"     // a candidate vuln was recorded
+	EventGraph      EventType = "graph"       // an attack-graph node/edge delta (§9)
 	EventStopped    EventType = "stopped"     // a cap tripped — run bounded early
 	EventFinish     EventType = "finish"      // the agent called finish / ended cleanly
 )
 
+// GreyBoxSummary is the structural read of a handler, flattened for the wire so
+// the narrative can render it as chips (§6.6 / §9.1). Mirrors
+// greybox.StructuralSummary without importing it into the server.
+type GreyBoxSummary struct {
+	HasAuthCheck   bool `json:"has_auth_check"`
+	SanitizesInput bool `json:"sanitizes_input"`
+	RawQuery       bool `json:"raw_query"`
+	ReflectsInput  bool `json:"reflects_input"`
+}
+
+// EventPayload carries the structured data that lets the two-surface UI render
+// chips, a live graph, and the source↔runtime proof split instead of parsing
+// strings (§9.1/§9.3). Every field is optional; which are set depends on
+// Event.Type.
+type EventPayload struct {
+	Node    *GraphNode      `json:"node,omitempty"`    // graph delta (EventGraph)
+	Edge    *GraphEdge      `json:"edge,omitempty"`    // graph delta (EventGraph)
+	Source  *HandlerRef     `json:"source,omitempty"`  // grey-box handler (read_source / finding)
+	Summary *GreyBoxSummary `json:"summary,omitempty"` // grey-box chips (read_source)
+	Mode    string          `json:"mode,omitempty"`    // read_source mode: endpoint|symbol|query
+}
+
 // Event is one streamed progress update. OnEvent is called synchronously in
 // loop order, so a UI/CLI sees actions as they happen.
 type Event struct {
-	Type   EventType
-	Step   int
-	Tool   string
-	Detail string
+	Type    EventType
+	Step    int
+	Tool    string
+	Detail  string
+	Payload *EventPayload // structured data for rich UI rendering (§9); optional
 }
 
 // RunOptions configures a single agentic run.
@@ -93,6 +118,18 @@ func Run(ctx context.Context, tb *Toolbox, tr Transport, opts RunOptions) (*RunR
 	messages := []Message{userTextMessage(opts.Task)}
 	var cum Usage
 	result := &RunResult{}
+
+	// Emit the initial attack-graph snapshot (endpoints seeded from the crawl)
+	// so a viewer sees the coverage map before the first probe (§9.2).
+	if g := tb.Graph(); g != nil {
+		nodes, edges := g.Snapshot()
+		for _, n := range nodes {
+			emit(graphNodeEvent(0, n))
+		}
+		for _, e := range edges {
+			emit(graphEdgeEvent(0, e))
+		}
+	}
 
 	for {
 		// Reserve a reasoning turn. A tripped cap ends the run — visibly.
@@ -182,6 +219,7 @@ func executeTool(ctx context.Context, tb *Toolbox, b blockPeek, step int, emit f
 			return err.Error(), true, false
 		}
 		emit(Event{Type: EventToolResult, Step: step, Tool: toolHTTPProbe, Detail: fmt.Sprintf("%d %s", res.Status, pr.URL)})
+		onProbe(tb, pr.Method, pr.URL, step, emit)
 		return marshalResult(res), false, false
 
 	case toolNoteFinding:
@@ -190,7 +228,8 @@ func executeTool(ctx context.Context, tb *Toolbox, b blockPeek, step int, emit f
 			return fmt.Sprintf("invalid note_finding input: %v", err), true, false
 		}
 		tb.NoteFinding(c)
-		emit(Event{Type: EventFinding, Step: step, Detail: c.Title})
+		handler := onFinding(tb, c, step, emit)
+		emit(Event{Type: EventFinding, Step: step, Detail: c.Title, Payload: &EventPayload{Source: handler}})
 		return `{"ok":true}`, false, false
 
 	case toolReadSource:
@@ -202,7 +241,8 @@ func executeTool(ctx context.Context, tb *Toolbox, b blockPeek, step int, emit f
 		if err != nil {
 			return err.Error(), true, false
 		}
-		emit(Event{Type: EventToolResult, Step: step, Tool: toolReadSource, Detail: readSourceDetail(rs, res)})
+		payload := onReadSource(tb, rs, res, step, emit)
+		emit(Event{Type: EventToolResult, Step: step, Tool: toolReadSource, Detail: readSourceDetail(rs, res), Payload: payload})
 		return marshalResult(res), false, false
 
 	case toolFinish:
@@ -239,6 +279,101 @@ func readSourceDetail(req greybox.ReadSourceRequest, res greybox.ReadSourceResul
 			res.Summary.HasAuthCheck, res.Summary.RawQuery, res.Summary.ReflectsInput)
 	}
 	return detail
+}
+
+// ── attack-graph delta helpers (§9) ──
+
+func graphNodeEvent(step int, n GraphNode) Event {
+	return Event{Type: EventGraph, Step: step, Payload: &EventPayload{Node: &n}}
+}
+
+func graphEdgeEvent(step int, e GraphEdge) Event {
+	return Event{Type: EventGraph, Step: step, Payload: &EventPayload{Edge: &e}}
+}
+
+// pathOf extracts the path from a URL for use as an endpoint node's identity.
+func pathOf(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Path == "" {
+		return rawURL
+	}
+	return u.Path
+}
+
+// onProbe marks the probed endpoint as under test and emits any graph delta.
+func onProbe(tb *Toolbox, method, rawURL string, step int, emit func(Event)) {
+	g := tb.Graph()
+	if g == nil {
+		return
+	}
+	path := pathOf(rawURL)
+	if n, created := g.UpsertEndpoint(method, path); created {
+		emit(graphNodeEvent(step, n))
+	}
+	if n, changed := g.SetStatus(EndpointID(method, path), StatusTesting); changed {
+		emit(graphNodeEvent(step, n))
+	}
+}
+
+// onFinding marks the endpoint vulnerable, adds a finding node + edge, and emits
+// the deltas. Returns the grey-box handler on the endpoint (if any) so the
+// narrative row can show the source↔runtime proof badge.
+func onFinding(tb *Toolbox, c Candidate, step int, emit func(Event)) *HandlerRef {
+	g := tb.Graph()
+	if g == nil {
+		return nil
+	}
+	path := pathOf(c.URL)
+	var handler *HandlerRef
+	for _, n := range g.MarkVulnerableByPath(path, c.Severity, c.Title, c.Evidence) {
+		emit(graphNodeEvent(step, n))
+		if n.Handler != nil {
+			handler = n.Handler
+		}
+	}
+	fid := fmt.Sprintf("%d-%s", step, c.Title)
+	if fn, changed := g.AddFinding(fid, c.Title, c.Severity, c.Title, c.Evidence, handler); changed {
+		emit(graphNodeEvent(step, fn))
+		if path != "" {
+			if e, isNew := g.AddEdge(fn.ID, EndpointID("", path), EdgeChain, true, "finding confirmed here"); isNew {
+				emit(graphEdgeEvent(step, e))
+			}
+		}
+	}
+	return handler
+}
+
+// onReadSource attaches the grey-box handler to the endpoint node and returns the
+// payload (source + chips) for the narrative tool_result row.
+func onReadSource(tb *Toolbox, req greybox.ReadSourceRequest, res greybox.ReadSourceResult, step int, emit func(Event)) *EventPayload {
+	p := &EventPayload{}
+	if req.Endpoint != nil {
+		p.Mode = "endpoint"
+	} else if req.Symbol != "" {
+		p.Mode = "symbol"
+	} else if req.Query != "" {
+		p.Mode = "query"
+	}
+	if len(res.Chunks) > 0 {
+		c := res.Chunks[0]
+		p.Source = &HandlerRef{File: c.File, Line: c.Line, Symbol: c.Symbol}
+	}
+	if res.Summary != nil {
+		p.Summary = &GreyBoxSummary{
+			HasAuthCheck:   res.Summary.HasAuthCheck,
+			SanitizesInput: res.Summary.SanitizesInput,
+			RawQuery:       res.Summary.RawQuery,
+			ReflectsInput:  res.Summary.ReflectsInput,
+		}
+	}
+	// Attach the handler to the endpoint node so the graph detail panel can show
+	// the source↔runtime split.
+	if g := tb.Graph(); g != nil && req.Endpoint != nil && p.Source != nil {
+		for _, n := range g.AttachHandlerByPath(pathOf(req.Endpoint.Path), *p.Source) {
+			emit(graphNodeEvent(step, n))
+		}
+	}
+	return p
 }
 
 func marshalResult(v any) string {

@@ -1015,7 +1015,11 @@ func runAgenticDast(p agenticParams) {
 		Task:              task,
 		Source:            source,
 		OnEvent: func(e agent.Event) {
-			srv.BroadcastAgentEvent(server.AgentEvent{Type: string(e.Type), Step: e.Step, Tool: e.Tool, Detail: e.Detail})
+			evt := server.AgentEvent{Type: string(e.Type), Step: e.Step, Tool: e.Tool, Detail: e.Detail}
+			if p := e.Payload; p != nil {
+				evt.Node, evt.Edge, evt.Source, evt.Summary, evt.Mode = p.Node, p.Edge, p.Source, p.Summary, p.Mode
+			}
+			srv.BroadcastAgentEvent(evt)
 			printAgentEvent(e)
 		},
 	})

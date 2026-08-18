@@ -59,6 +59,61 @@ func TestRunReadSourceGreyBox(t *testing.T) {
 	}
 }
 
+func TestRunStreamsGraphDeltas(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("ok")) })
+	tb, base := newTestbox(t, DefaultLimits(), mux) // seeds one endpoint node from the crawl ("/")
+
+	var graphEvents []Event
+	onEvt := func(e Event) {
+		if e.Type == EventGraph {
+			graphEvents = append(graphEvents, e)
+		}
+	}
+
+	tr := &fakeTransport{turns: []*TurnResult{
+		turn("tool_use", toolUseBlock("p1", toolHTTPProbe, ProbeRequest{Method: "GET", URL: base + "/"})),
+		turn("tool_use",
+			toolUseBlock("n1", toolNoteFinding, Candidate{Title: "Exposed root", Severity: "medium", URL: base + "/", Evidence: "ok"}),
+			toolUseBlock("f1", toolFinish, map[string]any{"summary": "done"}),
+		),
+	}}
+
+	_, err := Run(context.Background(), tb, tr, RunOptions{Task: "go", OnEvent: onEvt})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Should see: initial seed (untested), a testing transition, a vulnerable
+	// transition, and a finding node.
+	var sawUntested, sawTesting, sawVulnerable, sawFinding bool
+	for _, e := range graphEvents {
+		n := e.Payload.Node
+		if n == nil {
+			continue
+		}
+		switch {
+		case n.Type == NodeFinding:
+			sawFinding = true
+		case n.Status == StatusUntested:
+			sawUntested = true
+		case n.Status == StatusTesting:
+			sawTesting = true
+		case n.Status == StatusVulnerable:
+			sawVulnerable = true
+		}
+	}
+	if !sawUntested || !sawTesting || !sawVulnerable || !sawFinding {
+		t.Errorf("graph lifecycle incomplete: untested=%v testing=%v vulnerable=%v finding=%v (from %d graph events)",
+			sawUntested, sawTesting, sawVulnerable, sawFinding, len(graphEvents))
+	}
+	// Final graph state: the endpoint is vulnerable.
+	_, tested, vuln := tb.Graph().Counts()
+	if tested < 1 || vuln < 1 {
+		t.Errorf("expected the endpoint tested+vulnerable, got tested=%d vuln=%d", tested, vuln)
+	}
+}
+
 func TestRunReadSourceBlackBoxFallback(t *testing.T) {
 	tb, _ := newTestbox(t, DefaultLimits(), http.NotFoundHandler())
 	// No source set — read_source must degrade to a note, not error.
