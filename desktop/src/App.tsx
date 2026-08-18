@@ -503,6 +503,8 @@ export default function App() {
   const [agTier, setAgTier]               = useState<"passive" | "safe-active" | "aggressive">("passive");
   const [agEnv, setAgEnv]                 = useState<"production" | "staging">("production");
   const [agAck, setAgAck]                 = useState(false);
+  const [agGreyBox, setAgGreyBox]         = useState(false);
+  const [agFocus, setAgFocus]             = useState<"" | "api" | "web" | "llm">("");
   const [dastFindings, setDastFindings]   = useState<any[]>([]);
   const [pentestReport, setPentestReport] = useState<PentestReport | null>(null);
   const [pentestReportRunning, setPentestReportRunning] = useState(false);
@@ -1030,6 +1032,8 @@ export default function App() {
       tier: agTier,
       environment: agEnv,
       acceptSideEffects: agAck,
+      greyBox: agGreyBox,
+      focus: agFocus,
     })
       .then(async ({ url: rUrl, cachePath }) => {
         updateToastDone(id, rUrl, cachePath);
@@ -1718,10 +1722,16 @@ export default function App() {
 
               {isPro && (
               <>
-              <div className={`scan-tip-wrap ${isScanning ? "scanning-active" : ""}`}>
-              <div className={`dast-panel ${isScanning ? "scan-locked" : ""}`}>
-                <CM />
-                <span className="scanner-grid-label">TARGET URL</span>
+              <div className={`pt-setup ${isScanning ? "scan-locked" : ""}`}>
+                {/* Mode */}
+                <span className="scanner-grid-label">MODE</span>
+                <div className="pt-seg">
+                  <button type="button" className={!agenticMode ? "on" : ""} onClick={() => setAgenticMode(false)} disabled={isScanning}>One-shot scan</button>
+                  <button type="button" className={agenticMode ? "on" : ""} onClick={() => setAgenticMode(true)} disabled={isScanning}>AI Agent <span className="pt-seg-sub">adaptive</span></button>
+                </div>
+
+                {/* Target */}
+                <span className="scanner-grid-label" style={{ marginTop: 16 }}>TARGET</span>
                 <form className="dast-row-form" onSubmit={(e) => { e.preventDefault(); (agenticMode ? triggerAgenticDast : triggerDast)(dastUrl); }}>
                   <input
                     className="dast-input dast-input-lg"
@@ -1733,107 +1743,108 @@ export default function App() {
                     autoFocus
                     style={{ fontFamily: "'Fira Code', monospace" }}
                   />
-                  <button type="submit" className="station-btn" disabled={isScanning || !dastUrl.trim()} style={{ whiteSpace: "nowrap", padding: "0 20px" }}>
-                    {isScanning ? "Scan in progress…" : agenticMode ? "Start Agent" : "Start Penetration Test"}
+                  <button type="submit" className="station-btn" disabled={isScanning || !dastUrl.trim()} style={{ whiteSpace: "nowrap", padding: "0 22px" }}>
+                    {isScanning ? "Scan in progress…" : "Launch pen test"}
                   </button>
                 </form>
-
-                {/* Agentic (AI agent) mode — adaptive pen-test that streams live */}
-                <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 14, marginTop: 12 }}>
-                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
-                    <input type="checkbox" checked={agenticMode} onChange={(e) => setAgenticMode(e.target.checked)} disabled={isScanning} />
-                    AI agent pen-test <span style={{ opacity: 0.55, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.08em" }}>adaptive</span>
-                  </label>
-                  {agenticMode && (
-                    <>
-                      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
-                        Environment
-                        <select
-                          value={agEnv}
-                          onChange={(e) => {
-                            const next = e.target.value as typeof agEnv;
-                            setAgEnv(next);
-                            // Aggressive is staging-only — the CLI rejects it on prod.
-                            if (next === "production" && agTier === "aggressive") setAgTier("passive");
-                          }}
-                          disabled={isScanning}
-                        >
-                          <option value="production">production</option>
-                          <option value="staging">staging</option>
-                        </select>
-                      </label>
-                      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
-                        Intensity
-                        <select
-                          value={agTier}
-                          onChange={(e) => setAgTier(e.target.value as typeof agTier)}
-                          disabled={isScanning}
-                        >
-                          <option value="passive">passive</option>
-                          <option value="safe-active">safe-active</option>
-                          <option value="aggressive" disabled={agEnv === "production"}>aggressive (staging)</option>
-                        </select>
-                      </label>
-                      {agTier === "safe-active" && agEnv === "production" && (
-                        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#d97706" }}>
-                          <input type="checkbox" checked={agAck} onChange={(e) => setAgAck(e.target.checked)} disabled={isScanning} />
-                          Accept possible side effects
-                        </label>
-                      )}
-                    </>
-                  )}
-                </div>
-
-                <div className="dast-warning">
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#d97706" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <div className="pt-authnote">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
                     <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3 M12 9v4 M12 17h.01"/>
                   </svg>
-                  Only scan systems you own or are authorized to test.
+                  Only test systems you own or are authorized to test.
                 </div>
-              </div>
-              </div>{/* /scan-tip-wrap */}
 
-              <div>
-                <p className="scanner-grid-label">CHECKS</p>
-                <div className="feature-grid">
-                  {([
-                    {
-                      name: "Nuclei", extra: "6,618 templates", pro: false,
-                      desc: "Baseline sweep run up front for breadth — CVE probes, exposures, takeovers.",
-                      icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></svg>,
-                    },
-                    {
-                      name: "CORS", extra: undefined, pro: false,
-                      desc: "Cross-origin policy misconfigurations and wildcard origins.",
-                      icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20 M2 12h20"/></svg>,
-                    },
-                    {
-                      name: "Security headers", extra: undefined, pro: false,
-                      desc: "CSP, HSTS, frame and referrer policies graded per response.",
-                      icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z M9 12l2 2 4-4"/></svg>,
-                    },
-                    {
-                      name: "Endpoint discovery", extra: undefined, pro: false,
-                      desc: "Crawl plus common-path probing to map the live surface.",
-                      icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M10 4a6 6 0 1 0 0 12 6 6 0 0 0 0-12 M21 21l-6.65-6.65"/></svg>,
-                    },
-                    {
-                      name: "Agentic brain", extra: "Claude", pro: true,
-                      desc: "An AI agent that reasons over responses and probes adaptively — chaining steps to find auth-bypass, IDOR and business-logic flaws no template can express.",
-                      icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9.94 3.94 12 2l2.06 1.94L16 2l1 4 4 1-1.94 2.06L21 12l-1.94 2.06L21 16l-4 1-1 4-2.06-1.94L12 22l-2.06-1.94L8 22l-1-4-4-1 1.94-2.06L3 12l1.94-2.06L3 8l4-1 1-4z"/></svg>,
-                    },
-                  ] as { name: string; extra?: string; pro: boolean; desc: string; icon: React.ReactNode }[]).map((f) => (
-                    <div key={f.name} className={`feature-chip ${f.pro ? "chip-pro" : ""}`}>
-                      <div className="chip-head">
-                        {f.icon}
-                        <span className="chip-name">{f.name}</span>
-                        {f.extra && <span className="chip-extra">{f.extra}</span>}
-                        {f.pro && <span style={{ font: "600 9px Inter,sans-serif", letterSpacing: "1px", color: "#a78bfa", border: "1px solid rgba(167,139,250,0.4)", padding: "2px 5px" }}>PRO</span>}
+                {/* Engagement — AI agent only */}
+                {agenticMode && (
+                  <>
+                    <span className="scanner-grid-label" style={{ marginTop: 18 }}>ENGAGEMENT</span>
+                    <div className="pt-eng-grid">
+                      {/* Intensity ladder */}
+                      <div className="pt-card">
+                        <div className="pt-card-h">Intensity
+                          <span className="pt-info" data-tip="How hard the agent pushes. Every level is non-destructive: single-proof, same-host only, no data dumped.">i</span>
+                        </div>
+                        {([
+                          ["passive", "Passive", "Observe and fingerprint. GET probes only, zero side effects."],
+                          ["safe-active", "Safe-active", "Adds state-changing probes, single-proof only. Never enumerates or dumps data."],
+                          ["aggressive", "Aggressive", "Fuller payload coverage. Blocked on production targets."],
+                        ] as const).map(([v, label, tip]) => {
+                          const blocked = v === "aggressive" && agEnv === "production";
+                          return (
+                            <button
+                              key={v}
+                              type="button"
+                              className={`pt-rung ${agTier === v ? "on" : ""}`}
+                              onClick={() => setAgTier(v)}
+                              disabled={isScanning || blocked}
+                            >
+                              <span className="pt-pip" />
+                              <span className="pt-rung-t">
+                                {label}
+                                {v === "aggressive" && <span className="pt-tag-staging">staging only</span>}
+                              </span>
+                              <span className="pt-info" data-tip={tip}>i</span>
+                            </button>
+                          );
+                        })}
                       </div>
-                      <span className="chip-desc">{f.desc}</span>
+
+                      {/* Right column: environment, grey-box, focus */}
+                      <div className="pt-col">
+                        <div className="pt-card">
+                          <div className="pt-card-h">Environment
+                            <span className="pt-info" data-tip="Production caps intensity to safe-active. Staging unlocks aggressive.">i</span>
+                          </div>
+                          <div className="pt-seg pt-seg-full">
+                            <button type="button" className={agEnv === "production" ? "on" : ""} disabled={isScanning}
+                              onClick={() => { setAgEnv("production"); if (agTier === "aggressive") setAgTier("passive"); }}>Production</button>
+                            <button type="button" className={agEnv === "staging" ? "on" : ""} disabled={isScanning}
+                              onClick={() => setAgEnv("staging")}>Staging</button>
+                          </div>
+                          {agTier === "safe-active" && agEnv === "production" && (
+                            <label className="pt-ack">
+                              <input type="checkbox" checked={agAck} onChange={(e) => setAgAck(e.target.checked)} disabled={isScanning} />
+                              Accept possible side effects
+                            </label>
+                          )}
+                        </div>
+
+                        <div className="pt-card">
+                          <div className="pt-row">
+                            <span className="pt-card-h" style={{ margin: 0 }}>Grey-box
+                              <span className="pt-info" data-tip="Reads this project's source to find the missing check (IDOR, SQLi, authz gaps) instead of guessing. Index, vectors and source stay on your machine; only the handler snippets the agent reads are sent to the AI, never stored.">i</span>
+                            </span>
+                            <button
+                              type="button"
+                              className={`pt-switch ${agGreyBox ? "" : "off"}`}
+                              aria-pressed={agGreyBox}
+                              aria-label="Toggle grey-box"
+                              onClick={() => setAgGreyBox((v) => !v)}
+                              disabled={isScanning}
+                            />
+                          </div>
+                        </div>
+
+                        <div className="pt-card">
+                          <div className="pt-card-h">Focus
+                            <span className="pt-info" data-tip="Narrows the agent to a technique set for fewer wasted probes. Optional.">i</span>
+                          </div>
+                          <div className="pt-chips">
+                            {([["api", "API"], ["web", "Consumer web"], ["llm", "AI / LLM"]] as const).map(([v, label]) => (
+                              <button
+                                key={v}
+                                type="button"
+                                className={`pt-chip ${agFocus === v ? "on" : ""}`}
+                                onClick={() => setAgFocus((f) => (f === v ? "" : v))}
+                                disabled={isScanning}
+                              >{label}</button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
                     </div>
-                  ))}
-                </div>
+                  </>
+                )}
               </div>
 
               {recent.filter(r => r.type === "dast").length > 0 && (

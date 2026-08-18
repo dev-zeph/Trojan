@@ -432,6 +432,7 @@ func dastCmd() *cobra.Command {
 	var acceptSideEffects bool
 	var maxRunTokens int
 	var greyBox bool
+	var focus string
 
 	cmd := &cobra.Command{
 		Use:   "dast <url>",
@@ -523,6 +524,7 @@ func dastCmd() *cobra.Command {
 					acceptSideEffects: acceptSideEffects,
 					maxRunTokens:      maxRunTokens,
 					greyBox:           greyBox,
+					focus:             focus,
 					desktop:           desktop,
 					crawlDepth:        crawlDepth,
 					crawlTimeout:      crawlTimeout,
@@ -776,6 +778,7 @@ func dastCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&acceptSideEffects, "accept-side-effects", false, "Acknowledge possible side effects (required for safe-active POST on production)")
 	cmd.Flags().IntVar(&maxRunTokens, "max-run-tokens", agent.DefaultMaxRunTokens, "Cumulative token ceiling for the agentic run (0 = rely only on step/request/time caps)")
 	cmd.Flags().BoolVar(&greyBox, "grey-box", false, "Let the agent read this project's source (run from the source dir) to form grounded hypotheses. Handler snippets are sent to the AI. Run `trojan index` first to also enable semantic source search.")
+	cmd.Flags().StringVar(&focus, "focus", "", "Narrow the agent to a technique preset: api | web | llm (optional)")
 	cmd.AddCommand(dastVerifyCmd())
 	return cmd
 }
@@ -912,6 +915,7 @@ type agenticParams struct {
 	acceptSideEffects bool
 	maxRunTokens      int
 	greyBox           bool
+	focus             string
 	desktop           bool
 	crawlDepth        int
 	crawlTimeout      int
@@ -989,6 +993,9 @@ func runAgenticDast(p agenticParams) {
 	// Grey-box (§6.6): if opted in, let the agent read this project's source.
 	// Runs from the current directory — the source repo of the target under test.
 	task := buildAgenticTask(p.targetURL, p.tier, p.env, crawlResult, baseline)
+	if hint := agenticFocusHint(p.focus); hint != "" {
+		task += "\n\n" + hint
+	}
 	var source agent.SourceReader
 	if p.greyBox {
 		if gb := buildGreyBox(".", p.accessToken); gb != nil {
@@ -1525,6 +1532,22 @@ func loadRetriever(projectPath, accessToken string) ai.ContextRetriever {
 		return nil
 	}
 	return ragRetriever{r}
+}
+
+// agenticFocusHint maps a technique preset (§10 attack-type selection) to a
+// prompt hint that steers the agent toward that class. Empty preset = no hint,
+// so the agent tests broadly. Kept minimal until §10 grows a full preset library.
+func agenticFocusHint(focus string) string {
+	switch focus {
+	case "api":
+		return "FOCUS: prioritize API security — BOLA/IDOR, broken authorization, injection, mass-assignment, and rate-limiting."
+	case "web":
+		return "FOCUS: prioritize consumer-web flaws — XSS, CSRF, session handling, and IDOR."
+	case "llm":
+		return "FOCUS: prioritize AI/LLM-integrated flaws — prompt injection, insecure output handling, and tool/SSRF abuse."
+	default:
+		return ""
+	}
 }
 
 // buildGreyBox assembles the §6.6 grey-box source reader for a project: the route

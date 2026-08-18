@@ -278,6 +278,8 @@ async fn start_agentic_dast(
     tier: String,
     environment: String,
     accept_side_effects: bool,
+    grey_box: bool,
+    focus: String,
 ) -> Result<ScanReturn, String> {
     kill_old_scans(&app);
     let _ = app.emit(
@@ -291,6 +293,13 @@ async fn start_agentic_dast(
     ];
     if accept_side_effects {
         args.push("--accept-side-effects".into());
+    }
+    if grey_box {
+        args.push("--grey-box".into());
+    }
+    if !focus.is_empty() {
+        args.push("--focus".into());
+        args.push(focus);
     }
 
     let (rx, child) = app
