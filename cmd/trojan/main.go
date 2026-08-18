@@ -438,6 +438,9 @@ func dastCmd() *cobra.Command {
 	var focus string
 	var identityFlags []string
 	var apiSpec string
+	var requireApproval bool
+	var allowEndpoints, denyEndpoints []string
+	var limitToAllowlist, allowDangerous bool
 
 	cmd := &cobra.Command{
 		Use:   "dast <url>",
@@ -537,6 +540,11 @@ func dastCmd() *cobra.Command {
 					greyBox:           greyBox,
 					focus:             focus,
 					apiSpec:           apiSpec,
+					requireApproval:   requireApproval,
+					allowEndpoints:    allowEndpoints,
+					denyEndpoints:     denyEndpoints,
+					limitToAllowlist:  limitToAllowlist,
+					allowDangerous:    allowDangerous,
 					desktop:           desktop,
 					crawlDepth:        crawlDepth,
 					crawlTimeout:      crawlTimeout,
@@ -793,6 +801,11 @@ func dastCmd() *cobra.Command {
 	cmd.Flags().StringVar(&focus, "focus", "", "Narrow the agent to a technique preset: api | web | llm (optional)")
 	cmd.Flags().StringArrayVar(&identityFlags, "identity", nil, "Auth session for authorization (IDOR/BOLA) testing, as 'name=Header: value'. Repeatable; repeat with the same name for multiple headers. Example: --identity 'alice=Authorization: Bearer <token>'")
 	cmd.Flags().StringVar(&apiSpec, "api-spec", "", "OpenAPI/Swagger spec (file path or URL) to expand the agent's attack surface beyond what the crawler finds. If omitted, common spec URLs on the target are auto-probed.")
+	cmd.Flags().BoolVar(&requireApproval, "require-approval", false, "Human-in-the-loop: pause for operator approval before every state-changing action (§8). Approve/deny in the run view; read-only probes still run automatically.")
+	cmd.Flags().StringArrayVar(&allowEndpoints, "allow-endpoint", nil, "Rules of engagement: an endpoint path the agent may target (repeatable; trailing * = prefix, e.g. /api/*). Outside the list is gated for approval unless --limit-to-allowlist.")
+	cmd.Flags().StringArrayVar(&denyEndpoints, "deny-endpoint", nil, "Rules of engagement: an endpoint path the agent must never touch (repeatable; trailing * = prefix).")
+	cmd.Flags().BoolVar(&limitToAllowlist, "limit-to-allowlist", false, "Make --allow-endpoint a hard boundary: anything outside it is blocked, not just gated.")
+	cmd.Flags().BoolVar(&allowDangerous, "allow-dangerous", false, "Opt in to auto-avoided action patterns (account deletion, password/credential change, payment). Off by default.")
 	cmd.AddCommand(dastVerifyCmd())
 	return cmd
 }
@@ -932,6 +945,11 @@ type agenticParams struct {
 	focus             string
 	apiSpec           string
 	identities        []agent.Identity
+	requireApproval   bool
+	allowEndpoints    []string
+	denyEndpoints     []string
+	limitToAllowlist  bool
+	allowDangerous    bool
 	desktop           bool
 	crawlDepth        int
 	crawlTimeout      int
@@ -1043,6 +1061,25 @@ func runAgenticDast(p agenticParams) {
 		}
 	}
 
+	// §8 human-in-the-loop: when the operator requires approval, gate state-changing
+	// actions through a queue the run view drives via POST /api/dast/approval. The
+	// RoE (allow/denylist, auto-avoid opt-in) applies whether or not approval is on.
+	var approvals *agent.Approvals
+	if p.requireApproval {
+		approvals = agent.NewApprovals(0) // default operator-response timeout
+		srv.SetApprovalSink(func(id int, ok bool, note string) {
+			approvals.Decide(agent.ApprovalDecision{ID: id, Approve: ok, Note: note})
+		})
+		defer srv.SetApprovalSink(nil)
+		fmt.Printf("  → Approval required for state-changing actions — approve or deny them in the run view.\n\n")
+	}
+	roe := agent.RoE{
+		EndpointAllowlist: p.allowEndpoints,
+		LimitToAllowlist:  p.limitToAllowlist,
+		EndpointDenylist:  p.denyEndpoints,
+		AllowDangerous:    p.allowDangerous,
+	}
+
 	// Drive the loop, streaming every action to the UI and the terminal.
 	srv.BroadcastAgentEvent(server.AgentEvent{Type: "run", Status: "running"})
 	res, rerr := agent.RunAgentic(context.Background(), agent.Config{
@@ -1056,10 +1093,13 @@ func runAgenticDast(p agenticParams) {
 		Task:              task,
 		Source:            source,
 		Identities:        p.identities,
+		RoE:               roe,
+		Approvals:         approvals,
 		OnEvent: func(e agent.Event) {
 			evt := server.AgentEvent{Type: string(e.Type), Step: e.Step, Tool: e.Tool, Detail: e.Detail}
 			if p := e.Payload; p != nil {
 				evt.Node, evt.Edge, evt.Source, evt.Summary, evt.Mode = p.Node, p.Edge, p.Source, p.Summary, p.Mode
+				evt.Approval, evt.Approved = p.Approval, p.Approved
 			}
 			srv.BroadcastAgentEvent(evt)
 			printAgentEvent(e)

@@ -25,11 +25,11 @@ type licenseResult struct {
 // ScanResult so we can add view-only fields like locked_count without
 // polluting the on-disk format.
 type scanResponse struct {
-	Timestamp   time.Time               `json:"timestamp"`
-	ProjectPath string                  `json:"project_path"`
-	Findings    []normalizer.Finding    `json:"findings"`
-	LockedCount int                     `json:"locked_count"`
-	Packages    []normalizer.Package    `json:"packages,omitempty"`
+	Timestamp   time.Time                 `json:"timestamp"`
+	ProjectPath string                    `json:"project_path"`
+	Findings    []normalizer.Finding      `json:"findings"`
+	LockedCount int                       `json:"locked_count"`
+	Packages    []normalizer.Package      `json:"packages,omitempty"`
 	Privacy     *normalizer.PrivacyReport `json:"privacy,omitempty"`
 }
 
@@ -60,6 +60,11 @@ type Server struct {
 	agenticClients map[int]chan AgentEvent
 	agenticBuffer  []AgentEvent // replay buffer for late subscribers
 	agenticStatus  string       // "idle" | "running" | "complete" | "error"
+
+	// approvalDecider delivers an operator's §8 approval decision to the running
+	// agent loop (the reverse channel). Set per-run by the CLI; nil = no HITL run
+	// active. Guarded by agenticMu.
+	approvalDecider func(id int, approve bool, note string)
 }
 
 // New creates a new server with the given scan result and embedded UI assets.
@@ -107,6 +112,7 @@ func (s *Server) Start() (string, error) {
 	mux.HandleFunc("/api/dast/consent/verify", s.handleConsentVerify)
 	mux.HandleFunc("/api/dast/agentic/status", s.handleAgenticStatus)
 	mux.HandleFunc("/api/dast/agentic/events", s.handleAgenticEvents)
+	mux.HandleFunc("/api/dast/approval", s.handleApproval)
 
 	// Serve embedded UI assets (caller passes an already-subbed fs.FS)
 	mux.Handle("/", http.FileServer(http.FS(s.uiAssets)))

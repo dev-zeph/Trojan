@@ -623,6 +623,12 @@ type Config struct {
 	// Identities are named auth sessions the agent may probe as, for IDOR/BOLA
 	// testing (§6.5 #2). Empty = single-identity (current behaviour).
 	Identities []Identity
+	// RoE is the §8.1 rules of engagement layered on the safety envelope (endpoint
+	// allow/denylist, auto-avoid). Zero value = the safe default.
+	RoE RoE
+	// Approvals enables §8 human-in-the-loop: state-changing / out-of-scope actions
+	// are gated for operator approval instead of auto-executing. Nil = HITL off.
+	Approvals *Approvals
 }
 
 // RunAgentic wires a safety envelope, budget, toolbox, and edge transport from
@@ -637,6 +643,7 @@ func RunAgentic(ctx context.Context, cfg Config) (*RunResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	env.SetRoE(cfg.RoE)
 	if cfg.AccessToken == "" {
 		return nil, errors.New("agentic DAST requires a Pro access token")
 	}
@@ -652,6 +659,9 @@ func RunAgentic(ctx context.Context, cfg Config) (*RunResult, error) {
 	}
 	if len(cfg.Identities) > 0 {
 		tb.SetIdentities(cfg.Identities)
+	}
+	if cfg.Approvals != nil {
+		tb.SetApprovals(cfg.Approvals)
 	}
 	tr := NewEdgeTransport(cfg.AccessToken)
 
