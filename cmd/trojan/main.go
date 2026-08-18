@@ -6,8 +6,10 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -22,6 +24,7 @@ import (
 
 	trojan "github.com/dev-zeph/trojan"
 	"github.com/dev-zeph/trojan/internal/ai"
+	"github.com/dev-zeph/trojan/internal/apispec"
 	"github.com/dev-zeph/trojan/internal/ci"
 	"github.com/dev-zeph/trojan/internal/config"
 	"github.com/dev-zeph/trojan/internal/dast"
@@ -434,6 +437,7 @@ func dastCmd() *cobra.Command {
 	var greyBox bool
 	var focus string
 	var identityFlags []string
+	var apiSpec string
 
 	cmd := &cobra.Command{
 		Use:   "dast <url>",
@@ -532,6 +536,7 @@ func dastCmd() *cobra.Command {
 					maxRunTokens:      maxRunTokens,
 					greyBox:           greyBox,
 					focus:             focus,
+					apiSpec:           apiSpec,
 					desktop:           desktop,
 					crawlDepth:        crawlDepth,
 					crawlTimeout:      crawlTimeout,
@@ -787,6 +792,7 @@ func dastCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&greyBox, "grey-box", false, "Let the agent read this project's source (run from the source dir) to form grounded hypotheses. Handler snippets are sent to the AI. Run `trojan index` first to also enable semantic source search.")
 	cmd.Flags().StringVar(&focus, "focus", "", "Narrow the agent to a technique preset: api | web | llm (optional)")
 	cmd.Flags().StringArrayVar(&identityFlags, "identity", nil, "Auth session for authorization (IDOR/BOLA) testing, as 'name=Header: value'. Repeatable; repeat with the same name for multiple headers. Example: --identity 'alice=Authorization: Bearer <token>'")
+	cmd.Flags().StringVar(&apiSpec, "api-spec", "", "OpenAPI/Swagger spec (file path or URL) to expand the agent's attack surface beyond what the crawler finds. If omitted, common spec URLs on the target are auto-probed.")
 	cmd.AddCommand(dastVerifyCmd())
 	return cmd
 }
@@ -924,6 +930,7 @@ type agenticParams struct {
 	maxRunTokens      int
 	greyBox           bool
 	focus             string
+	apiSpec           string
 	identities        []agent.Identity
 	desktop           bool
 	crawlDepth        int
@@ -963,6 +970,12 @@ func runAgenticDast(p agenticParams) {
 	fmt.Printf("  → Crawling application (depth %d)...\n", p.crawlDepth)
 	crawlResult := dast.Crawl(p.targetURL, p.crawlDepth, p.crawlTimeout)
 	fmt.Printf("  → Discovered %d endpoint(s)\n\n", len(crawlResult.Endpoints))
+
+	// Schema ingestion (§6.5 #4): widen the attack surface with the target's own
+	// OpenAPI/Swagger description — routes the crawler can't reach by following
+	// links, plus the parameters each declares. Merged into the crawl surface so
+	// the graph seed, get_crawl_map, and the seed task all pick them up.
+	specHint := ingestAPISpec(p, &crawlResult)
 
 	// Deterministic Nuclei pre-pass for breadth (zero tokens).
 	if err := config.EnsureDastScanners(); err != nil {
@@ -1004,6 +1017,9 @@ func runAgenticDast(p agenticParams) {
 	task := buildAgenticTask(p.targetURL, p.tier, p.env, crawlResult, baseline)
 	if hint := agenticFocusHint(p.focus); hint != "" {
 		task += "\n\n" + hint
+	}
+	if specHint != "" {
+		task += "\n\n" + specHint
 	}
 	if len(p.identities) > 0 {
 		names := make([]string, len(p.identities))
@@ -1109,6 +1125,180 @@ func buildAgenticTask(url string, tier agent.Tier, env agent.Environment, crawl 
 	}
 	b.WriteString("Review the crawl map first, then probe adaptively. Record findings with note_finding anchored on the evidence you observe, and call finish when you have tested the hypotheses worth testing.")
 	return b.String()
+}
+
+// ingestAPISpec loads an OpenAPI/Swagger spec (explicit --api-spec, else
+// auto-discovered on the target), merges its operations into the crawl surface
+// as extra endpoints, and returns a task hint highlighting the spec-derived
+// surface (unsecured endpoints and object-id routes are the agent's IDOR/BOLA
+// leads). Returns "" when no spec is found — schema ingestion is best-effort.
+func ingestAPISpec(p agenticParams, crawl *dast.CrawlResult) string {
+	spec, src := loadAPISpec(p.apiSpec, p.targetURL)
+	if spec == nil || len(spec.Ops) == 0 {
+		if p.apiSpec != "" {
+			color.Yellow("  API spec requested but none could be loaded/parsed from %q — continuing with the crawl surface only.\n\n", p.apiSpec)
+		}
+		return ""
+	}
+	added, notCrawled := mergeSpecEndpoints(crawl, p.targetURL, spec)
+	fmt.Printf("  → API spec %s (%s): +%d endpoint(s), %d not reachable by crawling\n\n", src, spec.Format, added, notCrawled)
+	return specTaskHint(spec)
+}
+
+// loadAPISpec resolves a spec from an explicit path/URL, or auto-discovers one by
+// probing the conventional spec URLs on the target. Returns the parsed spec and a
+// short source label, or (nil, "") if none is found. Discovery uses unauthenticated
+// GETs — an auth-gated spec must be supplied explicitly via --api-spec.
+func loadAPISpec(specArg, targetURL string) (*apispec.Spec, string) {
+	client := &http.Client{Timeout: 8 * time.Second}
+
+	if specArg != "" {
+		var data []byte
+		if strings.HasPrefix(specArg, "http://") || strings.HasPrefix(specArg, "https://") {
+			data = fetchSpec(client, specArg)
+		} else if b, err := os.ReadFile(specArg); err == nil {
+			data = b
+		}
+		if len(data) == 0 {
+			return nil, ""
+		}
+		if spec, err := apispec.Parse(data); err == nil {
+			return spec, specArg
+		}
+		return nil, ""
+	}
+
+	origin := originOf(targetURL)
+	if origin == "" {
+		return nil, ""
+	}
+	for _, path := range apispec.DiscoveryPaths() {
+		data := fetchSpec(client, origin+path)
+		if len(data) == 0 {
+			continue
+		}
+		if spec, err := apispec.Parse(data); err == nil && len(spec.Ops) > 0 {
+			return spec, path
+		}
+	}
+	return nil, ""
+}
+
+// fetchSpec does one bounded GET and returns the body on a 2xx, else nil.
+func fetchSpec(client *http.Client, rawURL string) []byte {
+	resp, err := client.Get(rawURL) //nolint:noctx
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil
+	}
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20)) // cap at 8 MiB
+	return data
+}
+
+// mergeSpecEndpoints adds spec operations to the crawl surface as templated
+// endpoints (e.g. origin + /api/orders/{id}), skipping ones whose method+shape a
+// crawled endpoint already covers so the graph isn't duplicated. Returns how many
+// endpoints were added and how many of those the crawler had not reached.
+func mergeSpecEndpoints(crawl *dast.CrawlResult, targetURL string, spec *apispec.Spec) (added, notCrawled int) {
+	origin := originOf(targetURL)
+	crawledShapes := make(map[string]bool, len(crawl.Endpoints))
+	for _, e := range crawl.Endpoints {
+		crawledShapes[shapeKey(e.Method, apispec.NormalizePath(pathOfURL(e.URL)))] = true
+	}
+	seen := make(map[string]bool)
+	for _, op := range spec.Ops {
+		key := shapeKey(op.Method, apispec.NormalizePath(op.Path))
+		if crawledShapes[key] || seen[key] {
+			continue
+		}
+		seen[key] = true
+		crawl.Endpoints = append(crawl.Endpoints, dast.Endpoint{
+			URL:         origin + op.Path,
+			Method:      op.Method,
+			QueryParams: op.QueryParams,
+			FormFields:  op.BodyFields,
+		})
+		added++
+		notCrawled++ // by construction, every kept op is one the crawl didn't cover
+	}
+	if spec.Format != "" {
+		crawl.TechHints = appendUnique(crawl.TechHints, spec.Format)
+	}
+	return added, notCrawled
+}
+
+// specTaskHint tells the agent which spec-derived endpoints to prioritize. It
+// leads with the unsecured ones and the object-id routes — the highest-value
+// IDOR/BOLA and missing-auth leads — and caps the list so the seed stays small.
+func specTaskHint(spec *apispec.Spec) string {
+	const maxLines = 40
+	var lead, rest []string
+	for _, op := range spec.Ops {
+		flags := ""
+		if !op.Secured {
+			flags += " [no-auth-declared]"
+		}
+		if len(op.PathParams) > 0 {
+			flags += " [id-param: " + strings.Join(op.PathParams, ",") + "]"
+		}
+		line := fmt.Sprintf("- %s %s%s", op.Method, op.Path, flags)
+		if flags != "" {
+			lead = append(lead, line)
+		} else {
+			rest = append(rest, line)
+		}
+	}
+	lines := append(lead, rest...)
+	truncated := 0
+	if len(lines) > maxLines {
+		truncated = len(lines) - maxLines
+		lines = lines[:maxLines]
+	}
+	var b strings.Builder
+	b.WriteString("API SPEC SURFACE (")
+	b.WriteString(spec.Format)
+	b.WriteString("): these endpoints come from the target's own API description — some are NOT linked from any page, so the crawler missed them. Endpoints tagged [no-auth-declared] may be missing authentication; [id-param] endpoints take a client-supplied object id and are prime IDOR/BOLA candidates (fetch one as identity A, then request the same id as identity B and diff_responses). Substitute concrete values for {template} params.\n")
+	b.WriteString(strings.Join(lines, "\n"))
+	if truncated > 0 {
+		fmt.Fprintf(&b, "\n- …and %d more (call get_crawl_map for the full merged surface).", truncated)
+	}
+	return b.String()
+}
+
+// originOf returns scheme://host[:port] for a target URL, or "" if unparseable.
+func originOf(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
+}
+
+// pathOfURL extracts the path component of a URL (falls back to the raw string).
+func pathOfURL(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Path == "" {
+		return rawURL
+	}
+	return u.Path
+}
+
+// shapeKey is a method+normalized-path identity for deduping crawl vs spec.
+func shapeKey(method, path string) string {
+	return strings.ToUpper(method) + " " + path
+}
+
+// appendUnique appends s to list only if not already present.
+func appendUnique(list []string, s string) []string {
+	for _, x := range list {
+		if x == s {
+			return list
+		}
+	}
+	return append(list, s)
 }
 
 // agenticFindingsFromCandidates maps the agent's evidence-anchored candidates
@@ -1396,7 +1586,6 @@ func printDastProMessage(targetURL string) {
 	fmt.Println("  Upgrade at trojancli.com/pricing to unlock it.")
 	fmt.Println()
 }
-
 
 func loginCmd() *cobra.Command {
 	return &cobra.Command{
