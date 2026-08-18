@@ -20,12 +20,13 @@ import (
 
 // Tool names — the contract shared with the edge function's tool definitions.
 const (
-	toolGetCrawlMap = "get_crawl_map"
-	toolHTTPProbe   = "http_probe"
-	toolNoteFinding  = "note_finding"
-	toolReadSource   = "read_source"
-	toolRememberFact = "remember_fact"
-	toolFinish       = "finish"
+	toolGetCrawlMap   = "get_crawl_map"
+	toolHTTPProbe     = "http_probe"
+	toolNoteFinding   = "note_finding"
+	toolReadSource    = "read_source"
+	toolRememberFact  = "remember_fact"
+	toolDiffResponses = "diff_responses"
+	toolFinish        = "finish"
 )
 
 // EventType classifies a progress event streamed during a run (§10.2 live view).
@@ -256,6 +257,22 @@ func executeTool(ctx context.Context, tb *Toolbox, b blockPeek, step int, emit f
 		emit(Event{Type: EventText, Step: step, Detail: "🧠 " + f.Summary})
 		return marshalResult(map[string]any{"ok": true, "facts": facts}), false, false
 
+	case toolDiffResponses:
+		var d struct {
+			A int `json:"a"`
+			B int `json:"b"`
+		}
+		if err := json.Unmarshal(b.Input, &d); err != nil {
+			return fmt.Sprintf("invalid diff_responses input: %v", err), true, false
+		}
+		res, err := tb.DiffResponses(d.A, d.B)
+		if err != nil {
+			emit(Event{Type: EventToolResult, Step: step, Tool: toolDiffResponses, Detail: "error: " + err.Error()})
+			return err.Error(), true, false
+		}
+		emit(Event{Type: EventToolResult, Step: step, Tool: toolDiffResponses, Detail: diffDetail(res)})
+		return marshalResult(res), false, false
+
 	case toolFinish:
 		var f struct {
 			Summary string `json:"summary"`
@@ -267,6 +284,18 @@ func executeTool(ctx context.Context, tb *Toolbox, b blockPeek, step int, emit f
 	default:
 		return fmt.Sprintf("unknown tool %q", b.Name), true, false
 	}
+}
+
+// diffDetail renders a compact one-line summary of a diff_responses result for
+// the progress stream — the signal plus how the two sides compared.
+func diffDetail(d *DiffResult) string {
+	detail := fmt.Sprintf("#%d (%d) vs #%d (%d) → %s", d.A.ProbeID, d.A.Status, d.B.ProbeID, d.B.Status, d.Signal)
+	if d.JSON && len(d.FieldDiffs) > 0 {
+		detail += fmt.Sprintf(", %d field diff(s)", len(d.FieldDiffs))
+	} else {
+		detail += fmt.Sprintf(", %.0f%% similar", d.Similarity*100)
+	}
+	return detail
 }
 
 // readSourceDetail renders a compact one-line summary of a read_source result

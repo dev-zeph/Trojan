@@ -53,8 +53,8 @@ type Fact struct {
 	Kind    string `json:"kind"`              // credential | token | identifier | endpoint | trust | observation
 	Summary string `json:"summary"`           // human-readable ("admin JWT obtained via SQLi on /rest/user/login")
 	Value   string `json:"value,omitempty"`   // the concrete token/id/cred, for reuse
-	From    string `json:"from,omitempty"`     // URL/path this fact came from
-	Enables string `json:"enables,omitempty"`  // URL/path this fact could help attack (a chain step)
+	From    string `json:"from,omitempty"`    // URL/path this fact came from
+	Enables string `json:"enables,omitempty"` // URL/path this fact could help attack (a chain step)
 }
 
 // Identity is a named authenticated session the agent can send probes as, for
@@ -82,6 +82,10 @@ type ProbeRequest struct {
 
 // ProbeResult is the safe-mode-bounded response handed back to the agent.
 type ProbeResult struct {
+	// ProbeID identifies this response in the toolbox's capture store so the agent
+	// can diff it against another probe (diff_responses) without re-sending the
+	// body. Only the most recent captures are retained (see maxRetainedProbes).
+	ProbeID   int               `json:"probe_id"`
 	Status    int               `json:"status"`
 	Headers   map[string]string `json:"headers"`
 	Body      string            `json:"body"`
@@ -89,14 +93,34 @@ type ProbeResult struct {
 	Elapsed   time.Duration     `json:"elapsed"`
 }
 
+// capturedProbe is a probe's request meta + response body retained for diffing
+// (§6.5 #3). Kept internal — the agent only ever sees ProbeRef via a DiffResult.
+type capturedProbe struct {
+	id       int
+	method   string
+	url      string
+	identity string
+	status   int
+	body     string
+}
+
+func (c capturedProbe) ref() ProbeRef {
+	return ProbeRef{ProbeID: c.id, Method: c.method, URL: c.url, Identity: c.identity, Status: c.status}
+}
+
+// maxRetainedProbes bounds the diff store: only the N most recent probe bodies
+// are kept so a long run can't accumulate hundreds of capped bodies in memory.
+// Referencing an evicted id is an honest, adaptable tool error.
+const maxRetainedProbes = 24
+
 // Toolbox is the agent's sole interface to the outside world. Every method here
 // corresponds to one of the tools in §3.3; there is no other way for the agent
 // to act. It is safe for concurrent use.
 type Toolbox struct {
-	env     *Envelope
-	budget  *Budget
-	limiter *RateLimiter
-	crawl   dast.CrawlResult
+	env        *Envelope
+	budget     *Budget
+	limiter    *RateLimiter
+	crawl      dast.CrawlResult
 	client     *http.Client
 	maxResp    int64
 	source     SourceReader        // grey-box source access; nil = black-box only
@@ -109,6 +133,12 @@ type Toolbox struct {
 	facts    []Fact
 	finished bool
 	summary  string
+
+	// probe capture store for diff_responses (§6.5 #3). Bounded to the most
+	// recent maxRetainedProbes; probeOrder is the eviction queue (oldest first).
+	probeSeq   int
+	probes     map[int]capturedProbe
+	probeOrder []int
 }
 
 // NewToolbox wires the tools to a safety envelope, a run budget, and the crawl
@@ -249,13 +279,62 @@ func (t *Toolbox) HTTPProbe(ctx context.Context, req ProbeRequest) (*ProbeResult
 		raw = raw[:t.maxResp]
 	}
 
-	return &ProbeResult{
+	result := &ProbeResult{
 		Status:    resp.StatusCode,
 		Headers:   pickHeaders(resp.Header),
 		Body:      string(raw),
 		Truncated: truncated,
 		Elapsed:   time.Since(start),
-	}, nil
+	}
+	// Capture the response so the agent can diff it later by id (§6.5 #3). The
+	// identity recorded is the one the probe was sent as (empty = anonymous).
+	result.ProbeID = t.captureProbe(req.Method, req.URL, req.Identity, result.Status, result.Body)
+	return result, nil
+}
+
+// captureProbe stores a response for later diffing and returns its id, evicting
+// the oldest capture once the retention cap is exceeded. Safe for concurrent use.
+func (t *Toolbox) captureProbe(method, url, identity string, status int, body string) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.probes == nil {
+		t.probes = make(map[int]capturedProbe)
+	}
+	t.probeSeq++
+	id := t.probeSeq
+	t.probes[id] = capturedProbe{
+		id: id, method: method, url: url, identity: identity, status: status, body: body,
+	}
+	t.probeOrder = append(t.probeOrder, id)
+	if len(t.probeOrder) > maxRetainedProbes {
+		evict := t.probeOrder[0]
+		t.probeOrder = t.probeOrder[1:]
+		delete(t.probes, evict)
+	}
+	return id
+}
+
+// DiffResponses compares two previously captured probes by id (§6.5 #3). It is
+// the deterministic replacement for the agent eyeballing two response bodies: no
+// network, so it costs the token budget (the returned diff) not the request
+// budget. A missing id (never sent, or evicted from the bounded store) is a tool
+// error the agent can recover from by re-sending the request.
+func (t *Toolbox) DiffResponses(aID, bID int) (*DiffResult, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if aID == bID {
+		return nil, fmt.Errorf("diff_responses needs two different probe ids (got %d twice)", aID)
+	}
+	a, ok := t.probes[aID]
+	if !ok {
+		return nil, fmt.Errorf("probe #%d is not available (only the most recent %d probes are retained); re-send the request to capture it", aID, maxRetainedProbes)
+	}
+	b, ok := t.probes[bID]
+	if !ok {
+		return nil, fmt.Errorf("probe #%d is not available (only the most recent %d probes are retained); re-send the request to capture it", bID, maxRetainedProbes)
+	}
+	res := diffResponses(a, b)
+	return &res, nil
 }
 
 // NoteFinding records a candidate vulnerability. No network.
