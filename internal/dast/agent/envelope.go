@@ -95,7 +95,20 @@ type Envelope struct {
 	Host              string // canonical same-host scope (lowercased hostname)
 	AcceptSideEffects bool   // required for POST on production (Safe-Active, §6.2)
 	MaxRequestBody    int64  // reject probe bodies larger than this
+
+	// roe is the per-engagement Rules of Engagement (§8.1): what the agent may DO
+	// to an in-scope host, layered on top of the tier/host floor above. Zero value
+	// = no allowlist/denylist and auto-avoid active — the safe default. Set once by
+	// the composition root via SetRoE before the run starts.
+	roe RoE
 }
+
+// SetRoE installs the engagement's Rules of Engagement. Called once at setup,
+// before any probe — the Envelope is otherwise treated as immutable during a run.
+func (e *Envelope) SetRoE(r RoE) { e.roe = r }
+
+// RoE returns the installed Rules of Engagement (for logging into the scan record).
+func (e *Envelope) RoE() RoE { return e.roe }
 
 // NewEnvelope builds an Envelope and enforces the environment-level invariants
 // up front: a host scope is required, and the aggressive tier is staging-only.
