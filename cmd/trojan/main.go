@@ -433,6 +433,7 @@ func dastCmd() *cobra.Command {
 	var maxRunTokens int
 	var greyBox bool
 	var focus string
+	var identityFlags []string
 
 	cmd := &cobra.Command{
 		Use:   "dast <url>",
@@ -516,11 +517,17 @@ func dastCmd() *cobra.Command {
 					color.Red("Error: %s\n", eerr)
 					os.Exit(1)
 				}
+				identities, ierr := parseIdentities(identityFlags)
+				if ierr != nil {
+					color.Red("Error: %s\n", ierr)
+					os.Exit(1)
+				}
 				runAgenticDast(agenticParams{
 					targetURL:         targetURL,
 					accessToken:       accessToken,
 					tier:              tier,
 					env:               envv,
+					identities:        identities,
 					acceptSideEffects: acceptSideEffects,
 					maxRunTokens:      maxRunTokens,
 					greyBox:           greyBox,
@@ -779,6 +786,7 @@ func dastCmd() *cobra.Command {
 	cmd.Flags().IntVar(&maxRunTokens, "max-run-tokens", agent.DefaultMaxRunTokens, "Cumulative token ceiling for the agentic run (0 = rely only on step/request/time caps)")
 	cmd.Flags().BoolVar(&greyBox, "grey-box", false, "Let the agent read this project's source (run from the source dir) to form grounded hypotheses. Handler snippets are sent to the AI. Run `trojan index` first to also enable semantic source search.")
 	cmd.Flags().StringVar(&focus, "focus", "", "Narrow the agent to a technique preset: api | web | llm (optional)")
+	cmd.Flags().StringArrayVar(&identityFlags, "identity", nil, "Auth session for authorization (IDOR/BOLA) testing, as 'name=Header: value'. Repeatable; repeat with the same name for multiple headers. Example: --identity 'alice=Authorization: Bearer <token>'")
 	cmd.AddCommand(dastVerifyCmd())
 	return cmd
 }
@@ -916,6 +924,7 @@ type agenticParams struct {
 	maxRunTokens      int
 	greyBox           bool
 	focus             string
+	identities        []agent.Identity
 	desktop           bool
 	crawlDepth        int
 	crawlTimeout      int
@@ -996,6 +1005,15 @@ func runAgenticDast(p agenticParams) {
 	if hint := agenticFocusHint(p.focus); hint != "" {
 		task += "\n\n" + hint
 	}
+	if len(p.identities) > 0 {
+		names := make([]string, len(p.identities))
+		for i, id := range p.identities {
+			names[i] = id.Name
+		}
+		fmt.Printf("  → %d identities loaded for authorization testing: %s\n\n", len(names), strings.Join(names, ", "))
+		task += "\n\nIDENTITIES available for http_probe (attach with the \"identity\" field): " + strings.Join(names, ", ") +
+			".\nTest authorization by requesting the same resource as different identities and comparing the responses (IDOR/BOLA)."
+	}
 	var source agent.SourceReader
 	if p.greyBox {
 		if gb := buildGreyBox(".", p.accessToken); gb != nil {
@@ -1021,6 +1039,7 @@ func runAgenticDast(p agenticParams) {
 		MaxRunTokens:      p.maxRunTokens,
 		Task:              task,
 		Source:            source,
+		Identities:        p.identities,
 		OnEvent: func(e agent.Event) {
 			evt := server.AgentEvent{Type: string(e.Type), Step: e.Step, Tool: e.Tool, Detail: e.Detail}
 			if p := e.Payload; p != nil {
@@ -1532,6 +1551,36 @@ func loadRetriever(projectPath, accessToken string) ai.ContextRetriever {
 		return nil
 	}
 	return ragRetriever{r}
+}
+
+// parseIdentities turns repeatable --identity 'name=Header: value' specs into
+// agent identities. Repeating a name accumulates headers onto that identity.
+// Insertion order is preserved so the agent sees a stable identity list.
+func parseIdentities(specs []string) ([]agent.Identity, error) {
+	var order []string
+	byName := map[string]map[string]string{}
+	for _, s := range specs {
+		name, headerLine, ok := strings.Cut(s, "=")
+		name = strings.TrimSpace(name)
+		if !ok || name == "" {
+			return nil, fmt.Errorf("invalid --identity %q: expected 'name=Header: value'", s)
+		}
+		hk, hv, ok := strings.Cut(headerLine, ":")
+		hk, hv = strings.TrimSpace(hk), strings.TrimSpace(hv)
+		if !ok || hk == "" || hv == "" {
+			return nil, fmt.Errorf("invalid --identity %q: header must be 'Header: value'", s)
+		}
+		if _, seen := byName[name]; !seen {
+			byName[name] = map[string]string{}
+			order = append(order, name)
+		}
+		byName[name][hk] = hv
+	}
+	out := make([]agent.Identity, 0, len(order))
+	for _, n := range order {
+		out = append(out, agent.Identity{Name: n, Headers: byName[n]})
+	}
+	return out, nil
 }
 
 // agenticFocusHint maps a technique preset (§10 attack-type selection) to a

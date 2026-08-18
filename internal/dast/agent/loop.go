@@ -416,6 +416,9 @@ type Config struct {
 	OnEvent           func(Event)
 	// Source enables the grey-box read_source tool (§6.6). Nil = black-box only.
 	Source SourceReader
+	// Identities are named auth sessions the agent may probe as, for IDOR/BOLA
+	// testing (§6.5 #2). Empty = single-identity (current behaviour).
+	Identities []Identity
 }
 
 // RunAgentic wires a safety envelope, budget, toolbox, and edge transport from
@@ -442,6 +445,9 @@ func RunAgentic(ctx context.Context, cfg Config) (*RunResult, error) {
 	tb := NewToolbox(env, budget, limits, cfg.Crawl)
 	if cfg.Source != nil {
 		tb.SetSource(cfg.Source)
+	}
+	if len(cfg.Identities) > 0 {
+		tb.SetIdentities(cfg.Identities)
 	}
 	tr := NewEdgeTransport(cfg.AccessToken)
 

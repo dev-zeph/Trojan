@@ -43,6 +43,16 @@ type Candidate struct {
 	Rationale string `json:"rationale"`
 }
 
+// Identity is a named authenticated session the agent can send probes as, for
+// testing authorization boundaries — IDOR / BOLA (§6.5 #2). Headers (typically an
+// Authorization bearer or a Cookie) are attached to a probe when the agent
+// selects this identity. Supplied by the user; there is no login automation in
+// v1, so any auth scheme works.
+type Identity struct {
+	Name    string            `json:"name"`
+	Headers map[string]string `json:"headers"`
+}
+
 // ProbeRequest is a single constrained HTTP request the agent wants to send.
 // JSON tags match the http_probe tool's input_schema in the agentic-dast edge
 // function, so a tool_use block deserializes straight into this struct.
@@ -51,6 +61,9 @@ type ProbeRequest struct {
 	URL     string            `json:"url"`
 	Headers map[string]string `json:"headers,omitempty"`
 	Body    string            `json:"body,omitempty"`
+	// Identity selects which supplied identity's auth headers to attach, so the
+	// agent can send the same request as different users to test authorization.
+	Identity string `json:"identity,omitempty"`
 }
 
 // ProbeResult is the safe-mode-bounded response handed back to the agent.
@@ -70,10 +83,12 @@ type Toolbox struct {
 	budget  *Budget
 	limiter *RateLimiter
 	crawl   dast.CrawlResult
-	client  *http.Client
-	maxResp int64
-	source  SourceReader // grey-box source access; nil = black-box only
-	graph   *AttackGraph // live attack-graph / coverage map (§9)
+	client     *http.Client
+	maxResp    int64
+	source     SourceReader        // grey-box source access; nil = black-box only
+	graph      *AttackGraph        // live attack-graph / coverage map (§9)
+	identities map[string]Identity // named auth sessions for IDOR/BOLA (§6.5 #2)
+	identOrder []string            // identity insertion order, for stable listing
 
 	mu       sync.Mutex
 	findings []Candidate
@@ -124,6 +139,29 @@ func (t *Toolbox) Budget() *Budget { return t.budget }
 // SetSource wires grey-box source access into the toolbox (composition root).
 func (t *Toolbox) SetSource(s SourceReader) { t.source = s }
 
+// SetIdentities registers the named auth sessions the agent may probe as.
+func (t *Toolbox) SetIdentities(ids []Identity) {
+	t.identities = make(map[string]Identity, len(ids))
+	t.identOrder = t.identOrder[:0]
+	for _, id := range ids {
+		if id.Name == "" || len(id.Headers) == 0 {
+			continue
+		}
+		if _, dup := t.identities[id.Name]; !dup {
+			t.identOrder = append(t.identOrder, id.Name)
+		}
+		t.identities[id.Name] = id
+	}
+}
+
+// IdentityNames returns the registered identity names, in supply order, for the
+// run context handed to the agent.
+func (t *Toolbox) IdentityNames() []string {
+	out := make([]string, len(t.identOrder))
+	copy(out, t.identOrder)
+	return out
+}
+
 // ReadSource is the grey-box tool (§6.6): read the target's own source to form
 // grounded hypotheses. No target traffic — it costs the token budget (the
 // returned context), never the request budget, so it doesn't touch Budget's
@@ -149,6 +187,16 @@ func (t *Toolbox) HTTPProbe(ctx context.Context, req ProbeRequest) (*ProbeResult
 	if err := t.env.ValidateProbe(req.Method, req.URL, len(req.Body)); err != nil {
 		return nil, err
 	}
+	// Resolve the requested identity (for IDOR/BOLA testing) before spending
+	// budget, so an unknown identity is a cheap, adaptable tool error.
+	var identityHeaders map[string]string
+	if req.Identity != "" {
+		id, ok := t.identities[req.Identity]
+		if !ok {
+			return nil, fmt.Errorf("unknown identity %q; available: %s", req.Identity, strings.Join(t.IdentityNames(), ", "))
+		}
+		identityHeaders = id.Headers
+	}
 	if err := t.budget.CountRequest(); err != nil {
 		return nil, err
 	}
@@ -163,6 +211,11 @@ func (t *Toolbox) HTTPProbe(ctx context.Context, req ProbeRequest) (*ProbeResult
 		return nil, err
 	}
 	httpReq.Header.Set("User-Agent", probeUserAgent)
+	// Identity auth first (the base session), then the agent's explicit headers
+	// so a deliberate per-probe header can still override.
+	for k, v := range identityHeaders {
+		httpReq.Header.Set(k, v)
+	}
 	for k, v := range req.Headers {
 		httpReq.Header.Set(k, v)
 	}

@@ -267,11 +267,19 @@ async fn start_dast(app: AppHandle, url: String) -> Result<ScanReturn, String> {
     Ok(ScanReturn { url: report_url, cache_path })
 }
 
+/// A named auth session supplied for authorization (IDOR/BOLA) testing.
+#[derive(serde::Deserialize)]
+struct PtIdentity {
+    name: String,
+    header: String,
+}
+
 /// Run the adaptive AI agent pen-tester against a live URL (agentic DAST).
 /// Starts the embedded UI early and streams the run to it; the report loads the
 /// live "Penetration Testing" view. Consent (for non-local targets) is enforced
 /// by the sidecar and surfaced as an "__consent__ <domain>" error.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn start_agentic_dast(
     app: AppHandle,
     url: String,
@@ -280,6 +288,7 @@ async fn start_agentic_dast(
     accept_side_effects: bool,
     grey_box: bool,
     focus: String,
+    identities: Vec<PtIdentity>,
 ) -> Result<ScanReturn, String> {
     kill_old_scans(&app);
     let _ = app.emit(
@@ -300,6 +309,14 @@ async fn start_agentic_dast(
     if !focus.is_empty() {
         args.push("--focus".into());
         args.push(focus);
+    }
+    for id in &identities {
+        let name = id.name.trim();
+        let header = id.header.trim();
+        if !name.is_empty() && !header.is_empty() {
+            args.push("--identity".into());
+            args.push(format!("{name}={header}"));
+        }
     }
 
     let (rx, child) = app

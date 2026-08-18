@@ -505,6 +505,7 @@ export default function App() {
   const [agAck, setAgAck]                 = useState(false);
   const [agGreyBox, setAgGreyBox]         = useState(false);
   const [agFocus, setAgFocus]             = useState<"" | "api" | "web" | "llm">("");
+  const [agIdentities, setAgIdentities]   = useState<{ name: string; header: string }[]>([]);
   const [dastFindings, setDastFindings]   = useState<any[]>([]);
   const [pentestReport, setPentestReport] = useState<PentestReport | null>(null);
   const [pentestReportRunning, setPentestReportRunning] = useState(false);
@@ -1034,6 +1035,7 @@ export default function App() {
       acceptSideEffects: agAck,
       greyBox: agGreyBox,
       focus: agFocus,
+      identities: agIdentities.filter((i) => i.name.trim() && i.header.trim()),
     })
       .then(async ({ url: rUrl, cachePath }) => {
         updateToastDone(id, rUrl, cachePath);
@@ -1842,6 +1844,33 @@ export default function App() {
                           </div>
                         </div>
                       </div>
+                    </div>
+
+                    {/* Identities — for authorization (IDOR/BOLA) testing */}
+                    <div className="pt-idhead">
+                      <span className="scanner-grid-label" style={{ margin: 0 }}>IDENTITIES</span>
+                      <span className="pt-info" data-tip="Supply two or more logged-in sessions (name + an auth header like 'Authorization: Bearer ...'). The agent requests the same resource as each and compares, to catch broken object-level authorization.">i</span>
+                    </div>
+                    <div className="pt-card">
+                      {agIdentities.length === 0 && (
+                        <p className="pt-idhint">Add two or more sessions to test whether one user can reach another's data.</p>
+                      )}
+                      {agIdentities.map((id, i) => (
+                        <div className="pt-id-row" key={i}>
+                          <input
+                            className="pt-id-name" placeholder="name" value={id.name} disabled={isScanning}
+                            onChange={(e) => setAgIdentities((rows) => rows.map((r, j) => j === i ? { ...r, name: e.target.value } : r))}
+                          />
+                          <input
+                            className="pt-id-header" placeholder="Authorization: Bearer ..." value={id.header} disabled={isScanning}
+                            onChange={(e) => setAgIdentities((rows) => rows.map((r, j) => j === i ? { ...r, header: e.target.value } : r))}
+                          />
+                          <button type="button" className="pt-id-rm" aria-label="Remove identity" disabled={isScanning}
+                            onClick={() => setAgIdentities((rows) => rows.filter((_, j) => j !== i))}>×</button>
+                        </div>
+                      ))}
+                      <button type="button" className="pt-add" disabled={isScanning}
+                        onClick={() => setAgIdentities((rows) => [...rows, { name: "", header: "" }])}>+ Add identity</button>
                     </div>
                   </>
                 )}
