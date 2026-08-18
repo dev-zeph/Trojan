@@ -506,6 +506,7 @@ export default function App() {
   const [agGreyBox, setAgGreyBox]         = useState(false);
   const [agFocus, setAgFocus]             = useState<"" | "api" | "web" | "llm">("");
   const [agIdentities, setAgIdentities]   = useState<{ name: string; header: string }[]>([]);
+  const [agApiSpec, setAgApiSpec]         = useState("");
   const [dastFindings, setDastFindings]   = useState<any[]>([]);
   const [pentestReport, setPentestReport] = useState<PentestReport | null>(null);
   const [pentestReportRunning, setPentestReportRunning] = useState(false);
@@ -1036,6 +1037,7 @@ export default function App() {
       greyBox: agGreyBox,
       focus: agFocus,
       identities: agIdentities.filter((i) => i.name.trim() && i.header.trim()),
+      apiSpec: agApiSpec.trim(),
     })
       .then(async ({ url: rUrl, cachePath }) => {
         updateToastDone(id, rUrl, cachePath);
@@ -1871,6 +1873,21 @@ export default function App() {
                       ))}
                       <button type="button" className="pt-add" disabled={isScanning}
                         onClick={() => setAgIdentities((rows) => [...rows, { name: "", header: "" }])}>+ Add identity</button>
+                    </div>
+
+                    {/* API spec — expand the surface beyond what the crawler links (§6.5 #4) */}
+                    <div className="pt-idhead">
+                      <span className="scanner-grid-label" style={{ margin: 0 }}>API SPEC</span>
+                      <span className="pt-info" data-tip="Point to an OpenAPI/Swagger file (path) or URL to test endpoints the crawler can't reach by following links — including unlinked admin/versioned routes and the params each takes. Leave blank to auto-probe common spec URLs on the target.">i</span>
+                    </div>
+                    <div className="pt-card">
+                      <input
+                        className="pt-id-header" style={{ width: "100%" }}
+                        placeholder="path/to/openapi.yaml or https://target/openapi.json (optional)"
+                        value={agApiSpec} disabled={isScanning}
+                        onChange={(e) => setAgApiSpec(e.target.value)}
+                      />
+                      <p className="pt-idhint">Optional. Blank = auto-probe /openapi.json, /swagger.json, /v3/api-docs on the target.</p>
                     </div>
                   </>
                 )}

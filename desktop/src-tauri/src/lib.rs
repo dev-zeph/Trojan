@@ -289,6 +289,7 @@ async fn start_agentic_dast(
     grey_box: bool,
     focus: String,
     identities: Vec<PtIdentity>,
+    api_spec: String,
 ) -> Result<ScanReturn, String> {
     kill_old_scans(&app);
     let _ = app.emit(
@@ -317,6 +318,10 @@ async fn start_agentic_dast(
             args.push("--identity".into());
             args.push(format!("{name}={header}"));
         }
+    }
+    if !api_spec.trim().is_empty() {
+        args.push("--api-spec".into());
+        args.push(api_spec.trim().into());
     }
 
     let (rx, child) = app
