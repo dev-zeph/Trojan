@@ -110,15 +110,15 @@ type RunResult struct {
 // StopTokenBudget is the reason surfaced when the cumulative token ceiling trips.
 const StopTokenBudget StopReason = "token budget reached"
 
-// DefaultMaxRunTokens is the shipping default for RunOptions.MaxRunTokens — a
-// hard cumulative-token ceiling so a run's cost is always bounded, not just its
-// step/request/time budget. It's a safety net, deliberately set well above a
-// normal run: small/medium runs land around 150k–400k tokens and even a large
-// legitimate target is ~1M, so this only trips a pathological blow-up. Total()
-// counts cache-read tokens at face value (they bill at ~0.1x), so the real-dollar
-// ceiling is lower than the raw number implies — i.e. this errs toward finishing.
-// Pass --max-run-tokens 0 to disable; retune once per-run telemetry is in hand.
-const DefaultMaxRunTokens = 1_500_000
+// DefaultMaxRunTokens disables the per-run cumulative-token ceiling by default
+// (0 = off). We removed the hard cap because it was cutting runs off mid-proof —
+// e.g. right as a grey-box → credential → auth-bypass chain was being recorded —
+// and because token *usage* is moving to the metered, token-based pricing model,
+// where the user pays for what a run consumes rather than the run being killed at
+// an arbitrary ceiling. The run is still bounded by the real safety caps in
+// Limits (steps, requests, wall-clock), so this is not unbounded. The mechanism
+// is retained: pass --max-run-tokens <n> to re-impose a ceiling for a given run.
+const DefaultMaxRunTokens = 0
 
 // Run drives the agent loop against a prepared Toolbox and Transport.
 func Run(ctx context.Context, tb *Toolbox, tr Transport, opts RunOptions) (*RunResult, error) {
