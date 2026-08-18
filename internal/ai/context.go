@@ -3,6 +3,8 @@ package ai
 import (
 	"bufio"
 	"encoding/json"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
@@ -83,6 +85,189 @@ func ExtractSurroundingCode(filePath string, line, radius int) string {
 	}
 
 	return strings.Join(lines[start:end+1], "\n")
+}
+
+// enclosingFallbackRadius is the line window used when the enclosing block can't
+// be resolved (parse error, unsupported language, block too large).
+const enclosingFallbackRadius = 15
+
+// maxEnclosingLines caps how much enclosing context is returned so a large
+// function doesn't blow the triage token budget; beyond it we fall back to a
+// tight radius window centered on the finding.
+const maxEnclosingLines = 120
+
+// ExtractEnclosingContext returns the source of the function/block enclosing the
+// given line — richer than a fixed radius, so triage sees the guard clauses and
+// sanitizers a taint finding depends on (A4 / dictionary §3.2 Layer 1). It is
+// CGO-free: Go uses go/parser; C-family languages use brace matching; Python and
+// Ruby use indentation. Any failure (parse error, unsupported language, oversized
+// block) degrades gracefully to a radius window, so the result is never worse
+// than ExtractSurroundingCode.
+func ExtractEnclosingContext(filePath string, line int) string {
+	if line <= 0 || filePath == "" {
+		return ""
+	}
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(string(data), "\n")
+	if len(lines) == 0 {
+		return ""
+	}
+
+	fallback := func() string {
+		return ExtractSurroundingCode(filePath, line, enclosingFallbackRadius)
+	}
+
+	var start, end int // 1-indexed, inclusive
+	var ok bool
+	switch DetectLanguage(filePath) {
+	case "go":
+		start, end, ok = goEnclosingFunc(data, line)
+	case "python", "ruby":
+		start, end, ok = indentEnclosingBlock(lines, line)
+	case "javascript", "typescript", "java", "c", "cpp", "csharp", "php", "rust":
+		start, end, ok = braceEnclosingBlock(lines, line)
+	}
+	if !ok || start < 1 || end > len(lines) || end < start {
+		return fallback()
+	}
+	if end-start+1 > maxEnclosingLines {
+		return fallback()
+	}
+	return strings.Join(lines[start-1:end], "\n")
+}
+
+// goEnclosingFunc parses Go source and returns the 1-indexed line span of the
+// function declaration containing line. ok is false on a parse error (common for
+// partial/broken files) so the caller can fall back.
+func goEnclosingFunc(src []byte, line int) (start, end int, ok bool) {
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "", src, parser.SkipObjectResolution)
+	if err != nil || file == nil {
+		return 0, 0, false
+	}
+	for _, d := range file.Decls {
+		fn, isFn := d.(interface{ Pos() token.Pos })
+		if !isFn {
+			continue
+		}
+		s := fset.Position(fn.Pos()).Line
+		e := fset.Position(d.End()).Line
+		if line >= s && line <= e {
+			return s, e, true // top-level decls don't nest
+		}
+	}
+	return 0, 0, false
+}
+
+// braceEnclosingBlock finds the {...} block enclosing line (1-indexed) by walking
+// outward and matching brace depth. Returns the span from the line bearing the
+// opening brace (usually the signature) through its matching close.
+func braceEnclosingBlock(lines []string, line int) (start, end int, ok bool) {
+	idx := line - 1 // 0-indexed target
+	if idx < 0 || idx >= len(lines) {
+		return 0, 0, false
+	}
+
+	// Walk up until brace depth goes negative — that line holds the opening
+	// brace of the enclosing block.
+	depth := 0
+	openLine := -1
+	for i := idx; i >= 0; i-- {
+		for _, r := range lines[i] {
+			switch r {
+			case '}':
+				depth++
+			case '{':
+				depth--
+			}
+		}
+		if depth < 0 {
+			openLine = i
+			break
+		}
+	}
+	if openLine < 0 {
+		return 0, 0, false
+	}
+
+	// Walk down from the opening brace to its matching close.
+	depth = 0
+	closeLine := -1
+	for i := openLine; i < len(lines); i++ {
+		for _, r := range lines[i] {
+			switch r {
+			case '{':
+				depth++
+			case '}':
+				depth--
+			}
+		}
+		if depth <= 0 && i >= idx {
+			closeLine = i
+			break
+		}
+	}
+	if closeLine < 0 {
+		return 0, 0, false
+	}
+	return openLine + 1, closeLine + 1, true
+}
+
+// indentEnclosingBlock finds the enclosing block for indentation-scoped languages
+// (Python, Ruby): the nearest less-indented header line above the target, down to
+// where indentation returns to that header's level.
+func indentEnclosingBlock(lines []string, line int) (start, end int, ok bool) {
+	idx := line - 1
+	if idx < 0 || idx >= len(lines) {
+		return 0, 0, false
+	}
+	targetIndent := indentWidth(lines[idx])
+
+	// Find the header: nearest non-blank line above with smaller indentation.
+	header := -1
+	for i := idx - 1; i >= 0; i-- {
+		if strings.TrimSpace(lines[i]) == "" {
+			continue
+		}
+		if indentWidth(lines[i]) < targetIndent {
+			header = i
+			break
+		}
+	}
+	if header < 0 {
+		return 0, 0, false
+	}
+	headerIndent := indentWidth(lines[header])
+
+	// Block ends at the next non-blank line indented at or below the header.
+	last := len(lines) - 1
+	for i := idx + 1; i < len(lines); i++ {
+		if strings.TrimSpace(lines[i]) == "" {
+			continue
+		}
+		if indentWidth(lines[i]) <= headerIndent {
+			last = i - 1
+			break
+		}
+	}
+	return header + 1, last + 1, true
+}
+
+// indentWidth counts leading whitespace, treating a tab as one column (sufficient
+// for relative-indent comparisons within a single file).
+func indentWidth(s string) int {
+	n := 0
+	for _, r := range s {
+		if r == ' ' || r == '\t' {
+			n++
+		} else {
+			break
+		}
+	}
+	return n
 }
 
 // DetectFramework inspects the project's dependency files and returns the

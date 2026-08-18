@@ -107,6 +107,7 @@ func scanCmd() *cobra.Command {
 				}
 
 				findings := scanners.RunAll(path, relevant, nil)
+				findings, _ = normalizer.Reduce(findings)
 
 				var blocking []normalizer.Finding
 				for _, f := range findings {
@@ -199,6 +200,15 @@ func scanCmd() *cobra.Command {
 					}
 				})
 
+				// Deterministic noise reduction (A1 dedup + A3 path filter) —
+				// the free floor beneath AI triage: drop non-shipping code and
+				// collapse cross-scanner duplicates before anything else runs.
+				findings, reduceStats := normalizer.Reduce(findings)
+				if reduceStats.Any() {
+					fmt.Printf("  → Filtered %d non-shipping, merged %d duplicate finding(s)\n",
+						reduceStats.DroppedNonShipping, reduceStats.MergedDuplicates)
+				}
+
 				// Extract the dependency package list from Trivy (populated during Run()).
 				var pkgs []normalizer.Package
 				for _, s := range relevant {
@@ -247,7 +257,7 @@ func scanCmd() *cobra.Command {
 					projectType := ai.DetectProjectTypeName(path)
 					for i := range findings {
 						findings[i].Language = ai.DetectLanguage(findings[i].FilePath)
-						findings[i].SurroundingCode = ai.ExtractSurroundingCode(findings[i].FilePath, findings[i].LineNumber, 15)
+						findings[i].SurroundingCode = ai.ExtractEnclosingContext(findings[i].FilePath, findings[i].LineNumber)
 						findings[i].Framework = framework
 						findings[i].ProjectType = projectType
 					}
@@ -1614,6 +1624,12 @@ Exits 1 if findings at or above --severity threshold are detected.`,
 
 			// Run all scanners in parallel — no spinners, no UI.
 			findings := scanners.RunAll(path, relevant, nil)
+			findings, reduceStats := normalizer.Reduce(findings)
+			if reduceStats.Any() {
+				fmt.Fprintf(os.Stderr,
+					"Filtered %d non-shipping finding(s), merged %d cross-scanner duplicate(s)\n",
+					reduceStats.DroppedNonShipping, reduceStats.MergedDuplicates)
+			}
 
 			// Tally by severity.
 			counts := map[normalizer.Severity]int{}

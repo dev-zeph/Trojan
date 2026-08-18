@@ -26,6 +26,13 @@ type Finding struct {
 	ID          string   // Unique ID for this finding
 	Scanner     string   // Which scanner found it (semgrep, trivy, gitleaks, etc.)
 	Category    string   // Type of issue (sast, sca, secrets, iac)
+
+	// AgreedScanners lists every scanner that independently reported this
+	// finding after cross-scanner dedup (see internal/normalizer/dedup.go).
+	// Always includes Scanner. len > 1 means multiple engines corroborated
+	// the same issue — a positive confidence signal fed into triage (A2).
+	AgreedScanners []string `json:"agreed_scanners,omitempty"`
+
 	Severity    Severity // critical, high, medium, low, info
 	Title       string   // Short human-readable title
 	RawMessage  string   // Original message from the scanner
