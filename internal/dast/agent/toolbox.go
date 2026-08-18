@@ -10,7 +10,16 @@ import (
 	"time"
 
 	"github.com/dev-zeph/trojan/internal/dast"
+	"github.com/dev-zeph/trojan/internal/greybox"
 )
+
+// SourceReader gives the agent read access to the target's own source — the
+// grey-box flagship (§6.6). Implemented by *greybox.Source and wired in by the
+// composition root; nil means no source is available and read_source degrades to
+// a note (black-box fallback).
+type SourceReader interface {
+	ReadSource(req greybox.ReadSourceRequest) (greybox.ReadSourceResult, error)
+}
 
 const probeUserAgent = "Trojan-DAST/1.0 (security scanner — authorized use only)"
 
@@ -63,6 +72,7 @@ type Toolbox struct {
 	crawl   dast.CrawlResult
 	client  *http.Client
 	maxResp int64
+	source  SourceReader // grey-box source access; nil = black-box only
 
 	mu       sync.Mutex
 	findings []Candidate
@@ -99,6 +109,22 @@ func NewToolbox(env *Envelope, budget *Budget, limits Limits, crawl dast.CrawlRe
 
 // Budget exposes the run budget so the loop can BeginStep / read Stats.
 func (t *Toolbox) Budget() *Budget { return t.budget }
+
+// SetSource wires grey-box source access into the toolbox (composition root).
+func (t *Toolbox) SetSource(s SourceReader) { t.source = s }
+
+// ReadSource is the grey-box tool (§6.6): read the target's own source to form
+// grounded hypotheses. No target traffic — it costs the token budget (the
+// returned context), never the request budget, so it doesn't touch Budget's
+// request cap. Degrades to an explanatory note when no source is available.
+func (t *Toolbox) ReadSource(req greybox.ReadSourceRequest) (greybox.ReadSourceResult, error) {
+	if t.source == nil {
+		return greybox.ReadSourceResult{
+			Note: "grey-box unavailable: no source indexed for this target — reason from the live responses (black-box).",
+		}, nil
+	}
+	return t.source.ReadSource(req)
+}
 
 // GetCrawlMap returns the discovered endpoints/params/tech. Read-only, no
 // network, no budget cost.

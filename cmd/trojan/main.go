@@ -26,10 +26,12 @@ import (
 	"github.com/dev-zeph/trojan/internal/config"
 	"github.com/dev-zeph/trojan/internal/dast"
 	"github.com/dev-zeph/trojan/internal/dast/agent"
+	"github.com/dev-zeph/trojan/internal/greybox"
 	"github.com/dev-zeph/trojan/internal/hook"
 	"github.com/dev-zeph/trojan/internal/mcpserver"
 	"github.com/dev-zeph/trojan/internal/normalizer"
 	"github.com/dev-zeph/trojan/internal/rag"
+	"github.com/dev-zeph/trojan/internal/routes"
 	"github.com/dev-zeph/trojan/internal/scanners"
 	"github.com/dev-zeph/trojan/internal/server"
 	"github.com/dev-zeph/trojan/internal/ui"
@@ -429,6 +431,7 @@ func dastCmd() *cobra.Command {
 	var tierStr, envStr string
 	var acceptSideEffects bool
 	var maxRunTokens int
+	var greyBox bool
 
 	cmd := &cobra.Command{
 		Use:   "dast <url>",
@@ -519,6 +522,7 @@ func dastCmd() *cobra.Command {
 					env:               envv,
 					acceptSideEffects: acceptSideEffects,
 					maxRunTokens:      maxRunTokens,
+					greyBox:           greyBox,
 					desktop:           desktop,
 					crawlDepth:        crawlDepth,
 					crawlTimeout:      crawlTimeout,
@@ -771,6 +775,7 @@ func dastCmd() *cobra.Command {
 	cmd.Flags().StringVar(&envStr, "env", "production", "Agentic target environment: production | staging")
 	cmd.Flags().BoolVar(&acceptSideEffects, "accept-side-effects", false, "Acknowledge possible side effects (required for safe-active POST on production)")
 	cmd.Flags().IntVar(&maxRunTokens, "max-run-tokens", agent.DefaultMaxRunTokens, "Cumulative token ceiling for the agentic run (0 = rely only on step/request/time caps)")
+	cmd.Flags().BoolVar(&greyBox, "grey-box", false, "Let the agent read this project's source (run from the source dir) to form grounded hypotheses. Handler snippets are sent to the AI. Run `trojan index` first to also enable semantic source search.")
 	cmd.AddCommand(dastVerifyCmd())
 	return cmd
 }
@@ -906,6 +911,7 @@ type agenticParams struct {
 	env               agent.Environment
 	acceptSideEffects bool
 	maxRunTokens      int
+	greyBox           bool
 	desktop           bool
 	crawlDepth        int
 	crawlTimeout      int
@@ -980,6 +986,22 @@ func runAgenticDast(p agenticParams) {
 		browser.OpenURL(reportURL)
 	}
 
+	// Grey-box (§6.6): if opted in, let the agent read this project's source.
+	// Runs from the current directory — the source repo of the target under test.
+	task := buildAgenticTask(p.targetURL, p.tier, p.env, crawlResult, baseline)
+	var source agent.SourceReader
+	if p.greyBox {
+		if gb := buildGreyBox(".", p.accessToken); gb != nil {
+			source = gb
+			if table := gb.EndpointTable(); len(table) > 0 {
+				fmt.Printf("  → Grey-box: mapped %d endpoint(s) to source handlers\n\n", len(table))
+				task += "\n\nENDPOINT → HANDLER MAP (grey-box; [no-guard] = no auth middleware detected — prioritize these):\n" + strings.Join(table, "\n")
+			}
+		} else {
+			color.Yellow("  Grey-box requested but no recognizable source found in the current directory — running black-box.\n\n")
+		}
+	}
+
 	// Drive the loop, streaming every action to the UI and the terminal.
 	srv.BroadcastAgentEvent(server.AgentEvent{Type: "run", Status: "running"})
 	res, rerr := agent.RunAgentic(context.Background(), agent.Config{
@@ -990,7 +1012,8 @@ func runAgenticDast(p agenticParams) {
 		Env:               p.env,
 		AcceptSideEffects: p.acceptSideEffects,
 		MaxRunTokens:      p.maxRunTokens,
-		Task:              buildAgenticTask(p.targetURL, p.tier, p.env, crawlResult, baseline),
+		Task:              task,
+		Source:            source,
 		OnEvent: func(e agent.Event) {
 			srv.BroadcastAgentEvent(server.AgentEvent{Type: string(e.Type), Step: e.Step, Tool: e.Tool, Detail: e.Detail})
 			printAgentEvent(e)
@@ -1498,6 +1521,20 @@ func loadRetriever(projectPath, accessToken string) ai.ContextRetriever {
 		return nil
 	}
 	return ragRetriever{r}
+}
+
+// buildGreyBox assembles the §6.6 grey-box source reader for a project: the route
+// resolver (endpoint/symbol modes, local) plus the code-index retriever (query
+// mode, needs `trojan index`). Returns nil when neither is available, so the
+// agent stays black-box. Returns the concrete type (not the interface) so the
+// caller can also read its endpoint↔handler table for the push context.
+func buildGreyBox(projectPath, accessToken string) *greybox.Source {
+	resolver := routes.NewResolver(projectPath)
+	retriever := loadRetriever(projectPath, accessToken)
+	if len(resolver.Routes()) == 0 && retriever == nil {
+		return nil // nothing to offer — no recognized routes, no index
+	}
+	return greybox.New(projectPath, resolver, retriever)
 }
 
 func proCmd() *cobra.Command {

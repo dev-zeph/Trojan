@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/dev-zeph/trojan/internal/dast"
+	"github.com/dev-zeph/trojan/internal/greybox"
 )
 
 // The agent loop (docs/agentic-dast.md §3.2). The loop lives here, in the Go
@@ -21,6 +22,7 @@ const (
 	toolGetCrawlMap = "get_crawl_map"
 	toolHTTPProbe   = "http_probe"
 	toolNoteFinding = "note_finding"
+	toolReadSource  = "read_source"
 	toolFinish      = "finish"
 )
 
@@ -191,6 +193,18 @@ func executeTool(ctx context.Context, tb *Toolbox, b blockPeek, step int, emit f
 		emit(Event{Type: EventFinding, Step: step, Detail: c.Title})
 		return `{"ok":true}`, false, false
 
+	case toolReadSource:
+		var rs greybox.ReadSourceRequest
+		if err := json.Unmarshal(b.Input, &rs); err != nil {
+			return fmt.Sprintf("invalid read_source input: %v", err), true, false
+		}
+		res, err := tb.ReadSource(rs)
+		if err != nil {
+			return err.Error(), true, false
+		}
+		emit(Event{Type: EventToolResult, Step: step, Tool: toolReadSource, Detail: readSourceDetail(rs, res)})
+		return marshalResult(res), false, false
+
 	case toolFinish:
 		var f struct {
 			Summary string `json:"summary"`
@@ -202,6 +216,29 @@ func executeTool(ctx context.Context, tb *Toolbox, b blockPeek, step int, emit f
 	default:
 		return fmt.Sprintf("unknown tool %q", b.Name), true, false
 	}
+}
+
+// readSourceDetail renders a compact one-line summary of a read_source result
+// for the progress stream.
+func readSourceDetail(req greybox.ReadSourceRequest, res greybox.ReadSourceResult) string {
+	var mode string
+	switch {
+	case req.Endpoint != nil:
+		mode = req.Endpoint.Method + " " + req.Endpoint.Path
+	case req.Symbol != "":
+		mode = "symbol " + req.Symbol
+	case req.Query != "":
+		mode = "query " + req.Query
+	}
+	if res.Note != "" && len(res.Chunks) == 0 {
+		return mode + " — " + res.Note
+	}
+	detail := fmt.Sprintf("%s — %d chunk(s)", mode, len(res.Chunks))
+	if res.Summary != nil {
+		detail += fmt.Sprintf(" [auth=%v raw_query=%v reflects=%v]",
+			res.Summary.HasAuthCheck, res.Summary.RawQuery, res.Summary.ReflectsInput)
+	}
+	return detail
 }
 
 func marshalResult(v any) string {
@@ -242,6 +279,8 @@ type Config struct {
 	MaxRunTokens      int
 	Task              string
 	OnEvent           func(Event)
+	// Source enables the grey-box read_source tool (§6.6). Nil = black-box only.
+	Source SourceReader
 }
 
 // RunAgentic wires a safety envelope, budget, toolbox, and edge transport from
@@ -266,6 +305,9 @@ func RunAgentic(ctx context.Context, cfg Config) (*RunResult, error) {
 	}
 	budget := NewBudget(limits, nil)
 	tb := NewToolbox(env, budget, limits, cfg.Crawl)
+	if cfg.Source != nil {
+		tb.SetSource(cfg.Source)
+	}
 	tr := NewEdgeTransport(cfg.AccessToken)
 
 	return Run(ctx, tb, tr, RunOptions{
