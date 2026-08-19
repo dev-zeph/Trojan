@@ -67,12 +67,6 @@ export function McpConnect({ editors, mcpStatus, onConnect, busy }: Props) {
       {/* ── Live connection diagram ── */}
       <div className="mcp-diagram-wrap">
         <svg className="mcp-diagram" viewBox="0 0 640 300" role="img" aria-label="Editor to Trojan MCP connections">
-          <defs>
-            <clipPath id="mcp-hub-clip">
-              <rect x={HUB.x - 40} y={HUB.y - 40} width="80" height="80" rx="20" />
-            </clipPath>
-          </defs>
-
           {/* wires (behind nodes) */}
           {editors.slice(0, 3).map((e, i) => {
             const cy = NODE_CY[i];
@@ -114,10 +108,10 @@ export function McpConnect({ editors, mcpStatus, onConnect, busy }: Props) {
             );
           })}
 
-          {/* Trojan hub — the actual Trojan logo, zoomed into the tile */}
+          {/* Trojan hub — the actual Trojan logo (grey background stripped) */}
           <g className="mcp-hub">
             <rect x={HUB.x - 40} y={HUB.y - 40} width="80" height="80" rx="20" className="mcp-hub-bg" />
-            <image href="/logo.png" x={HUB.x - 60} y={HUB.y - 56} width="120" height="120" clipPath="url(#mcp-hub-clip)" preserveAspectRatio="xMidYMid meet" />
+            <image href="/logo-mark.png" x={HUB.x - 33} y={HUB.y - 24} width="66" height="48" preserveAspectRatio="xMidYMid meet" />
             <rect x={HUB.x - 40} y={HUB.y - 40} width="80" height="80" rx="20" className="mcp-hub-border" />
             <text x={HUB.x} y={HUB.y + 62} className="mcp-hub-label">Trojan</text>
             <text x={HUB.x} y={HUB.y + 78} className="mcp-hub-sub">MCP server</text>

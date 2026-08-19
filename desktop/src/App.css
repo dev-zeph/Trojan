@@ -1622,7 +1622,7 @@ html, body, #root { height: 100%; overflow: hidden; background: var(--bg); color
 .mcp-node-dot { stroke: #fff; stroke-width: 1.5; }
 .mcp-dot-ok { fill: #3fb950; } .mcp-dot-pending { fill: #e0a93b; } .mcp-dot-off { fill: #c2c2c8; }
 /* hub */
-.mcp-hub-bg { fill: #3a3a40; }
+.mcp-hub-bg { fill: #fff; }
 .mcp-hub-border { fill: none; stroke: var(--border); stroke-width: 1.5; }
 .mcp-hub-label { fill: var(--fg); font: 700 13px 'Inter', system-ui, sans-serif; text-anchor: middle; }
 .mcp-hub-sub { fill: var(--muted-fg); font: 10px 'Fira Code', monospace; text-anchor: middle; letter-spacing: .06em; }
