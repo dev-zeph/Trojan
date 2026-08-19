@@ -167,9 +167,9 @@ export function AttackMarket({ getToken, selectedSlug, onUseTemplate }: Props) {
 
   return (
     <div className="am-wrap">
-      <div className="am-head">
-        <h1 className="am-title">Attack Market</h1>
-        <p className="am-sub">Curated playbooks drawn from real breaches. Pick one and the agent replays the pattern against your app, within your rules of engagement.</p>
+      <div className="view-header">
+        <h2 className="view-title">Attack Market</h2>
+        <p className="view-desc">Curated playbooks drawn from real breaches. Pick one and the agent replays the pattern against your app, within your rules of engagement.</p>
       </div>
 
       <div className="am-controls">

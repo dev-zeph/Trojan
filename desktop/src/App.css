@@ -1508,10 +1508,8 @@ html, body, #root { height: 100%; overflow: hidden; background: var(--bg); color
 /* ── Attack Market (VS Code Marketplace layout) ── */
 .am-state { padding: 40px 0; text-align: center; color: var(--muted-fg); font-size: 14px; }
 .am-state--error { color: var(--red); }
-.am-head { margin-bottom: 18px; }
-.am-title { font-size: 22px; font-weight: 700; letter-spacing: -.01em; margin: 0 0 6px; }
-.am-sub { font-size: 13px; color: var(--muted-fg); max-width: 62ch; margin: 0; line-height: 1.5; }
-.am-controls { display: flex; flex-direction: column; gap: 10px; margin-bottom: 18px; }
+.am-wrap { display: flex; flex-direction: column; gap: 22px; }
+.am-controls { display: flex; flex-direction: column; gap: 10px; }
 .am-search { width: 100%; max-width: 340px; padding: 8px 12px; font-size: 13px; color: var(--fg);
   background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); }
 .am-chips { display: flex; flex-wrap: wrap; gap: 6px; }

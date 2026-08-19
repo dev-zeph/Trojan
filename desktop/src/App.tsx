@@ -1727,11 +1727,13 @@ export default function App() {
 
           {/* ── DAST ── */}
           {view === "market" && (
-            <AttackMarket
-              getToken={async () => (await getFreshToken()) ?? ""}
-              selectedSlug={agTemplate?.slug}
-              onUseTemplate={(t) => { setAgTemplate(t); setView("dast"); }}
-            />
+            <div className="content-inner">
+              <AttackMarket
+                getToken={async () => (await getFreshToken()) ?? ""}
+                selectedSlug={agTemplate?.slug}
+                onUseTemplate={(t) => { setAgTemplate(t); setView("dast"); }}
+              />
+            </div>
           )}
 
           {view === "dast" && (() => {
