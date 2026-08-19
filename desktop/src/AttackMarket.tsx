@@ -16,7 +16,6 @@ export interface AttackTemplate {
   min_tier: "passive" | "safe-active" | "aggressive";
   breach_story: string;
   prompt_body: string;
-  use_count: number;
   star_count: number;
   starred?: boolean;
 }
@@ -86,15 +85,6 @@ function Rating({ count }: { count: number }) {
   return (
     <span className="am-rating" title={`${count} star${count === 1 ? "" : "s"}`}>
       <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01z" /></svg>
-      {count}
-    </span>
-  );
-}
-
-function UseCount({ count }: { count: number }) {
-  return (
-    <span className="am-dl" title={`${count} runs`}>
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4 M7 10l5 5 5-5 M12 15V3" /></svg>
       {count}
     </span>
   );
@@ -240,7 +230,6 @@ export function AttackMarket({ getToken, selectedSlug, onUseTemplate }: Props) {
                 <div className="am-publisher am-publisher--sm">Trojan<VerifiedCheck /></div>
                 <p className="am-card-story">{tagline(t)}</p>
                 <div className="am-card-meta">
-                  <UseCount count={t.use_count} />
                   <Rating count={t.star_count} />
                   <span className="am-tech am-tech--tier">{t.min_tier}</span>
                 </div>
@@ -268,8 +257,6 @@ function AttackDetail({ t, isSelected, onBack, onStar, onUse }: { t: AttackTempl
           <div className="am-publisher">
             <span className="am-pubname">Trojan<VerifiedCheck /></span>
             <a className="am-publink" href="https://trojancli.com" target="_blank" rel="noreferrer">trojancli.com</a>
-            <span className="am-sep">|</span>
-            <UseCount count={t.use_count} />
             <span className="am-sep">|</span>
             <Rating count={t.star_count} />
           </div>
@@ -306,7 +293,6 @@ function AttackDetail({ t, isSelected, onBack, onStar, onUse }: { t: AttackTempl
             <Row label="Techniques"><TechBadges list={t.technique} /></Row>
             <Row label="Best at tier"><span className="am-mono">{t.min_tier}</span></Row>
             <Row label="Community stars"><span className="am-mono">{t.star_count}</span></Row>
-            <Row label="Times run"><span className="am-mono">{t.use_count}</span></Row>
             <Row label="Template id"><span className="am-mono am-mono--wrap">{t.slug}</span></Row>
           </div>
           <div className="am-panel">
