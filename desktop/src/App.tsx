@@ -11,6 +11,7 @@ import { PrintPenTestReport } from "./PrintPenTestReport";
 import type { PentestReport } from "./PrintPenTestReport";
 import { AttackMarket, prefetchAttackMarket } from "./AttackMarket";
 import type { AttackTemplate } from "./AttackMarket";
+import { McpConnect } from "./McpConnect";
 import "./App.css";
 
 type NavView  = "overview" | "sast" | "dast" | "market" | "dependencies" | "threatlab" | "licenses" | "privacy" | "compliancelab" | "history" | "autofix" | "profile" | "report";
@@ -2899,7 +2900,6 @@ export default function App() {
               { key: "codex_cli",   label: "Codex CLI",   logo: "/openai-logo.webp", desc: "OpenAI's terminal agent" },
             ];
             const anyConfigured = editors.some(e => mcpStatus[e.key]?.configured);
-            const detectedEditors = editors.filter(e => mcpStatus[e.key]?.installed);
             const connectedCount = editors.filter(e => mcpStatus[e.key]?.configured).length;
 
             const sastScans = recent.filter(r => r.type === "sast" && r.cachePath);
@@ -2924,59 +2924,11 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Row 2: editor cards (3-col grid like station cards) */}
-                  <div className="autofix-editors-row">
-                    {editors.map(e => {
-                      const s = mcpStatus[e.key];
-                      return (
-                        <div key={e.key} className={`autofix-editor-card ${s?.configured ? "configured" : ""} ${!s?.installed ? "not-installed" : ""}`}>
-                          <CM />
-                          <div className="autofix-editor-logo-wrap">
-                            <img src={e.logo} alt={e.label} className="autofix-editor-logo" />
-                          </div>
-                          <div className="autofix-editor-info">
-                            <span className="autofix-editor-name">{e.label}</span>
-                            <span className="autofix-editor-desc">{e.desc}</span>
-                          </div>
-                          <div className="autofix-editor-status">
-                            {s?.configured && <><span className="autofix-editor-dot dot-ok" /><span className="autofix-badge">Connected</span></>}
-                            {s?.installed && !s?.configured && <><span className="autofix-editor-dot dot-pending" /><span className="autofix-badge pending">Not configured</span></>}
-                            {!s?.installed && <><span className="autofix-editor-dot dot-none" /><span className="autofix-badge none">Not detected</span></>}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
+                  {/* Immersive MCP connection diagram */}
+                  <McpConnect editors={editors} mcpStatus={mcpStatus} onConnect={handleSetupMcp} busy={mcpSetupBusy} />
 
-                  {/* Row 3: connect button + scan selector side by side */}
+                  {/* Scan selector */}
                   <div className="autofix-action-row">
-                    {/* Left: connect / configure */}
-                    <div className="autofix-connect-card">
-                      <CM />
-                      <div className="autofix-connect-card-code">MCP INTEGRATION</div>
-                      <div className="autofix-connect-card-title">
-                        {anyConfigured ? "Editors connected" : "Connect your editors"}
-                      </div>
-                      <p className="autofix-connect-card-desc">
-                        Trojan uses the Model Context Protocol to give your AI tool direct access to scan findings, code context, and fix suggestions.
-                      </p>
-                      <button
-                        className="autofix-connect-btn"
-                        onClick={handleSetupMcp}
-                        disabled={mcpSetupBusy || detectedEditors.length === 0}
-                      >
-                        {mcpSetupBusy
-                          ? "Configuring…"
-                          : anyConfigured
-                            ? "Reconfigure"
-                            : detectedEditors.length > 0
-                              ? "Connect editors"
-                              : "No editors detected"
-                        }
-                      </button>
-                    </div>
-
-                    {/* Right: scan selector */}
                     <div className="autofix-scan-card">
                       <CM />
                       <div className="autofix-connect-card-code">SELECT SCAN</div>
