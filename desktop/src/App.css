@@ -1587,6 +1587,14 @@ html, body, #root { height: 100%; overflow: hidden; background: var(--bg); color
 .am-trust { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; color: var(--fg); padding: 5px 0; line-height: 1.4; }
 .am-trust svg { color: #3fb950; flex-shrink: 0; margin-top: 1px; }
 @media (max-width: 720px) { .am-dbody { grid-template-columns: 1fr; } }
+
+/* skeleton loading */
+.am-skel { cursor: default; pointer-events: none; }
+.am-skel-bar { border-radius: 5px; margin-bottom: 8px;
+  background: linear-gradient(90deg, var(--muted) 25%, color-mix(in srgb, var(--muted) 50%, var(--border)) 37%, var(--muted) 63%);
+  background-size: 400% 100%; animation: am-shimmer 1.4s ease infinite; }
+@keyframes am-shimmer { 0% { background-position: 100% 0; } 100% { background-position: -100% 0; } }
+@media (prefers-reduced-motion: reduce) { .am-skel-bar { animation: none; } }
 .pt-id-row { display: flex; gap: 8px; margin-bottom: 6px; }
 .pt-id-row input { border: 1px solid var(--border); border-radius: var(--radius); padding: 7px 10px; font: 12px "Fira Code", monospace; background: var(--bg); color: var(--fg); outline: none; }
 .pt-id-row input:focus { border-color: oklch(0.70 0 0); }

@@ -9,7 +9,7 @@ import { PrintCertificate } from "./PrintCertificate";
 import { PrintComplianceReport } from "./PrintComplianceReport";
 import { PrintPenTestReport } from "./PrintPenTestReport";
 import type { PentestReport } from "./PrintPenTestReport";
-import { AttackMarket } from "./AttackMarket";
+import { AttackMarket, prefetchAttackMarket } from "./AttackMarket";
 import type { AttackTemplate } from "./AttackMarket";
 import "./App.css";
 
@@ -707,6 +707,14 @@ export default function App() {
     setSessionExpired(true);
     return null;
   }, []);
+
+  // Warm the Attack Market catalog in the background once the user is a logged-in
+  // Pro, so the first open of the tab is instant (and it never reload-flashes).
+  useEffect(() => {
+    if (authStatus?.loggedIn && authStatus.isPro) {
+      prefetchAttackMarket(async () => (await getFreshToken()) ?? "");
+    }
+  }, [authStatus?.loggedIn, authStatus?.isPro, getFreshToken]);
 
   // Listen for Supabase-managed token rotation (happens automatically every
   // ~50 min). Keeps profile state and Go config in sync without any polling.

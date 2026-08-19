@@ -27,27 +27,50 @@ interface Props {
   onUseTemplate: (t: AttackTemplate) => void;
 }
 
-// deterministic accent hue from the slug, so each template's icon is stable + distinct.
-function hue(slug: string): number {
-  let h = 0;
-  for (let i = 0; i < slug.length; i++) h = (h * 31 + slug.charCodeAt(i)) % 360;
-  return h;
-}
-
 function tagline(t: AttackTemplate): string {
   const first = t.breach_story.split(/(?<=\.)\s/)[0] ?? t.breach_story;
   return first.length > 140 ? first.slice(0, 140) + "…" : first;
 }
 
-function TemplateIcon({ slug, size = 96 }: { slug: string; size?: number }) {
-  const h = hue(slug);
-  return (
-    <div className="am-icon" style={{ width: size, height: size, background: `linear-gradient(145deg, hsl(${h} 55% 42%), hsl(${(h + 40) % 360} 60% 32%))` }}>
-      <svg width={size * 0.5} height={size * 0.5} viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-        <circle cx="12" cy="12" r="9" /><path d="M12 3v4 M12 17v4 M3 12h4 M17 12h4" /><circle cx="12" cy="12" r="2.5" fill="white" stroke="none" />
-      </svg>
-    </div>
-  );
+// ── Session cache ──────────────────────────────────────────────────────────
+// The catalog is small and changes only when the owner ships new templates, so
+// we cache it at module scope: it survives tab switches (the component unmounts
+// when you navigate away) and is refreshed at most once per TTL. This is what
+// stops the "reloads every time I open the tab" flash. prefetchAttackMarket()
+// primes it at app startup so even the first open is instant.
+const CACHE_TTL = 5 * 60 * 1000;
+let _cache: AttackTemplate[] | null = null;
+let _cacheAt = 0;
+let _inflight: Promise<AttackTemplate[]> | null = null;
+
+async function fetchCatalog(getToken: () => Promise<string>): Promise<AttackTemplate[]> {
+  const token = await getToken();
+  const res = await fetch(ENDPOINT, { headers: { Authorization: `Bearer ${token}` } });
+  if (!res.ok) throw new Error(res.status === 403 ? "Attack Market is a Pro feature." : `Failed to load (${res.status})`);
+  const data = await res.json();
+  return data.templates ?? [];
+}
+
+// loadCatalog returns the cache when it's fresh; otherwise fetches (de-duping
+// concurrent callers) and updates the cache. force ignores freshness.
+function loadCatalog(getToken: () => Promise<string>, force = false): Promise<AttackTemplate[]> {
+  if (_cache && !force && Date.now() - _cacheAt < CACHE_TTL) return Promise.resolve(_cache);
+  if (_inflight) return _inflight;
+  _inflight = fetchCatalog(getToken)
+    .then((t) => { _cache = t; _cacheAt = Date.now(); _inflight = null; return t; })
+    .catch((e) => { _inflight = null; throw e; });
+  return _inflight;
+}
+
+// prefetchAttackMarket warms the cache in the background (call once at startup).
+export function prefetchAttackMarket(getToken: () => Promise<string>): void {
+  loadCatalog(getToken).catch(() => { /* first open will surface the error */ });
+}
+
+// patchCached keeps the module cache in sync with an optimistic star toggle so
+// the change persists across tab switches without a refetch.
+function patchCached(slug: string, patch: Partial<AttackTemplate>): void {
+  if (_cache) _cache = _cache.map((t) => (t.slug === slug ? { ...t, ...patch } : t));
 }
 
 function VerifiedCheck() {
@@ -81,6 +104,20 @@ function TechBadges({ list }: { list: string[] }) {
   return <div className="am-techs">{list.map((x) => <span key={x} className="am-tech">{x}</span>)}</div>;
 }
 
+function SkeletonCard() {
+  return (
+    <div className="am-card am-skel" aria-hidden>
+      <div className="am-card-body">
+        <div className="am-skel-bar" style={{ width: "68%", height: 15 }} />
+        <div className="am-skel-bar" style={{ width: "32%", height: 11 }} />
+        <div className="am-skel-bar" style={{ width: "100%", height: 11, marginTop: 4 }} />
+        <div className="am-skel-bar" style={{ width: "85%", height: 11 }} />
+        <div className="am-skel-bar" style={{ width: "45%", height: 11, marginTop: 8 }} />
+      </div>
+    </div>
+  );
+}
+
 function StarButton({ starred, onClick, label }: { starred?: boolean; onClick: () => void; label?: boolean }) {
   return (
     <button className={`am-starbtn ${starred ? "active" : ""}`} onClick={(e) => { e.stopPropagation(); onClick(); }}>
@@ -91,8 +128,9 @@ function StarButton({ starred, onClick, label }: { starred?: boolean; onClick: (
 }
 
 export function AttackMarket({ getToken, selectedSlug, onUseTemplate }: Props) {
-  const [templates, setTemplates] = useState<AttackTemplate[]>([]);
-  const [loading, setLoading] = useState(true);
+  // Seed from the module cache so a re-open shows instantly (no reload flash).
+  const [templates, setTemplates] = useState<AttackTemplate[]>(() => _cache ?? []);
+  const [loading, setLoading] = useState(() => _cache === null);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
   const [technique, setTechnique] = useState("");
@@ -100,19 +138,12 @@ export function AttackMarket({ getToken, selectedSlug, onUseTemplate }: Props) {
 
   useEffect(() => {
     let cancelled = false;
-    (async () => {
-      try {
-        const token = await getToken();
-        const res = await fetch(ENDPOINT, { headers: { Authorization: `Bearer ${token}` } });
-        if (!res.ok) throw new Error(res.status === 403 ? "Attack Market is a Pro feature." : `Failed to load (${res.status})`);
-        const data = await res.json();
-        if (!cancelled) setTemplates(data.templates ?? []);
-      } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : "Could not load the Attack Market.");
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
+    // If cached, this resolves instantly (and refreshes in the background when
+    // stale); only a cold start blocks on the network.
+    loadCatalog(getToken)
+      .then((t) => { if (!cancelled) { setTemplates(t); setError(""); } })
+      .catch((e) => { if (!cancelled && _cache === null) setError(e instanceof Error ? e.message : "Could not load the Attack Market."); })
+      .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [getToken]);
 
@@ -133,8 +164,12 @@ export function AttackMarket({ getToken, selectedSlug, onUseTemplate }: Props) {
 
   async function toggleStar(t: AttackTemplate) {
     const next = !t.starred;
-    setTemplates((rows) => rows.map((r) => r.slug === t.slug
-      ? { ...r, starred: next, star_count: Math.max(0, r.star_count + (next ? 1 : -1)) } : r));
+    const apply = (starred: boolean, delta: number) => {
+      setTemplates((rows) => rows.map((r) => r.slug === t.slug
+        ? { ...r, starred, star_count: Math.max(0, r.star_count + delta) } : r));
+      patchCached(t.slug, { starred, star_count: Math.max(0, t.star_count + delta) });
+    };
+    apply(next, next ? 1 : -1);
     try {
       const token = await getToken();
       await fetch(ENDPOINT, {
@@ -143,14 +178,23 @@ export function AttackMarket({ getToken, selectedSlug, onUseTemplate }: Props) {
         body: JSON.stringify({ slug: t.slug, star: next }),
       });
     } catch {
-      setTemplates((rows) => rows.map((r) => r.slug === t.slug
-        ? { ...r, starred: !next, star_count: Math.max(0, r.star_count + (next ? -1 : 1)) } : r));
+      apply(!next, next ? -1 : 1); // revert
     }
   }
 
   const open = openSlug ? templates.find((t) => t.slug === openSlug) ?? null : null;
 
-  if (loading) return <div className="am-state">Loading the Attack Market…</div>;
+  if (loading) {
+    return (
+      <div className="am-wrap">
+        <div className="view-header">
+          <h2 className="view-title">Attack Market</h2>
+          <p className="view-desc">Curated playbooks drawn from real breaches. Pick one and the agent replays the pattern against your app, within your rules of engagement.</p>
+        </div>
+        <div className="am-grid">{Array.from({ length: 4 }).map((_, i) => <SkeletonCard key={i} />)}</div>
+      </div>
+    );
+  }
   if (error) return <div className="am-state am-state--error">{error}</div>;
 
   if (open) {
@@ -188,7 +232,6 @@ export function AttackMarket({ getToken, selectedSlug, onUseTemplate }: Props) {
         <div className="am-grid">
           {filtered.map((t) => (
             <div key={t.slug} className={`am-card ${t.slug === selectedSlug ? "selected" : ""}`} onClick={() => setOpenSlug(t.slug)} role="button" tabIndex={0}>
-              <TemplateIcon slug={t.slug} size={52} />
               <div className="am-card-body">
                 <div className="am-card-titlerow">
                   <h3 className="am-card-title">{t.title}</h3>
@@ -218,9 +261,8 @@ function AttackDetail({ t, isSelected, onBack, onStar, onUse }: { t: AttackTempl
     <div className="am-detail">
       <button className="am-back" onClick={onBack}>← Marketplace</button>
 
-      {/* Header — icon + title + publisher line + actions (VS Code layout) */}
+      {/* Header — title + publisher line + actions (VS Code layout) */}
       <div className="am-dhead">
-        <TemplateIcon slug={t.slug} size={104} />
         <div className="am-dhead-main">
           <h1 className="am-dtitle">{t.title}</h1>
           <div className="am-publisher">
