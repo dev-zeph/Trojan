@@ -274,6 +274,16 @@ struct PtIdentity {
     header: String,
 }
 
+// AttackTemplateArg is the selected Attack Market playbook (§9.4) passed from the
+// desktop into the run. Serialized to a single JSON arg for the sidecar so the
+// (possibly multi-line) body needs no shell escaping.
+#[derive(serde::Deserialize, serde::Serialize)]
+struct AttackTemplateArg {
+    title: String,
+    technique: Vec<String>,
+    body: String,
+}
+
 /// Run the adaptive AI agent pen-tester against a live URL (agentic DAST).
 /// Starts the embedded UI early and streams the run to it; the report loads the
 /// live "Penetration Testing" view. Consent (for non-local targets) is enforced
@@ -295,6 +305,7 @@ async fn start_agentic_dast(
     deny_endpoints: Vec<String>,
     limit_to_allowlist: bool,
     allow_dangerous: bool,
+    attack_template: Option<AttackTemplateArg>,
 ) -> Result<ScanReturn, String> {
     kill_old_scans(&app);
     let _ = app.emit(
@@ -351,6 +362,13 @@ async fn start_agentic_dast(
     }
     if allow_dangerous {
         args.push("--allow-dangerous".into());
+    }
+    // §9.4 selected Attack Market playbook, passed as one JSON arg (no shell).
+    if let Some(t) = &attack_template {
+        if let Ok(js) = serde_json::to_string(t) {
+            args.push("--attack-template".into());
+            args.push(js);
+        }
     }
 
     let (rx, child) = app

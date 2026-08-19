@@ -9,9 +9,11 @@ import { PrintCertificate } from "./PrintCertificate";
 import { PrintComplianceReport } from "./PrintComplianceReport";
 import { PrintPenTestReport } from "./PrintPenTestReport";
 import type { PentestReport } from "./PrintPenTestReport";
+import { AttackMarket } from "./AttackMarket";
+import type { AttackTemplate } from "./AttackMarket";
 import "./App.css";
 
-type NavView  = "overview" | "sast" | "dast" | "dependencies" | "threatlab" | "licenses" | "privacy" | "compliancelab" | "history" | "autofix" | "profile" | "report";
+type NavView  = "overview" | "sast" | "dast" | "market" | "dependencies" | "threatlab" | "licenses" | "privacy" | "compliancelab" | "history" | "autofix" | "profile" | "report";
 type ScanType = "sast" | "dast";
 
 interface PackageAdvisory { id: string; severity: string; summary: string; fix_version?: string; }
@@ -460,6 +462,9 @@ const NAV: { view: NavView; label: string; icon: React.ReactNode; pro?: boolean;
   { view: "dast", label: "Penetration Testing", pro: true,
     icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20 M2 12h20 M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10"/></svg>,
   },
+  { view: "market", label: "Attack Market", pro: true,
+    icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.3 2.3c-.6.6-.2 1.7.7 1.7H17 M9 20a1 1 0 1 0 0-2 1 1 0 0 0 0 2z M16 20a1 1 0 1 0 0-2 1 1 0 0 0 0 2z"/></svg>,
+  },
   { view: "dependencies", label: "Dependencies",
     icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z M3.3 7l8.7 5 8.7-5 M12 22V12"/></svg>,
   },
@@ -512,6 +517,7 @@ export default function App() {
   const [agDenyEndpoints, setAgDenyEndpoints]     = useState("");
   const [agLimitToAllowlist, setAgLimitToAllowlist] = useState(false);
   const [agAllowDangerous, setAgAllowDangerous]   = useState(false);
+  const [agTemplate, setAgTemplate]               = useState<AttackTemplate | null>(null);
   const [dastFindings, setDastFindings]   = useState<any[]>([]);
   const [pentestReport, setPentestReport] = useState<PentestReport | null>(null);
   const [pentestReportRunning, setPentestReportRunning] = useState(false);
@@ -1048,6 +1054,9 @@ export default function App() {
       denyEndpoints: agDenyEndpoints.split("\n").map((s) => s.trim()).filter(Boolean),
       limitToAllowlist: agLimitToAllowlist,
       allowDangerous: agAllowDangerous,
+      attackTemplate: agTemplate
+        ? { title: agTemplate.title, technique: agTemplate.technique, body: agTemplate.prompt_body }
+        : null,
     })
       .then(async ({ url: rUrl, cachePath }) => {
         updateToastDone(id, rUrl, cachePath);
@@ -1717,6 +1726,14 @@ export default function App() {
           )}
 
           {/* ── DAST ── */}
+          {view === "market" && (
+            <AttackMarket
+              getToken={async () => (await getFreshToken()) ?? ""}
+              selectedSlug={agTemplate?.slug}
+              onUseTemplate={(t) => { setAgTemplate(t); setView("dast"); }}
+            />
+          )}
+
           {view === "dast" && (() => {
             const isPro = authStatus?.isPro ?? false;
             return (
@@ -1771,6 +1788,15 @@ export default function App() {
                 {/* Engagement — AI agent only */}
                 {agenticMode && (
                   <>
+                    {agTemplate && (
+                      <div className="pt-template-banner">
+                        <div className="pt-template-meta">
+                          <span className="pt-template-tag">ATTACK TEMPLATE</span>
+                          <span className="pt-template-name">{agTemplate.title}</span>
+                        </div>
+                        <button type="button" className="pt-template-clear" onClick={() => setAgTemplate(null)} disabled={isScanning}>Clear</button>
+                      </div>
+                    )}
                     <span className="scanner-grid-label" style={{ marginTop: 18 }}>ENGAGEMENT</span>
                     <div className="pt-eng-grid">
                       {/* Intensity ladder */}

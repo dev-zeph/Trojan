@@ -441,6 +441,7 @@ func dastCmd() *cobra.Command {
 	var requireApproval bool
 	var allowEndpoints, denyEndpoints []string
 	var limitToAllowlist, allowDangerous bool
+	var attackTemplateJSON string
 
 	cmd := &cobra.Command{
 		Use:   "dast <url>",
@@ -529,6 +530,15 @@ func dastCmd() *cobra.Command {
 					color.Red("Error: %s\n", ierr)
 					os.Exit(1)
 				}
+				var attackTemplate *agent.AttackTemplate
+				if attackTemplateJSON != "" {
+					var at agent.AttackTemplate
+					if uerr := json.Unmarshal([]byte(attackTemplateJSON), &at); uerr != nil {
+						color.Red("Error: invalid --attack-template: %s\n", uerr)
+						os.Exit(1)
+					}
+					attackTemplate = &at
+				}
 				runAgenticDast(agenticParams{
 					targetURL:         targetURL,
 					accessToken:       accessToken,
@@ -545,6 +555,7 @@ func dastCmd() *cobra.Command {
 					denyEndpoints:     denyEndpoints,
 					limitToAllowlist:  limitToAllowlist,
 					allowDangerous:    allowDangerous,
+					attackTemplate:    attackTemplate,
 					desktop:           desktop,
 					crawlDepth:        crawlDepth,
 					crawlTimeout:      crawlTimeout,
@@ -806,6 +817,10 @@ func dastCmd() *cobra.Command {
 	cmd.Flags().StringArrayVar(&denyEndpoints, "deny-endpoint", nil, "Rules of engagement: an endpoint path the agent must never touch (repeatable; trailing * = prefix).")
 	cmd.Flags().BoolVar(&limitToAllowlist, "limit-to-allowlist", false, "Make --allow-endpoint a hard boundary: anything outside it is blocked, not just gated.")
 	cmd.Flags().BoolVar(&allowDangerous, "allow-dangerous", false, "Opt in to auto-avoided action patterns (account deletion, password/credential change, payment). Off by default.")
+	// Desktop plumbing: the selected Attack Market playbook as a JSON object
+	// {title, technique, body}. Not a user-facing CLI feature (§9.4 is desktop-only).
+	cmd.Flags().StringVar(&attackTemplateJSON, "attack-template", "", "")
+	cmd.Flags().MarkHidden("attack-template") //nolint:errcheck
 	cmd.AddCommand(dastVerifyCmd())
 	return cmd
 }
@@ -950,6 +965,7 @@ type agenticParams struct {
 	denyEndpoints     []string
 	limitToAllowlist  bool
 	allowDangerous    bool
+	attackTemplate    *agent.AttackTemplate
 	desktop           bool
 	crawlDepth        int
 	crawlTimeout      int
@@ -1079,6 +1095,9 @@ func runAgenticDast(p agenticParams) {
 		EndpointDenylist:  p.denyEndpoints,
 		AllowDangerous:    p.allowDangerous,
 	}
+	if p.attackTemplate != nil {
+		fmt.Printf("  → Attack template: %s\n\n", p.attackTemplate.Title)
+	}
 
 	// Drive the loop, streaming every action to the UI and the terminal.
 	srv.BroadcastAgentEvent(server.AgentEvent{Type: "run", Status: "running"})
@@ -1095,6 +1114,7 @@ func runAgenticDast(p agenticParams) {
 		Identities:        p.identities,
 		RoE:               roe,
 		Approvals:         approvals,
+		AttackTemplate:    p.attackTemplate,
 		OnEvent: func(e agent.Event) {
 			evt := server.AgentEvent{Type: string(e.Type), Step: e.Step, Tool: e.Tool, Detail: e.Detail}
 			if p := e.Payload; p != nil {
