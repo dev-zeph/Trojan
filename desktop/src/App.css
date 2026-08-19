@@ -2228,6 +2228,9 @@ html, body, #root { height: 100%; overflow: hidden; background: var(--bg); color
 .autofix-scan-time {
   font: 400 10.5px 'Fira Code', monospace; color: oklch(0.55 0 0); flex-shrink: 0;
 }
+.autofix-scan-typebadge { font: 700 8.5px 'Fira Code', monospace; letter-spacing: .05em; padding: 2px 5px; border-radius: 4px; flex-shrink: 0; }
+.autofix-scan-typebadge.sast { color: #2563eb; background: rgba(37,99,235,0.08); border: 1px solid rgba(37,99,235,0.2); }
+.autofix-scan-typebadge.dast { color: #7c3aed; background: rgba(124,58,237,0.08); border: 1px solid rgba(124,58,237,0.2); }
 .autofix-scan-pager {
   display: flex; align-items: center; justify-content: center; gap: 12px;
   margin-top: 4px;

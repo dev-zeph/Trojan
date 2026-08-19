@@ -2917,8 +2917,10 @@ export default function App() {
             const anyConfigured = editors.some(e => mcpStatus[e.key]?.configured);
             const connectedCount = editors.filter(e => mcpStatus[e.key]?.configured).length;
 
-            const sastScans = recent.filter(r => r.type === "sast" && r.cachePath);
-            const selectedScan = sastScans[fixScanIdx] ?? null;
+            // Both SAST and pen-test (DAST) scans are MCP-readable, so the editor
+            // can pull findings from either — list both here.
+            const fixScans = recent.filter(r => r.cachePath);
+            const selectedScan = fixScans[fixScanIdx] ?? null;
 
             return (
               <div className="autofix-page">
@@ -2950,10 +2952,10 @@ export default function App() {
                       <div className="autofix-connect-card-title">Target project</div>
                       {(() => {
                         const PER_PAGE = 5;
-                        const totalPages = Math.ceil(sastScans.length / PER_PAGE);
-                        const pageScans = sastScans.slice(fixScanPage * PER_PAGE, (fixScanPage + 1) * PER_PAGE);
+                        const totalPages = Math.ceil(fixScans.length / PER_PAGE);
+                        const pageScans = fixScans.slice(fixScanPage * PER_PAGE, (fixScanPage + 1) * PER_PAGE);
 
-                        if (sastScans.length === 0) return (
+                        if (fixScans.length === 0) return (
                           <div className="autofix-empty">
                             <p>No scans yet</p>
                             <button className="autofix-action-btn" onClick={handlePickFolder}>Run a scan</button>
@@ -2971,6 +2973,7 @@ export default function App() {
                                     className={`autofix-scan-item ${globalIdx === fixScanIdx ? "active" : ""}`}
                                     onClick={() => setFixScanIdx(globalIdx)}
                                   >
+                                    <span className={`autofix-scan-typebadge ${s.type === "sast" ? "sast" : "dast"}`}>{s.type === "sast" ? "SAST" : "PEN TEST"}</span>
                                     <span className="autofix-scan-name">{s.name}</span>
                                     <span className="autofix-scan-time">{timeAgo(s.scannedAt)}</span>
                                   </button>
@@ -3050,7 +3053,7 @@ export default function App() {
                         </div>
                       </div>
                       <p className="autofix-prompts-hint">
-                        Open your editor in{selectedScan ? ` ${selectedScan.path}` : " the project directory"} and paste any prompt above.
+                        Open your editor in{selectedScan && selectedScan.type === "sast" ? ` ${selectedScan.path}` : " the project directory"} and paste any prompt above.
                       </p>
                     </div>
                   </div>
