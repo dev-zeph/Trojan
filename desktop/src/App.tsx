@@ -469,18 +469,12 @@ const NAV: { view: NavView; label: string; icon: React.ReactNode; pro?: boolean;
   { view: "dependencies", label: "Dependencies",
     icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z M3.3 7l8.7 5 8.7-5 M12 22V12"/></svg>,
   },
-  { view: "threatlab", label: "Threat Lab", pro: true,
-    icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M10 2v7.53a2 2 0 0 1-.21.9L4.72 20.55a1 1 0 0 0 .9 1.45h12.76a1 1 0 0 0 .9-1.45l-5.07-10.12a2 2 0 0 1-.21-.9V2 M8.5 2h7 M7 16h10"/></svg>,
-  },
   // ── Compliance & Privacy ──
   { view: "licenses", label: "Licenses", section: "COMPLIANCE",
     icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M9 15l2 2 4-4"/></svg>,
   },
   { view: "privacy", label: "Privacy",
     icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>,
-  },
-  { view: "compliancelab", label: "Compliance Lab", pro: true,
-    icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 5H2v7l6.29 6.29c.94.94 2.48.94 3.42 0l3.58-3.58c.94-.94.94-2.48 0-3.42L9 5Z M6 9.01V9 M15 5s2-2 4-2 4 2 4 2v7l-4 4"/></svg>,
   },
   // ── General ──
   { view: "history", label: "Scan History", section: "GENERAL",
@@ -918,7 +912,7 @@ export default function App() {
       const pkgs: PkgInfo[] = scanData.packages ?? [];
 
       const token = await getFreshToken();
-      if (!token) throw new Error("Sign in to use Threat Lab");
+      if (!token) throw new Error("Sign in to generate a security report");
 
       const res = await fetch(`${SUPABASE_URL}/functions/v1/threat-lab`, {
         method: "POST",
@@ -936,8 +930,8 @@ export default function App() {
         }),
       });
 
-      if (res.status === 403) throw new Error("Threat Lab requires a Pro subscription.");
-      if (res.status === 429) throw new Error("Daily Threat Lab limit reached. Try again tomorrow.");
+      if (res.status === 403) throw new Error("Security reports require a Pro subscription.");
+      if (res.status === 429) throw new Error("Daily security report limit reached. Try again tomorrow.");
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error((err as { error?: string }).error ?? `Request failed (${res.status})`);
@@ -956,10 +950,10 @@ export default function App() {
     if (!threatLabResult) return;
     const r = threatLabResult;
     const lines = [
-      "TROJAN THREAT LAB REPORT",
-      "========================",
+      "TROJAN SECURITY REPORT",
+      "======================",
       "",
-      `Threat Index: ${r.threat_index}/100  |  Grade: ${r.grade}`,
+      `Security Score: ${100 - r.threat_index}/100  |  Grade: ${r.grade}`,
       "",
       "VERDICT",
       r.verdict,
@@ -988,7 +982,7 @@ export default function App() {
     const blob = new Blob([lines.join("\n")], { type: "text/plain" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = "trojan-threat-lab.txt";
+    a.download = "trojan-security-report.txt";
     a.click();
     URL.revokeObjectURL(a.href);
   }
@@ -1410,7 +1404,7 @@ export default function App() {
           ) : (
             <>
               <span className="topbar-title">
-                {NAV.find((n) => n.view === view)?.label}
+                {NAV.find((n) => n.view === view)?.label ?? (view === "threatlab" ? "Security Report" : view === "compliancelab" ? "Compliance Report" : "")}
               </span>
               <div className="topbar-right">
                 <button
@@ -1448,14 +1442,14 @@ export default function App() {
 
           {/* ── Overview ── */}
           {view === "overview" && (() => {
-            // Posture ring — use Threat Lab data if available
+            // Posture ring — the security score (higher = better) from the last report.
             const ringR   = 63;
             const ringC   = 2 * Math.PI * ringR;
-            const tIdx    = threatLabResult?.threat_index ?? null;
+            const secScore = threatLabResult ? Math.max(0, Math.min(100, 100 - threatLabResult.threat_index)) : null;
             const tGrade  = threatLabResult?.grade ?? null;
             const gradeColors: Record<string, string> = { A:"#16a34a", B:"#65a30d", C:"#d97706", D:"#ea580c", F:"#dc2626" };
             const ringColor  = tGrade ? gradeColors[tGrade] : "#4ade80";
-            const ringDash   = tIdx !== null ? `${(ringC * tIdx / 100).toFixed(1)} ${ringC.toFixed(1)}` : `0 ${ringC.toFixed(1)}`;
+            const ringDash   = secScore !== null ? `${(ringC * secScore / 100).toFixed(1)} ${ringC.toFixed(1)}` : `0 ${ringC.toFixed(1)}`;
 
             // Stats
             const vulnPkgs   = packages.filter(p => p.cve_count > 0).length;
@@ -1514,21 +1508,21 @@ export default function App() {
                             strokeDasharray={ringDash}
                           />
                         </svg>
-                        {tIdx !== null && <div className="posture-pulse" />}
+                        {secScore !== null && <div className="posture-pulse" />}
                         <div className="posture-center">
                           {tGrade ? (
                             <>
                               <span className="posture-grade-text" style={{ color: ringColor }}>{tGrade}</span>
-                              <span className="posture-score-text">{tIdx}/100</span>
+                              <span className="posture-score-text">{secScore}/100</span>
                             </>
                           ) : (
                             <span className="posture-empty-text">
-                              {recent.length > 0 ? "Run\nThreat Lab" : "No scans\nyet"}
+                              {recent.length > 0 ? "Generate\na report" : "No scans\nyet"}
                             </span>
                           )}
                         </div>
                       </div>
-                      {tGrade && <span className="posture-card-sub">Grade {tGrade} — {tIdx} / 100</span>}
+                      {tGrade && <span className="posture-card-sub">Grade {tGrade} — {secScore} / 100</span>}
                     </div>
 
                     {/* 2×2 stat cards */}
@@ -1660,9 +1654,17 @@ export default function App() {
           {/* ── SAST ── */}
           {view === "sast" && (
             <div className="content-inner">
-              <div className="view-header">
-                <h2 className="view-title">Static Analysis</h2>
-                <p className="view-desc">Scan a local project for vulnerabilities, secrets, and misconfigurations.</p>
+              <div className="view-header view-header-row">
+                <div>
+                  <h2 className="view-title">Static Analysis</h2>
+                  <p className="view-desc">Scan a local project for vulnerabilities, secrets, and misconfigurations.</p>
+                </div>
+                {recent.some(r => r.type === "sast" && r.cachePath) && (
+                  <button className="report-cta" onClick={() => setView("threatlab")} title="Generate an AI security report from your findings">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M9 15l2 2 4-4"/></svg>
+                    Generate Security Report
+                  </button>
+                )}
               </div>
 
               <div className={`scan-tip-wrap ${isScanning ? "scanning-active" : ""}`}>
@@ -2254,7 +2256,7 @@ export default function App() {
               setComplianceLabError(null);
               try {
                 const token = await getFreshToken();
-                if (!token) throw new Error("Sign in to use Compliance Lab");
+                if (!token) throw new Error("Sign in to generate a compliance report");
 
                 const copyleft = packages.filter(p => p.license_risk === "copyleft").map(p => ({ name: p.name, version: p.version, license: p.license || "" }));
                 const weakCopyleft = packages.filter(p => p.license_risk === "weak-copyleft").map(p => ({ name: p.name, license: p.license || "" }));
@@ -2274,7 +2276,7 @@ export default function App() {
                   }),
                 });
 
-                if (res.status === 403) throw new Error("Compliance Lab requires a Pro subscription.");
+                if (res.status === 403) throw new Error("Compliance reports require a Pro subscription.");
                 if (res.status === 429) throw new Error("Daily limit reached. Try again tomorrow.");
                 if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error((err as { error?: string }).error ?? `Request failed (${res.status})`); }
 
@@ -2290,14 +2292,15 @@ export default function App() {
               <div className="content-inner lab-content" style={{ background: "oklch(0.965 0 0)" }}>
                 <div className="lab-header-row">
                   <div>
+                    <button className="lab-back" onClick={() => setView("dependencies")}>← Dependencies</button>
                     <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 3 }}>
-                      <span className="lab-title-text">Compliance Lab</span>
+                      <span className="lab-title-text">Compliance Report</span>
                       <span className="lab-pro-tag">PRO</span>
                     </div>
                     <p className="lab-subtitle">
                       {r && scanPath
-                        ? `Compliance report for ${codebaseName} — licensing, privacy, and data handling assessment.`
-                        : "AI-powered compliance assessment combining license analysis and privacy data flows."}
+                        ? `Compliance assessment for ${codebaseName}: licensing, privacy, and data handling.`
+                        : "AI compliance assessment from your license analysis and privacy data flows."}
                     </p>
                   </div>
                   <div className="lab-header-actions">
@@ -2309,7 +2312,7 @@ export default function App() {
                     )}
                     {hasData && isPro && (
                       <button className={`lab-run-primary ${complianceLabRunning ? "lab-btn-loading" : ""}`} onClick={runComplianceLab} disabled={complianceLabRunning}>
-                        {complianceLabRunning ? <><span className="lab-spinner" /> Analysing...</> : r ? "Re-run Analysis" : "Run Compliance Lab"}
+                        {complianceLabRunning ? <><span className="lab-spinner" /> Analysing...</> : r ? "Re-generate" : "Generate report"}
                       </button>
                     )}
                   </div>
@@ -2318,7 +2321,7 @@ export default function App() {
                 {!isPro && (
                   <div className="lab-state-card lab-pro-gate">
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-                    Compliance Lab requires a Pro subscription.
+                    Compliance reports require a Pro subscription.
                     <button className="lab-upgrade-btn" onClick={() => setShowAuthForm(true)}>Upgrade →</button>
                   </div>
                 )}
@@ -2342,7 +2345,7 @@ export default function App() {
 
                 {isPro && hasData && !r && !complianceLabRunning && (
                   <div className="lab-state-card">
-                    <p className="lab-no-data">Scan data loaded for <strong>{codebaseName}</strong> ({packages.length} packages). Click "Run Compliance Lab" to generate your AI-powered compliance assessment.</p>
+                    <p className="lab-no-data">Scan data loaded for <strong>{codebaseName}</strong> ({packages.length} packages). Click "Generate report" for your AI compliance assessment.</p>
                   </div>
                 )}
 
@@ -2499,13 +2502,21 @@ export default function App() {
           {/* ── Dependencies ── */}
           {view === "dependencies" && (
             <div className="content-inner">
-              <div className="view-header">
-                <h2 className="view-title">Dependencies</h2>
-                <p className="view-desc">
-                  {packages.length > 0
-                    ? `${packages.length} packages · ${packages.filter(p => p.cve_count > 0).length} with known CVEs.`
-                    : "Run a scan first to see your dependency health."}
-                </p>
+              <div className="view-header view-header-row">
+                <div>
+                  <h2 className="view-title">Dependencies</h2>
+                  <p className="view-desc">
+                    {packages.length > 0
+                      ? `${packages.length} packages · ${packages.filter(p => p.cve_count > 0).length} with known CVEs.`
+                      : "Run a scan first to see your dependency health."}
+                  </p>
+                </div>
+                {packages.length > 0 && (
+                  <button className="report-cta" onClick={() => setView("compliancelab")} title="Generate an AI compliance report from your dependencies">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M9 15l2 2 4-4"/></svg>
+                    Generate Compliance Report
+                  </button>
+                )}
               </div>
 
               {/* Drop zone — always visible, even when packages are loaded */}
@@ -2699,9 +2710,12 @@ export default function App() {
             const r = threatLabResult;
             const gradeColors: Record<string, string> = { A:"#16a34a", B:"#65a30d", C:"#d97706", D:"#ea580c", F:"#dc2626" };
             const gradeColorVal = r ? (gradeColors[r.grade] ?? "#4ade80") : "#4ade80";
-            // Ring: r=50, circumference=314.16
+            // Ring: r=50, circumference=314.16. Score is flipped to "higher = better"
+            // (a Security Score) so it reads intuitively and matches the A-F grade
+            // and the Compliance Report. The edge fn still returns a threat_index.
             const ringC = 2 * Math.PI * 50;
-            const ringDash = r ? `${(ringC * r.threat_index / 100).toFixed(1)} ${ringC.toFixed(1)}` : `0 ${ringC.toFixed(1)}`;
+            const securityScore = r ? Math.max(0, Math.min(100, 100 - r.threat_index)) : 0;
+            const ringDash = r ? `${(ringC * securityScore / 100).toFixed(1)} ${ringC.toFixed(1)}` : `0 ${ringC.toFixed(1)}`;
 
             return (
               <div className="lab-content lab-print-area">
@@ -2709,14 +2723,15 @@ export default function App() {
                 {/* ── Header row ── */}
                 <div className="lab-header-row">
                   <div>
+                    <button className="lab-back" onClick={() => setView("sast")}>← Static Analysis</button>
                     <div className="lab-title-row">
-                      <span className="lab-title-text">Threat Lab</span>
+                      <span className="lab-title-text">Security Report</span>
                       <span className="lab-pro-tag">PRO</span>
                     </div>
                     <p className="lab-subtitle">
                       {r && scanPath
-                        ? `AI attack-surface analysis of ${scanPath.split("/").pop()} — SAST and dependency data combined.`
-                        : "AI-powered attack surface analysis combining SAST + dependency data."}
+                        ? `AI security assessment of ${scanPath.split("/").pop()}, from your SAST and dependency findings.`
+                        : "AI security assessment from your SAST and dependency findings."}
                     </p>
                   </div>
                   <div className="lab-header-actions">
@@ -2738,7 +2753,7 @@ export default function App() {
                         onClick={runThreatLab}
                         disabled={isLabRunning}
                       >
-                        {isLabRunning ? <><span className="lab-spinner" /> Analysing…</> : r ? "Re-run Analysis" : "Run Threat Lab"}
+                        {isLabRunning ? <><span className="lab-spinner" /> Analysing…</> : r ? "Re-generate" : "Generate report"}
                       </button>
                     )}
                   </div>
@@ -2753,7 +2768,7 @@ export default function App() {
                 {hasData && !isPro && (
                   <div className="lab-state-card lab-pro-gate">
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-                    Threat Lab requires a Pro subscription.
+                    Security reports require a Pro subscription.
                     <button className="lab-upgrade-btn" onClick={() => setShowAuthForm(true)}>Upgrade →</button>
                   </div>
                 )}
@@ -2776,18 +2791,18 @@ export default function App() {
                           <i className="corner-mark cm-tl">+</i><i className="corner-mark cm-tr">+</i>
                           <i className="corner-mark cm-bl">+</i><i className="corner-mark cm-br">+</i>
                         </div>
-                        <div className="lab-index-card-label">THREAT INDEX</div>
+                        <div className="lab-index-card-label">SECURITY SCORE</div>
                         <div className="lab-index-ring-wrap">
                           <svg width="120" height="120" viewBox="0 0 120 120" style={{ transform: "rotate(-90deg)" }}>
                             <circle cx="60" cy="60" r="50" fill="none" stroke="oklch(0.92 0 0)" strokeWidth="8" />
                             <circle cx="60" cy="60" r="50" fill="none" stroke={gradeColorVal} strokeWidth="8" strokeDasharray={ringDash} />
                           </svg>
                           <div className="lab-ring-center">
-                            <span className="lab-index-num">{r.threat_index}</span>
+                            <span className="lab-index-num">{securityScore}</span>
                             <span className="lab-ring-denom">/100</span>
                           </div>
                         </div>
-                        <div className="lab-index-sub2">higher = more exposed</div>
+                        <div className="lab-index-sub2">higher = more secure</div>
                       </div>
 
                       {/* Grade */}
@@ -3155,7 +3170,7 @@ export default function App() {
                           setProfileJustSaved(false);
                         }}
                       />
-                      <span className="profile-hint">This context is used across all Trojan AI features — findings explanations, Threat Lab reports, remediation advice, and more.</span>
+                      <span className="profile-hint">This context is used across all Trojan AI features — findings explanations, security reports, remediation advice, and more.</span>
                     </div>
                   </div>
 

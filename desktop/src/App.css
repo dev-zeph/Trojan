@@ -613,6 +613,15 @@ html, body, #root { height: 100%; overflow: hidden; background: var(--bg); color
 .view-header { display: flex; flex-direction: column; gap: 5px; }
 .view-title { font-size: 20px; font-weight: 700; letter-spacing: -0.02em; color: var(--fg); }
 .view-desc  { font-size: 13px; color: var(--muted-fg); }
+/* header with a right-aligned action (report generation CTA) */
+.view-header-row { flex-direction: row; align-items: center; justify-content: space-between; gap: 16px; }
+.report-cta { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; flex-shrink: 0;
+  font-size: 12.5px; font-weight: 600; padding: 8px 14px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--card); color: var(--fg); cursor: pointer; }
+.report-cta:hover { border-color: var(--purple); color: var(--purple); }
+/* back link at the top of a report (Security/Compliance) view */
+.lab-back { font-size: 12px; color: var(--muted-fg); background: none; border: none; cursor: pointer; padding: 0; margin-bottom: 8px; display: inline-block; }
+.lab-back:hover { color: var(--fg); }
 
 /* ── SAST view ────────────────────────────────────────────────────────────── */
 .sast-drop-zone {
