@@ -30,6 +30,12 @@ type EdgeTransport struct {
 	accessToken string
 	url         string
 	client      *http.Client
+
+	// runID is empty until the first turn returns one; from then on it is sent
+	// with every turn so the server can group the run's usage. Not guarded by a
+	// mutex: the agent loop is strictly sequential -- one Turn at a time -- and
+	// a Transport is never shared across runs.
+	runID string
 }
 
 // NewEdgeTransport builds an EdgeTransport for a Pro user's access token.
@@ -45,7 +51,11 @@ func NewEdgeTransport(accessToken string) *EdgeTransport {
 var ErrRateLimited = fmt.Errorf("rate_limit_exceeded")
 
 func (t *EdgeTransport) Turn(ctx context.Context, messages []Message) (*TurnResult, error) {
-	inner, err := json.Marshal(map[string]any{"messages": messages})
+	payload := map[string]any{"messages": messages}
+	if t.runID != "" {
+		payload["runId"] = t.runID
+	}
+	inner, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
 	}
@@ -77,6 +87,11 @@ func (t *EdgeTransport) Turn(ctx context.Context, messages []Message) (*TurnResu
 	var result TurnResult
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("decoding agentic-dast turn: %w", err)
+	}
+	// Latch the run id from the first turn that supplies one. Later turns echo
+	// it back so the ledger can roll a multi-turn run up to one cost figure.
+	if t.runID == "" && result.RunID != "" {
+		t.runID = result.RunID
 	}
 	return &result, nil
 }

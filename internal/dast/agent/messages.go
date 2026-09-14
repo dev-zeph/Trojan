@@ -12,11 +12,19 @@ type Message struct {
 }
 
 // TurnResult is what the edge function returns for one Claude turn: the raw
-// content blocks, the stop reason, and token usage.
+// content blocks, the stop reason, token usage, and the run id.
 type TurnResult struct {
 	Content    []json.RawMessage `json:"content"`
 	StopReason string            `json:"stop_reason"`
 	Usage      Usage             `json:"usage"`
+
+	// RunID is minted server-side on the first turn and echoed back by the
+	// transport on every subsequent turn, so all turns of one run aggregate to
+	// a single row set in the usage ledger. A run previously had no stable
+	// identity at all -- it was addressed by a 1-second-granularity filename.
+	// The server ignores any id a client supplies on turn 1, so this cannot be
+	// used to merge usage into somebody else's run.
+	RunID string `json:"runId"`
 }
 
 // Usage mirrors the Anthropic usage object; the loop accumulates it across turns
