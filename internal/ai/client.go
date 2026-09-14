@@ -32,6 +32,10 @@ type LicenseInfo struct {
 	IsPro              bool   `json:"isPro"`
 	SubscriptionStatus string `json:"subscriptionStatus"`
 	Email              string `json:"email"`
+	// TokenBalance is the user's remaining Trojan Tokens -- the BILLING unit
+	// they purchase and spend, not LLM tokens. Rides along on the license call
+	// because both the CLI and the desktop already poll it.
+	TokenBalance int `json:"tokenBalance"`
 }
 
 // FetchLicense checks the user's current subscription status against the backend.

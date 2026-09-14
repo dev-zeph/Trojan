@@ -27,6 +27,7 @@ import { friendlyError, timeAgo, parseAuthCallback, greet, initials } from "./li
 import { AuthForm } from "./components/AuthForm";
 import { Onboarding } from "./components/Onboarding";
 import { CM } from "./components/CornerMarks";
+import { TokenBalance, RunCostHint } from "./components/TokenBalance";
 import type {
   NavView,
   ScanType,
@@ -125,6 +126,9 @@ export default function App() {
   const [depDragOver, setDepDragOver]     = useState(false);
   const [currentServerUrl, setCurrentServerUrl] = useState<string | null>(null);
   const [authStatus, setAuthStatus]       = useState<AuthStatus | null>(null);
+  // Trojan Token balance -- the BILLING unit, not LLM tokens. null = not yet
+  // loaded, which renders as "—" rather than 0 (0 would read as "you are out").
+  const [tokenBalance, setTokenBalance]   = useState<number | null>(null);
   const [scanSummary, setScanSummary]         = useState<ScanSummary | null>(null);
   const [threatLabResult, setThreatLabResult] = useState<ThreatLabResult | null>(null);
   const [isLabRunning, setIsLabRunning]   = useState(false);
@@ -179,6 +183,82 @@ export default function App() {
     });
   }, [recent]);
 
+
+  // ── Token refresh ─────────────────────────────────────────────────
+  // Single source of truth for getting a valid access token before any
+  // Supabase API call. Always calls getSession() so the client can rotate
+  // the token silently. Falls back to explicit refreshSession() if needed.
+  // On success, syncs the refreshed token back to profile state + Go config.
+  // On failure, sets sessionExpired so the banner appears.
+  const getFreshToken = useCallback(async (): Promise<string | null> => {
+    const p = profileRef.current;
+    if (!p?.email) return null;
+
+    try {
+      const { data: s } = await supabase.auth.getSession();
+      if (s.session?.access_token) {
+        const tok = s.session.access_token;
+        const ref = s.session.refresh_token ?? p.refreshToken ?? "";
+        // Sync back if the token rotated
+        if (tok !== p.token) {
+          const updated = { ...p, token: tok, refreshToken: ref } as UserProfile;
+          setProfile(updated);
+          saveProfile(updated);
+          syncAuthToGoConfig(tok, p.email, ref);
+        }
+        setSessionExpired(false);
+        return tok;
+      }
+
+      // No live session — try explicit refresh with stored refresh token
+      if (p.refreshToken) {
+        const { data: r } = await supabase.auth.refreshSession({ refresh_token: p.refreshToken });
+        if (r.session?.access_token) {
+          const tok = r.session.access_token;
+          const ref = r.session.refresh_token ?? p.refreshToken;
+          const updated = { ...p, token: tok, refreshToken: ref } as UserProfile;
+          setProfile(updated);
+          saveProfile(updated);
+          syncAuthToGoConfig(tok, p.email, ref);
+          setSessionExpired(false);
+          return tok;
+        }
+      }
+    } catch {}
+
+    // Both paths failed — session is truly expired
+    setSessionExpired(true);
+    return null;
+  }, []);
+
+  // Balance rides along on the license endpoint, which the app already polls,
+  // rather than adding a second round trip. Failures leave the last known value
+  // in place: a transient network error should not make the chip read "0" and
+  // tell the user they are out of tokens when they are not.
+  const refreshTokenBalance = useCallback(async () => {
+    try {
+      const token = await getFreshToken();
+      if (!token) { setTokenBalance(null); return; }
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/license`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (typeof data.tokenBalance === "number") setTokenBalance(data.tokenBalance);
+    } catch {
+      // keep the previous value
+    }
+  }, [getFreshToken]);
+
+  function handleTopUp() {
+    if (!authStatus?.loggedIn) { setShowAuthForm(true); return; }
+    openUrl(`${MARKETING_URL}/pricing`).catch(() => {});
+  }
+
+  // Boot: restore profile, recents, terminal prefs and any live session.
+  // Placed AFTER getFreshToken/refreshTokenBalance because it depends on them;
+  // a dependency declared later in the component body would be in the temporal
+  // dead zone when the dep array is evaluated during render.
   useEffect(() => {
     async function init() {
       const [p, r] = await Promise.all([loadProfile(), loadRecent()]);
@@ -239,6 +319,7 @@ export default function App() {
           if (claims) {
             const sub = (claims.subscription_status as string | undefined) ?? "";
             setAuthStatus({ loggedIn: true, isPro: sub === "pro" || sub === "team", plan: sub || "free", email: activeProfile.email });
+            void refreshTokenBalance();
           }
         } catch {}
       }
@@ -247,54 +328,7 @@ export default function App() {
 
     // Load MCP editor status on mount
     invoke("check_mcp_status").then((s) => setMcpStatus(s as Record<string, { installed: boolean; configured: boolean }>)).catch(() => {});
-  }, []);
-
-  // ── Token refresh ─────────────────────────────────────────────────
-  // Single source of truth for getting a valid access token before any
-  // Supabase API call. Always calls getSession() so the client can rotate
-  // the token silently. Falls back to explicit refreshSession() if needed.
-  // On success, syncs the refreshed token back to profile state + Go config.
-  // On failure, sets sessionExpired so the banner appears.
-  const getFreshToken = useCallback(async (): Promise<string | null> => {
-    const p = profileRef.current;
-    if (!p?.email) return null;
-
-    try {
-      const { data: s } = await supabase.auth.getSession();
-      if (s.session?.access_token) {
-        const tok = s.session.access_token;
-        const ref = s.session.refresh_token ?? p.refreshToken ?? "";
-        // Sync back if the token rotated
-        if (tok !== p.token) {
-          const updated = { ...p, token: tok, refreshToken: ref } as UserProfile;
-          setProfile(updated);
-          saveProfile(updated);
-          syncAuthToGoConfig(tok, p.email, ref);
-        }
-        setSessionExpired(false);
-        return tok;
-      }
-
-      // No live session — try explicit refresh with stored refresh token
-      if (p.refreshToken) {
-        const { data: r } = await supabase.auth.refreshSession({ refresh_token: p.refreshToken });
-        if (r.session?.access_token) {
-          const tok = r.session.access_token;
-          const ref = r.session.refresh_token ?? p.refreshToken;
-          const updated = { ...p, token: tok, refreshToken: ref } as UserProfile;
-          setProfile(updated);
-          saveProfile(updated);
-          syncAuthToGoConfig(tok, p.email, ref);
-          setSessionExpired(false);
-          return tok;
-        }
-      }
-    } catch {}
-
-    // Both paths failed — session is truly expired
-    setSessionExpired(true);
-    return null;
-  }, []);
+  }, [refreshTokenBalance]);
 
   // Warm the Attack Market catalog in the background once the user is a logged-in
   // Pro, so the first open of the tab is instant (and it never reload-flashes).
@@ -303,6 +337,7 @@ export default function App() {
       prefetchAttackMarket(async () => (await getFreshToken()) ?? "");
     }
   }, [authStatus?.loggedIn, authStatus?.isPro, getFreshToken]);
+
 
   // Listen for Supabase-managed token rotation (happens automatically every
   // ~50 min). Keeps profile state and Go config in sync without any polling.
@@ -352,6 +387,7 @@ export default function App() {
       if (claims) {
         const sub = (claims.subscription_status as string | undefined) ?? "";
         setAuthStatus({ loggedIn: true, isPro: sub === "pro" || sub === "team", plan: sub || "free", email: p.email });
+            void refreshTokenBalance();
       }
     } catch {}
     if (currentServerUrl) fetchAndCachePackages(currentServerUrl);
@@ -421,6 +457,9 @@ export default function App() {
     setToasts((prev) => [...prev, { id, label, type, path, status: "scanning" }]);
   }
   function updateToastDone(id: string, reportUrl: string, cachePath?: string): void {
+    // A finished run has almost certainly moved the balance. Refresh rather
+    // than leave a stale number sitting in the sidebar.
+    void refreshTokenBalance();
     setToasts((prev) => prev.map((t) => t.id === id ? { ...t, status: "done", reportUrl, cachePath } : t));
   }
   function updateToastError(id: string, error: string): void {
@@ -838,6 +877,7 @@ export default function App() {
     setScanSummary(null);
     setReportUrl("");
     setMcpStatus({});
+    setTokenBalance(null);
   }
 
 
@@ -939,6 +979,13 @@ export default function App() {
             </>
           )}
         </nav>
+
+        {/* Token balance — only meaningful once signed in */}
+        {authStatus?.loggedIn && (
+          <div className="sidebar-bottom-actions" style={{ paddingBottom: 0 }}>
+            <TokenBalance balance={tokenBalance} onTopUp={handleTopUp} />
+          </div>
+        )}
 
         {/* Terminal toggle — pinned above user section like VS Code's panel button */}
         <div className="sidebar-bottom-actions">
@@ -1415,6 +1462,13 @@ export default function App() {
                 {/* Engagement — AI agent only */}
                 {agenticMode && (
                   <>
+                    {/* Cost guidance. A RANGE, not a point estimate: run cost
+                        depends on how many steps the agent takes and how large
+                        the crawled surface is, so one number would read as a
+                        promise and be wrong most of the time. */}
+                    <span className="scanner-grid-label" style={{ marginTop: 18 }}>COST</span>
+                    <RunCostHint balance={tokenBalance} model="sonnet" />
+
                     {agTemplate && (
                       <div className="pt-template-banner">
                         <div className="pt-template-meta">

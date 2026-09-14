@@ -34,6 +34,12 @@ export function friendlyError(raw: string): string {
     return "This feature requires a Pro subscription.";
 
   // ── AI service ───────────────────────────────────────────────────────────
+  // Out of Trojan Tokens is NOT a rate limit and must not be worded like one.
+  // A rate limit clears by itself at midnight; an empty balance never does, so
+  // telling the user to wait would leave them stuck. Checked first, because a
+  // 402 body can also contain the word "limit".
+  if (s.includes("insufficient_tokens") || s.includes("out of trojan tokens"))
+    return "You're out of Trojan Tokens. Top up to continue — your run is saved and will resume where it stopped.";
   if (s.includes("rate_limit_exceeded") || (s.includes("daily") && s.includes("limit")))
     return "Daily analysis limit reached. Resets at midnight UTC.";
   if (s.includes("ai service error") || s.includes("anthropic"))
