@@ -95,6 +95,14 @@ type RunOptions struct {
 	MaxRunTokens int
 	// OnEvent receives progress events in order; may be nil.
 	OnEvent func(Event)
+	// Checkpoint, when non-nil, enables resumption. The caller pre-fills the
+	// run-shape fields (target, crawl, tier, limits, RoE); the loop fills in
+	// live state and saves after EVERY turn, so nothing is lost to a crash, a
+	// closed laptop, or an exhausted token balance.
+	//
+	// If it already carries Messages, this is a RESUME: the conversation
+	// continues from them instead of being seeded fresh from Task.
+	Checkpoint *Checkpoint
 }
 
 // RunResult is the outcome of a run.
@@ -109,6 +117,11 @@ type RunResult struct {
 
 // StopTokenBudget is the reason surfaced when the cumulative token ceiling trips.
 const StopTokenBudget StopReason = "token budget reached"
+
+// StopInsufficientTokens ends a run whose Trojan Token balance ran out. Unlike
+// every other StopReason this one is RESUMABLE: the checkpoint is kept, and the
+// run continues from the same conversation once the user tops up.
+const StopInsufficientTokens StopReason = "out of Trojan Tokens"
 
 // DefaultMaxRunTokens disables the per-run cumulative-token ceiling by default
 // (0 = off). We removed the hard cap because it was cutting runs off mid-proof —
@@ -127,9 +140,42 @@ func Run(ctx context.Context, tb *Toolbox, tr Transport, opts RunOptions) (*RunR
 		emit = func(Event) {}
 	}
 
+	// Resume picks up the exact conversation the previous attempt ended on.
+	// Replaying it verbatim matters: Claude requires assistant turns, including
+	// thinking blocks, echoed back byte-for-byte, which is why Message.Content
+	// stays json.RawMessage end to end.
 	messages := []Message{userTextMessage(opts.Task)}
 	var cum Usage
+	if cp := opts.Checkpoint; cp != nil && len(cp.Messages) > 0 {
+		messages = cp.Messages
+		cum = cp.Usage
+	}
 	result := &RunResult{}
+
+	// save persists the run so far. Failures are logged through the event
+	// stream rather than aborting: losing the ability to resume is bad, but
+	// killing a live engagement over a disk error is worse.
+	save := func(reason StopReason, resumable bool) {
+		cp := opts.Checkpoint
+		// No id yet means turn 1 has not returned. The file is named by run id,
+		// so there is nothing addressable to write until the server mints one.
+		if cp == nil || cp.RunID == "" {
+			return
+		}
+		cp.Messages = messages
+		cp.Usage = cum
+		cp.Findings = tb.Findings()
+		cp.Facts = tb.Facts()
+		if g := tb.Graph(); g != nil {
+			cp.GraphNodes, cp.GraphEdges = g.Snapshot()
+		}
+		cp.Steps, cp.Requests, cp.Elapsed = tb.Budget().Stats()
+		cp.StopReason = reason
+		cp.Resumable = resumable
+		if err := SaveCheckpoint(cp); err != nil {
+			emit(Event{Type: EventStep, Detail: "checkpoint failed: " + err.Error()})
+		}
+	}
 
 	// Emit the initial attack-graph snapshot (endpoints seeded from the crawl)
 	// so a viewer sees the coverage map before the first probe (§9.2).
@@ -147,6 +193,10 @@ func Run(ctx context.Context, tb *Toolbox, tr Transport, opts RunOptions) (*RunR
 		// Reserve a reasoning turn. A tripped cap ends the run — visibly.
 		if err := tb.Budget().BeginStep(); err != nil {
 			_, reason := tb.Budget().Stopped()
+			// A tripped step/request/wall-clock cap is a real end, not a pause:
+			// resuming would hand back the same exhausted budget. Recorded
+			// non-resumable so the UI offers "start a new run", not "continue".
+			save(reason, false)
 			return finish(result, tb, cum, EventStopped, reason, emit), nil
 		}
 		step, _, _ := tb.Budget().Stats()
@@ -155,8 +205,24 @@ func Run(ctx context.Context, tb *Toolbox, tr Transport, opts RunOptions) (*RunR
 
 		turn, err := tr.Turn(ctx, messages)
 		if err != nil {
+			// Out of Trojan Tokens is not a failure -- it is a pause. The work
+			// done so far is already paid for, so it is checkpointed and the run
+			// ends resumably rather than being thrown away.
+			if errors.Is(err, ErrInsufficientTokens) {
+				save(StopInsufficientTokens, true)
+				return finish(result, tb, cum, EventStopped, StopInsufficientTokens, emit), nil
+			}
+			// Any other transport error still checkpoints, so a network blip or a
+			// crash does not cost the user the whole engagement.
+			save("", true)
 			return nil, err
 		}
+		// The run id is minted server-side on turn 1. Latch it the first time we
+		// see it so the checkpoint has a stable filename for the rest of the run.
+		if cp := opts.Checkpoint; cp != nil && cp.RunID == "" && turn.RunID != "" {
+			cp.RunID = turn.RunID
+		}
+
 		cum.add(turn.Usage)
 
 		// Cumulative cost ceiling — the $ bound, checked after each turn.
@@ -167,6 +233,10 @@ func Run(ctx context.Context, tb *Toolbox, tr Transport, opts RunOptions) (*RunR
 
 		// Append the assistant turn verbatim (preserves thinking blocks).
 		messages = append(messages, Message{Role: "assistant", Content: turn.Content})
+
+		// Checkpoint the turn before executing its tools: the assistant message is
+		// already billed, so it must survive even if a probe panics below.
+		save("", true)
 
 		toolResults, finished := dispatchBlocks(ctx, tb, turn.Content, step, emit)
 
@@ -188,6 +258,11 @@ func Run(ctx context.Context, tb *Toolbox, tr Transport, opts RunOptions) (*RunR
 		// End only when the agent is done AND nothing was just resolved that it
 		// should get a turn to react to.
 		if wantEnd && len(outcomes) == 0 {
+			// Finished for good: drop the checkpoint so completed runs don't
+			// accumulate on disk holding captured response bodies.
+			if cp := opts.Checkpoint; cp != nil {
+				_ = DeleteCheckpoint(cp.RunID)
+			}
 			return finish(result, tb, cum, EventFinish, "", emit), nil
 		}
 	}
@@ -675,9 +750,105 @@ func RunAgentic(ctx context.Context, cfg Config) (*RunResult, error) {
 		task += "\n\n" + hint
 	}
 
+	// Checkpoint template. The run-shape fields are filled here, where the
+	// Config is in scope; the loop adds live state and saves after every turn.
+	// RunID is left empty deliberately -- it is minted server-side on turn 1 and
+	// latched by the loop.
+	cp := &Checkpoint{
+		TargetURL:         cfg.TargetURL,
+		Task:              task,
+		Crawl:             cfg.Crawl,
+		Tier:              cfg.Tier,
+		Env:               cfg.Env,
+		AcceptSideEffects: cfg.AcceptSideEffects,
+		Limits:            limits,
+		MaxRunTokens:      cfg.MaxRunTokens,
+		RoE:               cfg.RoE,
+		Identities:        cfg.Identities,
+	}
+
 	return Run(ctx, tb, tr, RunOptions{
 		Task:         task,
 		MaxRunTokens: cfg.MaxRunTokens,
 		OnEvent:      cfg.OnEvent,
+		Checkpoint:   cp,
+	})
+}
+
+// ResumeOptions carries the live objects a checkpoint cannot hold: the Pro
+// access token (a credential, deliberately never written to disk), the event
+// sink, and the optional grey-box reader and approval queue.
+type ResumeOptions struct {
+	AccessToken string
+	OnEvent     func(Event)
+	Source      SourceReader
+	Approvals   *Approvals
+}
+
+// ResumeAgentic continues a previously checkpointed run.
+//
+// The engagement picks up on the exact conversation it stopped on, with its
+// findings, fact memory, attack graph and consumed budget intact -- so an agent
+// that had already established (say) an admin token via SQLi does not have to
+// rediscover it, and does not get a fresh step budget to burn.
+//
+// The safety envelope is rebuilt from the checkpoint rather than trusted from
+// it: tier, environment and RoE go back through NewEnvelope and SetRoE exactly
+// as on a fresh run, so a hand-edited checkpoint cannot widen what the agent is
+// permitted to do.
+func ResumeAgentic(ctx context.Context, cp *Checkpoint, opts ResumeOptions) (*RunResult, error) {
+	if cp == nil {
+		return nil, errors.New("nil checkpoint")
+	}
+	if !cp.Resumable {
+		return nil, fmt.Errorf("run %s is not resumable (%s)", cp.RunID, cp.StopReason)
+	}
+	if opts.AccessToken == "" {
+		return nil, errors.New("agentic DAST requires a Pro access token")
+	}
+
+	host, err := dast.NormalizeHost(cp.TargetURL)
+	if err != nil {
+		return nil, err
+	}
+	env, err := NewEnvelope(cp.Tier, cp.Env, host, cp.AcceptSideEffects)
+	if err != nil {
+		return nil, err
+	}
+	env.SetRoE(cp.RoE)
+
+	limits := cp.Limits
+	if limits == (Limits{}) {
+		limits = DefaultLimits()
+	}
+
+	budget := NewBudget(limits, nil)
+	budget.Restore(cp.Steps, cp.Requests, cp.Elapsed)
+
+	tb := NewToolbox(env, budget, limits, cp.Crawl)
+	tb.RestoreState(cp.Findings, cp.Facts)
+	if g := tb.Graph(); g != nil {
+		g.Restore(cp.GraphNodes, cp.GraphEdges)
+	}
+	if opts.Source != nil {
+		tb.SetSource(opts.Source)
+	}
+	if len(cp.Identities) > 0 {
+		tb.SetIdentities(cp.Identities)
+	}
+	if opts.Approvals != nil {
+		tb.SetApprovals(opts.Approvals)
+	}
+
+	tr := NewEdgeTransport(opts.AccessToken)
+	// Re-attach to the same server-side run so resumed turns keep aggregating to
+	// one run in the usage ledger instead of opening a second one.
+	tr.SetRunID(cp.RunID)
+
+	return Run(ctx, tb, tr, RunOptions{
+		Task:         cp.Task,
+		MaxRunTokens: cp.MaxRunTokens,
+		OnEvent:      opts.OnEvent,
+		Checkpoint:   cp,
 	})
 }

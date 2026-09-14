@@ -408,3 +408,19 @@ func pickHeaders(h http.Header) map[string]string {
 	}
 	return out
 }
+
+// RestoreState rehydrates findings and the fact memory from a checkpoint.
+//
+// Only these two are restored here: the graph is restored via Graph().Restore
+// and the budget via Budget().Restore, while captured probes (used by
+// diff_responses) are deliberately NOT persisted. Probe bodies are the largest
+// and most sensitive part of a run, and a resumed agent can re-probe if it
+// needs a fresh comparison -- so they are dropped rather than written to disk.
+func (t *Toolbox) RestoreState(findings []Candidate, facts []Fact) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.findings = append([]Candidate(nil), findings...)
+	t.facts = append([]Fact(nil), facts...)
+	t.finished = false
+	t.summary = ""
+}

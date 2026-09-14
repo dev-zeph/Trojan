@@ -104,3 +104,8 @@ func (t *EdgeTransport) Turn(ctx context.Context, messages []Message) (*TurnResu
 	}
 	return &result, nil
 }
+
+// SetRunID re-attaches this transport to an existing server-side run. Used on
+// resume so continued turns aggregate to the same run in the usage ledger
+// rather than opening a second one for what the user sees as one engagement.
+func (t *EdgeTransport) SetRunID(runID string) { t.runID = runID }

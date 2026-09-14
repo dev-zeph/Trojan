@@ -359,3 +359,31 @@ func (g *AttackGraph) Counts() (endpoints, tested, vulnerable int) {
 	}
 	return
 }
+
+// Restore rehydrates a graph from a checkpoint snapshot, replacing any existing
+// contents. The edge dedup key set is rebuilt with the SAME key format AddEdge
+// uses -- if the two ever diverge, a resumed run would re-add edges it already
+// has and the coverage map would grow duplicates on every resume.
+func (g *AttackGraph) Restore(nodes []GraphNode, edges []GraphEdge) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	g.nodes = make(map[string]*GraphNode, len(nodes))
+	g.order = make([]string, 0, len(nodes))
+	for i := range nodes {
+		n := nodes[i]
+		g.nodes[n.ID] = &n
+		g.order = append(g.order, n.ID)
+	}
+
+	g.edges = make([]GraphEdge, 0, len(edges))
+	g.edgeK = make(map[string]bool, len(edges))
+	for _, e := range edges {
+		key := fmt.Sprintf("%s|%s|%s", e.From, e.To, e.Kind)
+		if g.edgeK[key] {
+			continue
+		}
+		g.edgeK[key] = true
+		g.edges = append(g.edges, e)
+	}
+}
