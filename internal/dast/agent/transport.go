@@ -50,6 +50,12 @@ func NewEdgeTransport(accessToken string) *EdgeTransport {
 // ErrRateLimited is returned when the daily agentic-run budget is exhausted.
 var ErrRateLimited = fmt.Errorf("rate_limit_exceeded")
 
+// ErrInsufficientTokens is returned when the user's Trojan Token balance cannot
+// cover the next turn. Deliberately distinct from ErrRateLimited: a rate limit
+// clears on its own at midnight UTC, whereas this needs the user to top up, so
+// the UI must say something different and offer a different action.
+var ErrInsufficientTokens = fmt.Errorf("insufficient_tokens")
+
 func (t *EdgeTransport) Turn(ctx context.Context, messages []Message) (*TurnResult, error) {
 	payload := map[string]any{"messages": messages}
 	if t.runID != "" {
@@ -79,6 +85,9 @@ func (t *EdgeTransport) Turn(ctx context.Context, messages []Message) (*TurnResu
 
 	if resp.StatusCode == http.StatusTooManyRequests {
 		return nil, ErrRateLimited
+	}
+	if resp.StatusCode == http.StatusPaymentRequired {
+		return nil, ErrInsufficientTokens
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("agentic-dast turn failed (status %d)", resp.StatusCode)

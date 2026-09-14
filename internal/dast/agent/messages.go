@@ -25,6 +25,11 @@ type TurnResult struct {
 	// The server ignores any id a client supplies on turn 1, so this cannot be
 	// used to merge usage into somebody else's run.
 	RunID string `json:"runId"`
+
+	// TokenBalance is the user's remaining Trojan Token balance after this turn
+	// was charged. Surfaced so the run view can show a live balance and warn
+	// before it runs out. Billing units, NOT LLM tokens -- see Usage for those.
+	TokenBalance int `json:"tokenBalance"`
 }
 
 // Usage mirrors the Anthropic usage object; the loop accumulates it across turns
