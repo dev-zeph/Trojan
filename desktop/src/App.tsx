@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { TerminalPanel } from "./TerminalPanel";
 import { PrintCertificate } from "./PrintCertificate";
 import { PrintComplianceReport } from "./PrintComplianceReport";
@@ -10,7 +11,7 @@ import type { PentestReport } from "./PrintPenTestReport";
 import { AttackMarket, prefetchAttackMarket } from "./AttackMarket";
 import type { AttackTemplate } from "./AttackMarket";
 import { McpConnect } from "./McpConnect";
-import { STORE_KEY, TERMINAL_KEY, SUPABASE_URL } from "./constants";
+import { MARKETING_URL, STORE_KEY, SUPABASE_URL, TERMINAL_KEY } from "./constants";
 import { supabase, decodeJWT, encodeBody, syncAuthToGoConfig } from "./lib/supabase";
 import {
   getStore,
@@ -799,6 +800,27 @@ export default function App() {
     if (view === "report") setView("overview");
   }
 
+  // Upgrade CTA. Previously every one of these buttons called
+  // setShowAuthForm(true), which meant an already-signed-in free user clicked
+  // "Upgrade" and was handed a sign-in form for the account they were already
+  // in -- a dead end on the three highest-intent surfaces in the app.
+  //
+  // Signed out is still the auth modal (that IS the right next step). Signed in
+  // opens the web checkout in the system browser, because the checkout Edge
+  // Function returns an embedded-Stripe clientSecret that requires Stripe.js in
+  // a browser page.
+  function handleUpgrade() {
+    if (!authStatus?.loggedIn) {
+      setShowAuthForm(true);
+      return;
+    }
+    const toastId = `upgrade-${Date.now()}`;
+    openUrl(`${MARKETING_URL}/pricing`).catch((e) => {
+      addToast(toastId, "Upgrade", "sast", "");
+      updateToastError(toastId, friendlyError(String(e)));
+    });
+  }
+
   async function logout() {
     try {
       const s = await getStore();
@@ -1352,7 +1374,7 @@ export default function App() {
                 <div className="lab-state-card lab-pro-gate">
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
                   Penetration Testing requires a Pro subscription.
-                  <button className="lab-upgrade-btn" onClick={() => setShowAuthForm(true)}>Upgrade →</button>
+                  <button className="lab-upgrade-btn" onClick={handleUpgrade}>Upgrade →</button>
                 </div>
               )}
 
@@ -1914,7 +1936,7 @@ export default function App() {
                   <div className="lab-state-card lab-pro-gate">
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
                     Compliance reports require a Pro subscription.
-                    <button className="lab-upgrade-btn" onClick={() => setShowAuthForm(true)}>Upgrade →</button>
+                    <button className="lab-upgrade-btn" onClick={handleUpgrade}>Upgrade →</button>
                   </div>
                 )}
 
@@ -2361,7 +2383,7 @@ export default function App() {
                   <div className="lab-state-card lab-pro-gate">
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
                     Security reports require a Pro subscription.
-                    <button className="lab-upgrade-btn" onClick={() => setShowAuthForm(true)}>Upgrade →</button>
+                    <button className="lab-upgrade-btn" onClick={handleUpgrade}>Upgrade →</button>
                   </div>
                 )}
                 {hasData && isPro && !r && !isLabRunning && (

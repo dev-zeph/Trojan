@@ -30,7 +30,7 @@ brew install trojan
 
 **Linux / macOS (curl)**
 ```bash
-curl -fsSL https://trojan.dev/install.sh | sh
+curl -fsSL https://trojancli.com/install.sh | sh
 ```
 
 ---
@@ -138,4 +138,4 @@ See [SECURITY.md](SECURITY.md) for the full security policy and GPG public key.
 
 Source available under the [Business Source License 1.1](LICENSE).
 Free for personal, educational, and open-source use.
-Commercial use requires a license — see [trojan.dev](https://trojan.dev).
+Commercial use requires a license — see [trojancli.com](https://trojancli.com).
