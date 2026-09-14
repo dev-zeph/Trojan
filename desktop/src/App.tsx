@@ -2,8 +2,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { load } from "@tauri-apps/plugin-store";
-import { createClient } from "@supabase/supabase-js";
 import { TerminalPanel } from "./TerminalPanel";
 import { PrintCertificate } from "./PrintCertificate";
 import { PrintComplianceReport } from "./PrintComplianceReport";
@@ -12,225 +10,34 @@ import type { PentestReport } from "./PrintPenTestReport";
 import { AttackMarket, prefetchAttackMarket } from "./AttackMarket";
 import type { AttackTemplate } from "./AttackMarket";
 import { McpConnect } from "./McpConnect";
+import { STORE_KEY, TERMINAL_KEY, SUPABASE_URL } from "./constants";
+import { supabase, decodeJWT, encodeBody, syncAuthToGoConfig } from "./lib/supabase";
+import {
+  getStore,
+  loadProfile,
+  saveProfile,
+  loadRecent,
+  saveRecent,
+  updateRecentUrl,
+  updateRecentCachePath,
+  deleteRecentEntry,
+} from "./lib/store";
+import { friendlyError, timeAgo, parseAuthCallback, greet, initials } from "./lib/format";
+import type {
+  NavView,
+  ScanType,
+  PkgInfo,
+  PrivacyReport,
+  ComplianceLabResult,
+  Finding,
+  ScanSummary,
+  ThreatLabResult,
+  AuthStatus,
+  RecentProject,
+  UserProfile,
+  Toast,
+} from "./types";
 import "./App.css";
-
-type NavView  = "overview" | "sast" | "dast" | "market" | "dependencies" | "threatlab" | "licenses" | "privacy" | "compliancelab" | "history" | "autofix" | "profile" | "report";
-type ScanType = "sast" | "dast";
-
-interface PackageAdvisory { id: string; severity: string; summary: string; fix_version?: string; }
-interface PkgInfo { name: string; version: string; ecosystem: string; direct: boolean; cve_count: number; highest_severity?: string; fix_version?: string; advisories?: PackageAdvisory[]; license?: string; license_risk?: string; }
-interface PrivacyDataType { name: string; category: string; category_groups: string[]; detection_count: number; locations: { file: string; line: number; column_start: number; column_end: number }[]; }
-interface PrivacyThirdParty { name: string; data_types: string[]; risk_count: number; }
-interface PrivacyReport { data_types: PrivacyDataType[]; third_party: PrivacyThirdParty[]; }
-interface ComplianceLabResult {
-  grade: "A" | "B" | "C" | "D" | "F";
-  score: number;
-  executive_summary: string;
-  license_verdict: string;
-  privacy_verdict: string;
-  recommendations: string[];
-}
-interface Finding { id: string; title: string; severity: string; scanner: string; file?: string; line?: number; description?: string; }
-interface ScanSummary { critical: number; high: number; medium: number; low: number; info: number; total: number; scannedAt: string; }
-
-interface AttackVector { title: string; severity: string; description: string; findings_involved: string[]; exploitability: "easy" | "moderate" | "hard"; }
-interface PriorityFix  { rank: number; type: "code" | "package" | "config"; title: string; description: string; command?: string; file?: string; line?: number; finding_id?: string; }
-interface ThreatLabResult {
-  threat_index: number;
-  grade: "A" | "B" | "C" | "D" | "F";
-  verdict: string;
-  attack_vectors: AttackVector[];
-  priority_fixes: PriorityFix[];
-  compliance_summary: string;
-  key_risks: string[];
-}
-interface AuthStatus { loggedIn: boolean; isPro: boolean; plan: string; email?: string; }
-
-interface RecentProject { path: string; name: string; type: ScanType; scannedAt: string; reportUrl?: string; cachePath?: string; }
-interface UserProfile   { name: string; email: string; token?: string; refreshToken?: string; familiarity?: number; aboutYou?: string; avatarDataUrl?: string; }
-interface Toast {
-  id: string;
-  label: string;
-  type: ScanType;
-  path: string;
-  status: "scanning" | "done" | "error";
-  reportUrl?: string;
-  cachePath?: string;
-  error?: string;
-}
-
-const STORE_KEY      = "recent-projects";
-const PROFILE_KEY    = "user-profile";
-const TERMINAL_KEY   = "terminal-prefs";
-const SUPABASE_URL   = "https://dtmocojzvgsswjdsrmqr.supabase.co";
-const SUPABASE_ANON_KEY = "sb_publishable_U1qvJb7QebxgH5_0HCMYJQ_jKBybATQ";
-
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-
-// Decode a JWT payload without verifying the signature (verification happens
-// server-side on every API call). Returns null on any parse error.
-function decodeJWT(token: string): Record<string, unknown> | null {
-  try {
-    const b64 = token.split(".")[1]?.replace(/-/g, "+").replace(/_/g, "/");
-    if (!b64) return null;
-    return JSON.parse(atob(b64));
-  } catch { return null; }
-}
-
-// Base64-encode a value's JSON. Edge-function request bodies are wrapped as
-// { encoded } so Cloudflare's WAF (in front of Supabase) doesn't false-positive
-// on attack signatures inside SAST findings ("<script>", "' OR 1=1", path
-// traversal, ...) and reject the request with a 403. The functions unwrap it
-// transparently via _shared/body.ts. UTF-8 safe (btoa alone is not).
-function encodeBody(value: unknown): string {
-  const bytes = new TextEncoder().encode(JSON.stringify(value));
-  let bin = "";
-  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-  return btoa(bin);
-}
-
-// Write the access token to ~/.trojan/config.json so the Go sidecar and its
-// embedded report UI treat the desktop session as authenticated.
-async function syncAuthToGoConfig(token: string, email: string, refreshToken = ""): Promise<void> {
-  try {
-    const claims = decodeJWT(token);
-    if (!claims) return;
-    const exp = (claims.exp as number) * 1000;
-    const expiresAt = new Date(exp).toISOString();
-    const sub = (claims.subscription_status as string | undefined) ?? "";
-    const isPro = sub === "pro" || sub === "team";
-    await invoke("sync_auth", { token, email, expiresAt, isPro, refreshToken });
-  } catch {}
-}
-
-async function getStore() { return load("trojan-store.json", { autoSave: true }); }
-async function loadProfile(): Promise<UserProfile | null> {
-  try { const s = await getStore(); return (await s.get<UserProfile>(PROFILE_KEY)) ?? null; }
-  catch { return null; }
-}
-async function saveProfile(p: UserProfile) {
-  try { const s = await getStore(); await s.set(PROFILE_KEY, p); } catch {}
-}
-async function loadRecent(): Promise<RecentProject[]> {
-  try {
-    const s = await getStore();
-    const raw = (await s.get<RecentProject[]>(STORE_KEY)) ?? [];
-    return raw.filter((r) => r && r.path && r.type);
-  } catch { return []; }
-}
-async function saveRecent(path: string, type: ScanType) {
-  try {
-    const s = await getStore();
-    const existing = (await s.get<RecentProject[]>(STORE_KEY)) ?? [];
-    const name = path.split("/").pop() ?? path;
-    const prev = existing.find((r) => r.path === path);
-    const entry: RecentProject = { path, name, type, scannedAt: new Date().toISOString(), reportUrl: prev?.reportUrl };
-    await s.set(STORE_KEY, [entry, ...existing.filter((r) => r.path !== path)].slice(0, 10));
-  } catch {}
-}
-async function updateRecentUrl(path: string, reportUrl: string) {
-  try {
-    const s = await getStore();
-    const existing = (await s.get<RecentProject[]>(STORE_KEY)) ?? [];
-    await s.set(STORE_KEY, existing.map((r) => r.path === path ? { ...r, reportUrl } : r));
-  } catch {}
-}
-async function updateRecentCachePath(path: string, cachePath: string) {
-  try {
-    const s = await getStore();
-    const existing = (await s.get<RecentProject[]>(STORE_KEY)) ?? [];
-    await s.set(STORE_KEY, existing.map((r) => r.path === path ? { ...r, cachePath } : r));
-  } catch {}
-}
-
-async function deleteRecentEntry(path: string): Promise<RecentProject[]> {
-  try {
-    const s = await getStore();
-    const existing = (await s.get<RecentProject[]>(STORE_KEY)) ?? [];
-    const updated = existing.filter((r) => r.path !== path);
-    await s.set(STORE_KEY, updated);
-    await s.save();
-    return updated;
-  } catch { return []; }
-}
-
-// Maps raw internal error strings (from Rust/Go/network) to user-friendly messages.
-// Applied at every error surface so neither persona sees developer-facing text.
-function friendlyError(raw: string): string {
-  const s = raw.toLowerCase();
-
-  // ── Sidecar / spawn ──────────────────────────────────────────────────────
-  if (s.includes("sidecar not found") || s.includes("sidecar"))
-    return "Could not start the scanner. Try reinstalling Trojan.";
-  if (s.includes("spawn failed") || s.includes("spawn"))
-    return "The scanner couldn't launch. Restart the app and try again.";
-
-  // ── Scan process exits ───────────────────────────────────────────────────
-  if (s.includes("no scanners installed") || s.includes("trojan init"))
-    return "Scanners aren't set up yet. Open a terminal and run: trojan init";
-  if (s.includes("process exited") || s.includes("scan failed"))
-    return "The scan stopped unexpectedly. Try running it again.";
-  if (s.includes("server failed to start") || s.includes("could not start"))
-    return "The scan report server failed to start. Restart the app and try again.";
-
-  // ── Network ──────────────────────────────────────────────────────────────
-  if (s.includes("failed to fetch") || s.includes("networkerror") || s.includes("network error"))
-    return "Network error. Check your internet connection and try again.";
-  if (s.includes("could not fetch scan data"))
-    return "Couldn't load the scan results. Try rescanning.";
-
-  // ── Auth / session ───────────────────────────────────────────────────────
-  if (s.includes("sign in to use") || s.includes("unauthorized"))
-    return "You need to sign in to use this feature.";
-  if (s.includes("pro subscription") || s.includes("403"))
-    return "This feature requires a Pro subscription.";
-
-  // ── AI service ───────────────────────────────────────────────────────────
-  if (s.includes("rate_limit_exceeded") || (s.includes("daily") && s.includes("limit")))
-    return "Daily analysis limit reached. Resets at midnight UTC.";
-  if (s.includes("ai service error") || s.includes("anthropic"))
-    return "The AI analysis service had a problem. Try again in a moment.";
-  if (s.includes("failed to parse ai") || s.includes("unexpected response"))
-    return "The AI returned an unexpected response. Try running the analysis again.";
-  if (s.includes("service misconfigured"))
-    return "The analysis service isn't configured correctly. Contact support.";
-  if (s.includes("timed out") || s.includes("timeout") || s.includes("aborted"))
-    return "The request timed out. Try again — large codebases can take longer.";
-
-  // ── Fallback — strip developer prefixes, keep the human part ────────────
-  return raw.replace(/^Error:\s*/i, "").replace(/^Scan failed:\s*/i, "").trim() || "Something went wrong. Try again.";
-}
-
-function timeAgo(iso: string) {
-  const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
-  if (mins < 2) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  return `${Math.floor(hrs / 24)}d ago`;
-}
-
-function parseAuthCallback(url: string): Partial<UserProfile> | null {
-  try {
-    const u = new URL(url);
-    if (u.protocol !== "trojan:" || u.hostname !== "auth") return null;
-    return {
-      token:        u.searchParams.get("token")         ?? undefined,
-      name:         u.searchParams.get("name")          ?? undefined,
-      email:        u.searchParams.get("email")         ?? undefined,
-      refreshToken: u.searchParams.get("refresh_token") ?? undefined,
-    };
-  } catch { return null; }
-}
-
-function greet(name: string) {
-  const h = new Date().getHours();
-  const p = h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
-  return `${p}, ${name.split(" ")[0]}`;
-}
-function initials(name: string) {
-  return name.split(" ").filter(Boolean).map((w) => w[0]).join("").toUpperCase().slice(0, 2);
-}
 
 // ── Auth form (email/password + GitHub — runs entirely inside the desktop app) ─
 type AuthMode = "signin" | "signup";

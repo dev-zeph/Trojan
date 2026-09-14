@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { SUPABASE_URL } from "./constants";
 
 // AttackMarket is the §9.4 attack-template shop, styled after the VS Code
 // Marketplace: a browse grid of extension-style cards → a detail page with an
@@ -6,7 +7,6 @@ import { useEffect, useMemo, useState } from "react";
 // content, and a right-rail info/trust panel. Templates are first-party/curated,
 // so the "publisher" is always Trojan (verified) and there's no upload surface.
 
-const SUPABASE_URL = "https://dtmocojzvgsswjdsrmqr.supabase.co";
 const ENDPOINT = `${SUPABASE_URL}/functions/v1/attack-templates`;
 
 export interface AttackTemplate {
