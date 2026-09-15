@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -152,16 +153,6 @@ func scanCmd() *cobra.Command {
 			// ----------------------------------------------------------------
 			// Normal interactive scan (with optional --watch)
 			// ----------------------------------------------------------------
-
-			// --watch requires Pro
-			if watch {
-				cfg, err := config.LoadConfig()
-				if err != nil || !cfg.IsPro {
-					color.Red("trojan scan --watch requires a Pro subscription.\n")
-					fmt.Println("Visit https://trojancli.com/pricing to upgrade.")
-					os.Exit(1)
-				}
-			}
 
 			ui.PrintBanner(version)
 
@@ -445,7 +436,7 @@ func dastCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "dast <url>",
-		Short: "Scan a running web server for runtime vulnerabilities (Pro)",
+		Short: "Scan a running web server for runtime vulnerabilities (uses tokens)",
 		Args:  cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			targetURL := args[0]
@@ -462,13 +453,13 @@ func dastCmd() *cobra.Command {
 				dastFamiliarity = cfg.Familiarity
 				dastAboutYou = cfg.AboutYou
 			}
+			// Sign-in is required because the run is billed to an account. The
+			// BALANCE is not checked here: the edge function returns 402 when
+			// tokens run out, and the loop checkpoints and stops resumably at
+			// that point. Pre-checking on the client would only duplicate that
+			// and would be trivially bypassable anyway.
 			if accessToken == "" {
-				printDastProMessage(targetURL)
-				return
-			}
-			info, err := ai.FetchLicense(accessToken)
-			if err != nil || !info.IsPro {
-				printDastProMessage(targetURL)
+				printDastLoginMessage(targetURL)
 				return
 			}
 
@@ -563,7 +554,7 @@ func dastCmd() *cobra.Command {
 				return
 			}
 
-			fmt.Printf("\n  → Starting Trojan DAST (Pro)\n\n")
+			fmt.Printf("\n  → Starting Trojan DAST\n\n")
 
 			// Cancel (desktop) / Ctrl+C aborts Nuclei immediately instead of
 			// orphaning it against the target.
@@ -803,7 +794,7 @@ func dastCmd() *cobra.Command {
 	cmd.Flags().IntVar(&crawlTimeout, "timeout", 90, "Crawler timeout in seconds")
 	cmd.Flags().BoolVar(&desktop, "desktop", false, "Desktop app mode: skip browser, emit READY signal to stdout")
 	cmd.Flags().MarkHidden("desktop") //nolint:errcheck
-	cmd.Flags().BoolVar(&agentic, "agentic", false, "Run the adaptive AI agent pen-tester instead of the one-shot scan (Pro)")
+	cmd.Flags().BoolVar(&agentic, "agentic", false, "Run the adaptive AI agent pen-tester instead of the one-shot scan (uses tokens)")
 	cmd.Flags().StringVar(&tierStr, "tier", "passive", "Agentic scan intensity: passive | safe-active | aggressive")
 	cmd.Flags().StringVar(&envStr, "env", "production", "Agentic target environment: production | staging")
 	cmd.Flags().BoolVar(&acceptSideEffects, "accept-side-effects", false, "Acknowledge possible side effects (required for safe-active POST on production)")
@@ -834,7 +825,7 @@ func dastVerifyCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "verify <url>",
-		Short: "Prove you own a domain before pen-testing it (Pro)",
+		Short: "Prove you own a domain before pen-testing it",
 		Long: "Prove you control a domain before Trojan will scan it.\n\n" +
 			"Run without --method to get your verification token and placement\n" +
 			"instructions, then re-run with --method dns|file|meta to confirm.",
@@ -852,11 +843,7 @@ func dastVerifyCmd() *cobra.Command {
 				userEmail = cfg.UserEmail
 			}
 			if accessToken == "" {
-				printDastProMessage(targetURL)
-				return
-			}
-			if info, err := ai.FetchLicense(accessToken); err != nil || !info.IsPro {
-				printDastProMessage(targetURL)
+				printDastLoginMessage(targetURL)
 				return
 			}
 
@@ -990,7 +977,7 @@ func installDastCancelHandler() {
 
 func runAgenticDast(p agenticParams) {
 	installDastCancelHandler()
-	fmt.Printf("\n  → Starting Trojan agentic pen-test (Pro)\n\n")
+	fmt.Printf("\n  → Starting Trojan agentic pen-test\n\n")
 
 	// Reachability.
 	httpClient := &http.Client{Timeout: 5 * time.Second}
@@ -1384,7 +1371,7 @@ func agenticFindingsFromCandidates(cs []agent.Candidate) []normalizer.Finding {
 }
 
 // synthesizeFindings populates Simply/Actions/etc. on each finding via the AI
-// synthesis edge function (Pro). Mirrors the one-shot scan's Step 9. Familiarity
+// synthesis edge function. Mirrors the one-shot scan's Step 9. Familiarity
 // and profile come from local config so explanations match the user's level.
 func synthesizeFindings(findings []normalizer.Finding, accessToken string) {
 	if len(findings) == 0 {
@@ -1638,12 +1625,36 @@ func depsCmd() *cobra.Command {
 	return cmd
 }
 
-func printDastProMessage(targetURL string) {
+// printDastLoginMessage is shown when nobody is signed in. It is a LOGIN
+// prompt, not an upsell: a pen test is paid for with Trojan Tokens, and every
+// account gets 500 free every month, so there is no tier to buy first.
+// humanizeInt formats with thousands separators. A balance is read at a
+// glance, and "18000" is measurably harder to parse than "18,000".
+func humanizeInt(n int) string {
+	s := strconv.Itoa(n)
+	neg := strings.HasPrefix(s, "-")
+	if neg {
+		s = s[1:]
+	}
+	var out []byte
+	for i, c := range []byte(s) {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			out = append(out, ',')
+		}
+		out = append(out, c)
+	}
+	if neg {
+		return "-" + string(out)
+	}
+	return string(out)
+}
+
+func printDastLoginMessage(targetURL string) {
 	fmt.Println()
-	fmt.Println("  trojan dast is a Pro feature.")
+	fmt.Println("  Sign in to run a penetration test.")
 	fmt.Println()
-	fmt.Printf("  Pro DAST: smart crawling of %s + custom AI attack templates + synthesis.\n", targetURL)
-	fmt.Println("  Upgrade at trojancli.com/pricing to unlock it.")
+	fmt.Printf("  Agentic DAST crawls %s, probes it adaptively, and writes up what it finds.\n", targetURL)
+	fmt.Println("  Run `trojan login` — every account gets 500 free tokens a month.")
 	fmt.Println()
 }
 
@@ -1660,12 +1671,14 @@ func loginCmd() *cobra.Command {
 			}
 			cfg, _ := config.LoadConfig()
 			color.Green("Logged in as %s\n", cfg.UserEmail)
-			// ForceRefreshLicense validates pro status server-side (includes org seat membership)
-			info, err := config.ForceRefreshLicense()
-			if err == nil && info.IsPro {
-				color.Green("Plan: Pro\n")
+			// Fetched server-side so org seat membership is reflected. Guarded on
+			// both err AND nil: the previous version dereferenced info in the
+			// else branch, which would panic on any network failure at login.
+			if info, lerr := config.ForceRefreshLicense(); lerr == nil && info != nil {
+				color.Green("%s tokens available.\n", humanizeInt(info.TokenBalance))
+				fmt.Println("Scanning is free and unlimited. Tokens are spent on AI work.")
 			} else {
-				fmt.Println("Plan: Free. Visit https://trojancli.com/pricing to upgrade.")
+				fmt.Println("Could not fetch your token balance just now — run `trojan balance` to retry.")
 			}
 			fmt.Println("Run `trojan scan` to start scanning.")
 		},
@@ -1704,7 +1717,7 @@ func indexCmd() *cobra.Command {
 	var yes bool
 	cmd := &cobra.Command{
 		Use:   "index [path]",
-		Short: "Build a local code index for AI-assisted triage (Pro)",
+		Short: "Build a local code index for AI-assisted triage (uses tokens)",
 		Long: `Chunk this project's source into a local semantic index that gives AI triage
 richer context — the custom sanitizer, guard, or caller a single finding can't
 see on its own — so false positives are caught and real issues confirmed.
@@ -1726,10 +1739,9 @@ re-embedded).`,
 				color.Yellow("Log in first: `trojan login`\n")
 				os.Exit(1)
 			}
-			if info, lerr := ai.FetchLicense(cfg.AccessToken); lerr != nil || !info.IsPro {
-				color.Yellow("Indexing is a Pro feature. Visit https://trojancli.com/pricing to upgrade.\n")
-				os.Exit(1)
-			}
+			// No tier check: the embed function meters this against the user's
+			// token balance and returns 402 when it runs out, which surfaces as a
+			// clear error below.
 
 			files, err := rag.WalkSource(path)
 			if err != nil {
@@ -1864,8 +1876,9 @@ func buildGreyBox(projectPath, accessToken string) *greybox.Source {
 
 func proCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "pro",
-		Short: "Check your Pro subscription status",
+		Use:     "balance",
+		Aliases: []string{"pro", "tokens"},
+		Short:   "Show your Trojan Token balance",
 		Run: func(cmd *cobra.Command, args []string) {
 			if !config.IsLoggedIn() {
 				color.Yellow("Not logged in. Run `trojan login` first.\n")
@@ -1876,13 +1889,28 @@ func proCmd() *cobra.Command {
 				color.Red("Error: %s\n", err)
 				os.Exit(1)
 			}
-			status := config.SubscriptionStatusFromToken(cfg.AccessToken)
-			if status == "pro" || status == "team" {
-				color.Green("✓ You're the pro. (%s)\n", status)
-				fmt.Println("AI explanations are active. Run `trojan scan` to use them.")
-			} else {
-				color.Yellow("Free plan. Visit https://trojancli.com/pricing to upgrade.\n")
-				fmt.Println("After upgrading, log out and back in: `trojan login`")
+
+			// Fetched live rather than read from the JWT: the balance changes
+			// with every run, whereas a cached claim would go stale immediately.
+			info, lerr := ai.FetchLicense(cfg.AccessToken)
+			if lerr != nil {
+				color.Red("Could not reach the licence service: %s\n", lerr)
+				os.Exit(1)
+			}
+
+			plan := info.SubscriptionStatus
+			if plan == "" {
+				plan = "free"
+			}
+			color.Green("%s tokens\n", humanizeInt(info.TokenBalance))
+			fmt.Printf("Plan: %s\n", plan)
+			fmt.Println()
+			fmt.Println("Scanning is always free and unlimited — every scanner, every severity.")
+			fmt.Println("Tokens are spent only on AI work: pen tests, explanations, reports.")
+			if info.TokenBalance < 365 {
+				fmt.Println()
+				color.Yellow("That is below the cost of one agentic pen test (365 tokens).\n")
+				fmt.Println("Top up at https://trojancli.com/pricing")
 			}
 		},
 	}

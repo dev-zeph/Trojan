@@ -30,8 +30,10 @@ export function friendlyError(raw: string): string {
   // ── Auth / session ───────────────────────────────────────────────────────
   if (s.includes("sign in to use") || s.includes("unauthorized"))
     return "You need to sign in to use this feature.";
-  if (s.includes("pro subscription") || s.includes("403"))
-    return "This feature requires a Pro subscription.";
+  // A 403 now means "not signed in", never "buy a tier" -- there are no tiers
+  // to buy. Anything metered returns 402 and is handled above.
+  if (s.includes("403") || s.includes("not_logged_in"))
+    return "Sign in to use AI features. Every account gets 500 free tokens a month.";
 
   // ── AI service ───────────────────────────────────────────────────────────
   // Out of Trojan Tokens is NOT a rate limit and must not be worded like one.

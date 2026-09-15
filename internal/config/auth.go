@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	supabaseURL      = "https://dtmocojzvgsswjdsrmqr.supabase.co"
+	supabaseURL       = "https://dtmocojzvgsswjdsrmqr.supabase.co"
 	oauthCallbackPort = 7879
 )
 
@@ -137,7 +137,7 @@ const supabaseAnonKey = "sb_publishable_U1qvJb7QebxgH5_0HCMYJQ_jKBybATQ"
 // to the local /token endpoint.
 func Login() error {
 	tokenCh := make(chan *TrojanConfig, 1)
-	errCh   := make(chan error, 1)
+	errCh := make(chan error, 1)
 
 	mux := http.NewServeMux()
 	srv := &http.Server{Addr: fmt.Sprintf("127.0.0.1:%d", oauthCallbackPort), Handler: mux}
@@ -272,6 +272,9 @@ type licenseResponse struct {
 	IsPro              bool   `json:"isPro"`
 	SubscriptionStatus string `json:"subscriptionStatus"`
 	Email              string `json:"email"`
+	// TokenBalance is the user's Trojan Token balance -- the BILLING unit, not
+	// LLM tokens. Mirrors ai.LicenseInfo; both decode the same endpoint.
+	TokenBalance int `json:"tokenBalance"`
 }
 
 func fetchLicense(accessToken string) (*licenseResponse, error) {

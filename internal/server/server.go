@@ -206,74 +206,24 @@ func (s *Server) notifySSEClients() {
 func (s *Server) handleLatestScan(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
-	isPro := s.checkProStatus()
-
 	s.scanMu.RLock()
 	scan := s.scan
 	s.scanMu.RUnlock()
 
+	// Every finding, every severity, for everyone. Scanning happens on the
+	// user's own machine and costs us nothing, so there is nothing to meter --
+	// and hiding critical findings from a free user of a SECURITY tool was
+	// never defensible. Cost is metered on the AI layer instead, server-side,
+	// against the user's Trojan Token balance.
 	var resp scanResponse
 	resp.Timestamp = scan.Timestamp
 	resp.ProjectPath = scan.ProjectPath
-
-	if isPro {
-		resp.Findings = scan.Findings
-		resp.LockedCount = 0
-	} else {
-		resp.Findings, resp.LockedCount = markFindingsForFree(scan.Findings)
-	}
+	resp.Findings = scan.Findings
+	resp.LockedCount = 0
 	resp.Packages = scan.Packages
 	resp.Privacy = scan.Privacy
 
 	json.NewEncoder(w).Encode(resp)
-}
-
-// checkProStatus reads cfg.IsPro which is set server-side on login/refresh.
-// This correctly covers org seat members whose JWT subscription_status is "free".
-func (s *Server) checkProStatus() bool {
-	cfg, err := config.LoadConfig()
-	if err != nil || cfg.AccessToken == "" {
-		return false
-	}
-	return cfg.IsPro
-}
-
-// markFindingsForFree returns a copy of all findings with the Locked field set
-// for those not accessible on the free plan. Free users get up to 5 low/medium
-// findings (medium first); everything else is locked. The original scan slice
-// is never mutated.
-func markFindingsForFree(findings []normalizer.Finding) (marked []normalizer.Finding, lockedCount int) {
-	var medium, low []normalizer.Finding
-	for _, f := range findings {
-		switch f.Severity {
-		case normalizer.SeverityMedium:
-			medium = append(medium, f)
-		case normalizer.SeverityLow:
-			low = append(low, f)
-		}
-	}
-	accessible := append(medium, low...)
-	if len(accessible) > 5 {
-		accessible = accessible[:5]
-	}
-	freeIDs := make(map[string]bool, len(accessible))
-	for _, f := range accessible {
-		freeIDs[f.ID] = true
-	}
-
-	marked = make([]normalizer.Finding, len(findings))
-	for i, f := range findings {
-		marked[i] = f
-		// Never expose AI-generated content to free users — strip cached
-		// Simply/Actions regardless of whether the finding is unlocked.
-		marked[i].Simply = ""
-		marked[i].Actions = nil
-		if !freeIDs[f.ID] {
-			marked[i].Locked = true
-			lockedCount++
-		}
-	}
-	return marked, lockedCount
 }
 
 func (s *Server) handleFindingAction(w http.ResponseWriter, r *http.Request) {

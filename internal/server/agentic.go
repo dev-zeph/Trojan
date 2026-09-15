@@ -169,7 +169,7 @@ func (s *Server) handleApproval(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed"})
 		return
 	}
-	if _, ok := requirePro(w); !ok {
+	if _, ok := requireLogin(w); !ok {
 		return
 	}
 	var body struct {
@@ -204,16 +204,18 @@ func currentUser() (email string, isPro, ok bool) {
 	return cfg.UserEmail, cfg.IsPro, true
 }
 
-// requirePro writes a 401/403 and returns ("", false) if the caller isn't a
-// logged-in Pro user; otherwise returns (email, true).
-func requirePro(w http.ResponseWriter) (string, bool) {
-	email, isPro, ok := currentUser()
+// requireLogin writes a 401 and returns ("", false) if the caller isn't signed
+// in; otherwise returns (email, true).
+//
+// Deliberately NOT a paid-tier check. Domain-ownership consent and HITL
+// approval both run locally and spend no tokens, so gating them behind a
+// subscription only blocked people from work that costs us nothing. An account
+// is still required, because a consent record is an attestation tied to an
+// identity. Anything that does spend tokens is metered server-side by balance.
+func requireLogin(w http.ResponseWriter) (string, bool) {
+	email, _, ok := currentUser()
 	if !ok {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "not_logged_in"})
-		return "", false
-	}
-	if !isPro {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "pro_required"})
 		return "", false
 	}
 	return email, true
@@ -224,7 +226,7 @@ func (s *Server) handleConsentStatus(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed"})
 		return
 	}
-	email, ok := requirePro(w)
+	email, ok := requireLogin(w)
 	if !ok {
 		return
 	}
@@ -256,7 +258,7 @@ func (s *Server) handleConsentMint(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed"})
 		return
 	}
-	email, ok := requirePro(w)
+	email, ok := requireLogin(w)
 	if !ok {
 		return
 	}
@@ -288,7 +290,7 @@ func (s *Server) handleConsentVerify(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed"})
 		return
 	}
-	email, ok := requirePro(w)
+	email, ok := requireLogin(w)
 	if !ok {
 		return
 	}

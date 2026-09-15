@@ -54,10 +54,10 @@ const NAV: { view: NavView; label: string; icon: React.ReactNode; pro?: boolean;
   { view: "sast", label: "Static Analysis",
     icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M16 18l6-6-6-6 M8 6l-6 6 6 6"/></svg>,
   },
-  { view: "dast", label: "Penetration Testing", pro: true,
+  { view: "dast", label: "Penetration Testing",
     icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20 M2 12h20 M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10"/></svg>,
   },
-  { view: "market", label: "Attack Market", pro: true,
+  { view: "market", label: "Attack Market",
     icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.3 2.3c-.6.6-.2 1.7.7 1.7H17 M9 20a1 1 0 1 0 0-2 1 1 0 0 0 0 2z M16 20a1 1 0 1 0 0-2 1 1 0 0 0 0 2z"/></svg>,
   },
   { view: "dependencies", label: "Dependencies",
@@ -250,11 +250,6 @@ export default function App() {
     }
   }, [getFreshToken]);
 
-  function handleTopUp() {
-    if (!authStatus?.loggedIn) { setShowAuthForm(true); return; }
-    openUrl(`${MARKETING_URL}/pricing`).catch(() => {});
-  }
-
   // Boot: restore profile, recents, terminal prefs and any live session.
   // Placed AFTER getFreshToken/refreshTokenBalance because it depends on them;
   // a dependency declared later in the component body would be in the temporal
@@ -333,10 +328,10 @@ export default function App() {
   // Warm the Attack Market catalog in the background once the user is a logged-in
   // Pro, so the first open of the tab is instant (and it never reload-flashes).
   useEffect(() => {
-    if (authStatus?.loggedIn && authStatus.isPro) {
+    if (authStatus?.loggedIn) {
       prefetchAttackMarket(async () => (await getFreshToken()) ?? "");
     }
-  }, [authStatus?.loggedIn, authStatus?.isPro, getFreshToken]);
+  }, [authStatus?.loggedIn, getFreshToken]);
 
 
   // Listen for Supabase-managed token rotation (happens automatically every
@@ -562,7 +557,7 @@ export default function App() {
         }),
       });
 
-      if (res.status === 403) throw new Error("Security reports require a Pro subscription.");
+      if (res.status === 403) throw new Error("Sign in to generate a security report. Costs 100 tokens.");
       if (res.status === 429) throw new Error("Daily security report limit reached. Try again tomorrow.");
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -761,7 +756,7 @@ export default function App() {
           }),
         }),
       });
-      if (res.status === 403) throw new Error("Report generation requires a Pro subscription.");
+      if (res.status === 403) throw new Error("Sign in to generate reports.");
       if (res.status === 429) throw new Error("Daily AI limit reached. Try again tomorrow.");
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -848,14 +843,16 @@ export default function App() {
   // opens the web checkout in the system browser, because the checkout Edge
   // Function returns an embedded-Stripe clientSecret that requires Stripe.js in
   // a browser page.
-  function handleUpgrade() {
+  // Opens the web pricing page to buy tokens. Signed-out users get the auth
+  // modal first, since a purchase has to attach to an account.
+  function handleTopUp() {
     if (!authStatus?.loggedIn) {
       setShowAuthForm(true);
       return;
     }
-    const toastId = `upgrade-${Date.now()}`;
+    const toastId = `topup-${Date.now()}`;
     openUrl(`${MARKETING_URL}/pricing`).catch((e) => {
-      addToast(toastId, "Upgrade", "sast", "");
+      addToast(toastId, "Buy tokens", "sast", "");
       updateToastError(toastId, friendlyError(String(e)));
     });
   }
@@ -1409,23 +1406,26 @@ export default function App() {
           )}
 
           {view === "dast" && (() => {
-            const isPro = authStatus?.isPro ?? false;
+            // Signing in is the only requirement: a run is billed to an account. Whether
+            // it can be AFFORDED is decided server-side against the token balance,
+            // which returns 402 and pauses the run resumably rather than pre-blocking.
+            const signedIn = authStatus?.loggedIn ?? false;
             return (
             <div className="content-inner">
               <div className="view-header">
-                <h2 className="view-title">Penetration Testing <span className="lab-pro-tag">PRO</span></h2>
+                <h2 className="view-title">Penetration Testing <span className="lab-pro-tag">365 TOKENS</span></h2>
                 <p className="view-desc">Scan a running server for runtime vulnerabilities using Nuclei's 6,000+ templates plus AI-generated attack patterns.</p>
               </div>
 
-              {!isPro && (
+              {!signedIn && (
                 <div className="lab-state-card lab-pro-gate">
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-                  Penetration Testing requires a Pro subscription.
-                  <button className="lab-upgrade-btn" onClick={handleUpgrade}>Upgrade →</button>
+                  Sign in to run a penetration test. Every account gets 500 free tokens a month.
+                  <button className="lab-upgrade-btn" onClick={() => setShowAuthForm(true)}>Sign in →</button>
                 </div>
               )}
 
-              {isPro && (
+              {signedIn && (
               <>
               <div className={`pt-setup ${isScanning ? "scan-locked" : ""}`}>
                 {/* Mode */}
@@ -1911,7 +1911,10 @@ export default function App() {
 
           {/* ── Compliance Lab ── */}
           {view === "compliancelab" && (() => {
-            const isPro = authStatus?.isPro ?? false;
+            // Signing in is the only requirement: a run is billed to an account. Whether
+            // it can be AFFORDED is decided server-side against the token balance,
+            // which returns 402 and pauses the run resumably rather than pre-blocking.
+            const signedIn = authStatus?.loggedIn ?? false;
             const hasData = packages.length > 0;
             const codebaseName = scanPath?.split("/").pop() ?? "Unknown";
             const r = complianceLabResult;
@@ -1944,7 +1947,7 @@ export default function App() {
                   }),
                 });
 
-                if (res.status === 403) throw new Error("Compliance reports require a Pro subscription.");
+                if (res.status === 403) throw new Error("Sign in to generate a compliance report. Costs 50 tokens.");
                 if (res.status === 429) throw new Error("Daily limit reached. Try again tomorrow.");
                 if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error((err as { error?: string }).error ?? `Request failed (${res.status})`); }
 
@@ -1963,7 +1966,7 @@ export default function App() {
                     <button className="lab-back" onClick={() => setView("dependencies")}>← Dependencies</button>
                     <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 3 }}>
                       <span className="lab-title-text">Compliance Report</span>
-                      <span className="lab-pro-tag">PRO</span>
+                      <span className="lab-pro-tag">50 TOKENS</span>
                     </div>
                     <p className="lab-subtitle">
                       {r && scanPath
@@ -1978,7 +1981,7 @@ export default function App() {
                         Export Report
                       </button>
                     )}
-                    {hasData && isPro && (
+                    {hasData && signedIn && (
                       <button className={`lab-run-primary ${complianceLabRunning ? "lab-btn-loading" : ""}`} onClick={runComplianceLab} disabled={complianceLabRunning}>
                         {complianceLabRunning ? <><span className="lab-spinner" /> Analysing...</> : r ? "Re-generate" : "Generate report"}
                       </button>
@@ -1986,15 +1989,15 @@ export default function App() {
                   </div>
                 </div>
 
-                {!isPro && (
+                {!signedIn && (
                   <div className="lab-state-card lab-pro-gate">
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-                    Compliance reports require a Pro subscription.
-                    <button className="lab-upgrade-btn" onClick={handleUpgrade}>Upgrade →</button>
+                    Sign in to generate a compliance report. Costs 50 tokens.
+                    <button className="lab-upgrade-btn" onClick={() => setShowAuthForm(true)}>Sign in →</button>
                   </div>
                 )}
 
-                {isPro && !hasData && (
+                {signedIn && !hasData && (
                   <div className="lab-state-card">
                     <p className="lab-no-data" style={{ marginBottom: recent.filter(r => r.cachePath).length > 0 ? 10 : 0 }}>Load scan data to generate a compliance report.</p>
                     {recent.filter(r => r.cachePath && r.type === "sast").length > 0 && (
@@ -2011,7 +2014,7 @@ export default function App() {
                   </div>
                 )}
 
-                {isPro && hasData && !r && !complianceLabRunning && (
+                {signedIn && hasData && !r && !complianceLabRunning && (
                   <div className="lab-state-card">
                     <p className="lab-no-data">Scan data loaded for <strong>{codebaseName}</strong> ({packages.length} packages). Click "Generate report" for your AI compliance assessment.</p>
                   </div>
@@ -2373,7 +2376,10 @@ export default function App() {
 
           {/* ── Threat Lab ── */}
           {view === "threatlab" && (() => {
-            const isPro = authStatus?.isPro ?? false;
+            // Signing in is the only requirement: a run is billed to an account. Whether
+            // it can be AFFORDED is decided server-side against the token balance,
+            // which returns 402 and pauses the run resumably rather than pre-blocking.
+            const signedIn = authStatus?.loggedIn ?? false;
             const hasData = currentServerUrl != null;
             const r = threatLabResult;
             const gradeColors: Record<string, string> = { A:"#16a34a", B:"#65a30d", C:"#d97706", D:"#ea580c", F:"#dc2626" };
@@ -2394,7 +2400,7 @@ export default function App() {
                     <button className="lab-back" onClick={() => setView("sast")}>← Static Analysis</button>
                     <div className="lab-title-row">
                       <span className="lab-title-text">Security Report</span>
-                      <span className="lab-pro-tag">PRO</span>
+                      <span className="lab-pro-tag">100 TOKENS</span>
                     </div>
                     <p className="lab-subtitle">
                       {r && scanPath
@@ -2415,7 +2421,7 @@ export default function App() {
                         </button>
                       </>
                     )}
-                    {hasData && isPro && (
+                    {hasData && signedIn && (
                       <button
                         className={`lab-run-primary ${isLabRunning ? "lab-btn-loading" : ""}`}
                         onClick={runThreatLab}
@@ -2433,14 +2439,14 @@ export default function App() {
                     <p className="lab-no-data">Run a scan first from Static Analysis or Dependencies — then come back here.</p>
                   </div>
                 )}
-                {hasData && !isPro && (
+                {hasData && !signedIn && (
                   <div className="lab-state-card lab-pro-gate">
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-                    Security reports require a Pro subscription.
-                    <button className="lab-upgrade-btn" onClick={handleUpgrade}>Upgrade →</button>
+                    Sign in to generate a security report. Costs 100 tokens.
+                    <button className="lab-upgrade-btn" onClick={() => setShowAuthForm(true)}>Sign in →</button>
                   </div>
                 )}
-                {hasData && isPro && !r && !isLabRunning && (
+                {hasData && signedIn && !r && !isLabRunning && (
                   <div className="lab-state-card">
                     <p className="lab-no-data">Analyzes your last scan — manual trigger only, results cached 6 hours.</p>
                   </div>

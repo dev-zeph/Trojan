@@ -14,7 +14,6 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 
 	"github.com/dev-zeph/trojan/internal/ai"
-	"github.com/dev-zeph/trojan/internal/config"
 	"github.com/dev-zeph/trojan/internal/normalizer"
 )
 
@@ -22,14 +21,13 @@ import (
 // The AI editor (Claude Code, Cursor, etc.) spawns this process and communicates
 // via stdin/stdout using the Model Context Protocol JSON-RPC format.
 func Serve(projectPath string) error {
-	// Require a logged-in Pro user — MCP is a Pro feature.
-	cfg, err := config.LoadConfig()
-	if err != nil || cfg.AccessToken == "" {
-		return fmt.Errorf("not logged in — run `trojan login` first")
-	}
-	if !config.IsProFromToken(cfg.AccessToken) {
-		return fmt.Errorf("MCP integration requires a Pro subscription — visit https://trojancli.com/pricing to upgrade")
-	}
+	// No tier check. Every tool this server exposes reads and writes the local
+	// .trojan/scans files -- it makes no network call and spends no tokens, so
+	// there is nothing to meter. The AI work it hands off to (explanations, a
+	// fix) is metered where it actually happens, in the edge functions.
+	//
+	// Sign-in is not required either: the findings are already on this machine,
+	// and refusing to hand a developer their own scan results would be absurd.
 
 	s := server.NewMCPServer(
 		"trojan",

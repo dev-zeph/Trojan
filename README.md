@@ -9,6 +9,7 @@ Trojan scans your codebase for security issues — vulnerable dependencies, leak
 ## Why Trojan
 
 - **Runs locally.** Your code never leaves your machine.
+- **Scanning is unlimited and free.** Every scanner, every severity, every repo — it runs on your machine, so we don't meter it. Tokens are spent only on AI work.
 - **Single binary.** One install command and you're scanning.
 - **One command.** `trojan scan` does everything.
 - **Rich UI in your browser.** A proper report — not a wall of terminal text.
@@ -42,7 +43,7 @@ trojan init          # Install scanners (~30 seconds, first time only)
 trojan scan          # Scan the current project, open report in browser
 ```
 
-Log in for AI-powered explanations and fix suggestions:
+Log in for AI explanations and fix suggestions. Every account gets 500 free Trojan Tokens a month:
 
 ```bash
 trojan login         # Sign in or create a free account
@@ -57,10 +58,10 @@ trojan scan          # Now includes plain-English summaries for every finding
 |---|---|
 | `trojan init` | Install pinned scanner versions to `~/.trojan/bin/` |
 | `trojan scan` | Scan project, open local report at `localhost:7878` |
-| `trojan scan --watch` | Re-scan on file changes, live-update the open report (Pro) |
+| `trojan scan --watch` | Re-scan on file changes, live-update the open report |
 | `trojan ci` | Silent scan, SARIF 2.1.0 output to stdout, exits 1 on findings |
-| `trojan login` | Authenticate for AI explanations and Pro features |
-| `trojan pro` | Check subscription status |
+| `trojan login` | Authenticate to use AI features |
+| `trojan balance` | Show your Trojan Token balance |
 | `trojan hook install` | Install a pre-commit hook that blocks critical/high findings |
 | `trojan mcp install` | Wire Trojan into Claude Code, Cursor, and Codex CLI via MCP |
 | `trojan verify` | Verify the binary's SHA256 and GPG signature |
@@ -123,7 +124,7 @@ Trojan takes supply chain security seriously:
 - Every release binary is **SHA256 verified** and **GPG signed**.
 - Release provenance is published to the **Sigstore transparency log** via SLSA.
 - Scanner versions are **pinned and SHA256-verified** on install — not pulled from package managers.
-- Your code and findings **never leave your machine** unless you opt in to AI explanations (Pro).
+- Your code and findings **never leave your machine** unless you opt in to AI explanations.
 
 Verify your binary:
 ```bash
