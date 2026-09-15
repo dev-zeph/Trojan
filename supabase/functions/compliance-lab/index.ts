@@ -2,6 +2,8 @@ import { validateToken, isPro, corsHeaders } from '../_shared/auth.ts'
 import { supabase } from '../_shared/supabase.ts'
 import { parseBody } from '../_shared/body.ts'
 import { recordUsage } from '../_shared/usage.ts'
+import { getBalance, spendTokens, tokensForAction, InsufficientTokens } from '../_shared/tokens.ts'
+import { costMicros, modelInfo, normalizeUsage } from '../_shared/pricing.ts'
 
 // ── Input types ──────────────────────────────────────────────────────────
 
@@ -66,6 +68,7 @@ async function handleRequest(req: Request): Promise<Response> {
   if (!user) return json({ error: 'Unauthorized' }, 401)
   if (!await isPro(user)) return json({ error: 'Pro subscription required' }, 403)
 
+
   // Rate limiting
   const today = new Date().toISOString().slice(0, 10)
   const { data: limitRow } = await supabase
@@ -100,6 +103,23 @@ async function handleRequest(req: Request): Promise<Response> {
     // margin directly, so it has to be measurable from the ledger alone.
     await recordUsage({ userId: user.id, feature: 'compliance-lab', model: 'claude-sonnet-5', cacheHit: true })
     return json(cached)
+  }
+
+  // Pre-flight balance gate. Deliberately placed AFTER the cache check: a cache
+  // hit costs us nothing, so serving one at zero balance is free money for the
+  // customer and zero cost to us. Gating it would deny someone an answer we had
+  // already computed and already been paid for.
+  //
+  // Checked before the paid API call, because the debit below happens once real
+  // cost is known -- by which point the spend is already incurred. This cheap
+  // read is what stops an empty account spending our money.
+  const balance = await getBalance(user.id)
+  if (balance <= 0) {
+    return json({
+      error: 'insufficient_tokens',
+      message: 'You are out of Trojan Tokens. Top up to continue.',
+      balance,
+    }, 402)
   }
 
   const anthropicKey = Deno.env.get('ANTHROPIC_API_KEY')
@@ -213,6 +233,30 @@ Respond with a single JSON object matching the ComplianceLabResult schema — no
     model:   'claude-sonnet-5',
     usage:   completion.usage,
   })
+
+  // Debit the real cost of this call.
+  try {
+    const info = modelInfo('claude-sonnet-5')
+    const norm = normalizeUsage(info?.provider ?? 'anthropic', completion.usage)
+    const cost = costMicros('claude-sonnet-5', norm)
+    await spendTokens({
+      userId:     user.id,
+      tokens:     tokensForAction('compliance-lab', cost),
+      feature:    'compliance-lab',
+      model:      'claude-sonnet-5',
+      costMicros: cost,
+      idempotencyKey: `compliance-lab:${user.id}:${inputHash}`,
+    })
+  } catch (e) {
+    // The work is already done and already cost us money, so the result is
+    // returned regardless. A zero balance simply stops the NEXT call at the
+    // pre-flight gate above.
+    if (e instanceof InsufficientTokens) {
+      console.warn('compliance-lab: balance exhausted after work was performed', { userId: user.id })
+    } else {
+      throw e
+    }
+  }
 
   return json(result)
 }
