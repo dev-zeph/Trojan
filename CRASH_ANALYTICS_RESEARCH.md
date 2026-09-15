@@ -6,14 +6,38 @@ Status: research, not yet scoped for build. Branch `research/crash-analytics-sdk
 
 Add a Sentry-style crash/error monitoring SDK to Trojan: a developer drops a package
 into their app, and when it throws/panics in production, Trojan captures the event,
-groups it with past occurrences of the same bug, and surfaces it — with AI triage —
-on the dashboard. Framed as "20% of what Sentry does well," not a full APM
-competitor. A DDoS-detection angle was also raised; treated as a separate concern
-below, since it isn't actually part of what Sentry does either.
+groups it with past occurrences of the same bug, and surfaces it on the dashboard.
+Framed as "20% of what Sentry does well," not a full APM competitor. A
+DDoS-detection angle was also raised; treated as a separate concern below, since
+it isn't actually part of what Sentry does either.
 
-Positioning: this is meant to round out Trojan's "security + crash team before you
-hire one" pitch for early-stage teams — SAST/SCA/secrets scanning, pen-testing, and
-now "what broke in prod last night," in one product.
+Positioning: this rounds out the product with something founders want day-to-day
+(error visibility), alongside the security scanning — but it is **not** a
+security feature and should not be framed, sold, or technically coupled to one.
+
+### Decisions from review (scope is locked to this)
+
+- **Not security-framed.** No SAST/SCA correlation, no security branding, no
+  place in the security nav. This is its own standalone "Errors" surface.
+  (I'd originally proposed AI-correlating crashes with scan findings as the
+  differentiator — explicitly cut. Kept as a documented future idea in §7 in
+  case it's worth revisiting later, but it is not in scope now.)
+- **Adopt an existing open-source crash logger, don't build one.** Confirms
+  the buy-vs-build call in §2 below — GlitchTip (or Bugsink), self-hosted.
+  Trojan's job is the integration guide, the onboarding flow, and the
+  dashboard surface, not a new ingestion protocol.
+- **Trust model is resolved, not open.** The concern I raised about tension
+  with "your code never leaves your machine" is addressed by the shape of
+  the feature itself: this never touches source code. The customer explicitly
+  opts in by adding an SDK to their *running app*; what comes back is runtime
+  error events (stack trace, message, request context), not a copy of their
+  codebase. Different category from scanning, and should read as an
+  obviously-separate, clearly-labeled feature in the product — but not a
+  blocker.
+- **New requirement: mute during agentic DAST.** When Trojan's own pen-test
+  agent is actively attacking a target, it will legitimately throw errors —
+  that's the point of pen-testing. Those need to not show up as "your app is
+  broken" noise. Design in §3a below.
 
 ---
 
@@ -52,24 +76,6 @@ operational: ingesting reliably at spiky volume (a bad deploy can produce
 thousands of identical events per second), storing it cheaply enough to keep
 90 days of history, and not leaking customer PII in the process.
 
-### Where Trojan could actually be better than Sentry, not just cheaper
-
-Sentry has no idea your codebase also went through a SAST scan. Trojan does. The
-one real differentiator here: when a new issue is created, hand the AI triage
-pipeline (`internal/ai/triage.go` — this already exists, built for finding
-triage) the stack trace plus:
-- the SAST/SCA findings Trojan already has on file for that exact file/line,
-- recent `git blame` on the frames in the trace,
-- the dependency's advisory data if the crashing frame is in a vendored package.
-
-The output isn't just "here's a stack trace," it's "this crash is in the same
-function your last scan flagged as a possible unhandled-input issue" or "this
-panic is in lodash 4.17.15, which you're still running despite the SCA finding
-from three weeks ago telling you to upgrade it." That's a correlation no
-Sentry/GlitchTip/Bugsnag installation can make, because none of them see your
-scan history. It's also the one piece of this that's genuinely worth building
-from scratch — the capture/ingest/group pipeline is not.
-
 ---
 
 ## 2. Buy vs. build (this changes the estimate a lot)
@@ -94,44 +100,74 @@ protocol and ingestion pipeline from zero:
 Run GlitchTip (or Bugsink) as Trojan's ingestion backend, let customers use the
 existing, battle-tested Sentry SDKs pointed at Trojan's endpoint (or ship a thin
 Trojan-branded wrapper around them that just sets the DSN and adds a Trojan
-project token), and put 100% of the actual engineering effort into the one part
-that's genuinely differentiated: the AI correlation/triage layer on top. This is
-the single biggest lever on both cost and time-to-value.
+project token), and spend the actual engineering effort on the guide, the
+onboarding flow, and the dashboard surface — the parts customers touch. This is
+the single biggest lever on both cost and time-to-value, and it's what keeps
+this a days-to-weeks feature instead of a months-long one.
+
+**GlitchTip vs. Bugsink, concretely:** lean GlitchTip as the default —
+more mature, more framework integrations documented, and its Django/Celery
+stack is a known quantity to run. Bugsink is worth a second look if the
+single-container/~512MB footprint matters more than feature depth at this
+stage; it's a smaller operational surface to own. Either is a config change
+away from the other since both speak the Sentry protocol, so this isn't a
+one-way door.
 
 ---
 
-## 3. Proposed architecture (if pursued)
+## 3. Proposed architecture (v1 — the locked scope)
 
 ```
 customer's app (prod)
   └─ Sentry-compatible SDK (existing OSS SDK, Trojan DSN)
        │  HTTPS, async, batched
        ▼
-Ingestion endpoint (GlitchTip, self-hosted; Trojan-branded)
+Trojan ingestion shim (thin — auth bridge + DAST-mute check, see §3a)
+       │
+       ▼
+GlitchTip (self-hosted; Trojan-branded, not customer-visible)
        │  writes raw event, computes fingerprint, upserts issue
        ▼
 Postgres (issue/event storage — GlitchTip's own schema)
-       │  on *new* issue only (not every event — controls AI spend)
-       ▼
-Trigger → triage job  ──┐
-                         │  reuses internal/ai/triage.go patterns:
-                         │  - pull SAST/SCA findings for the crashing file
-                         │  - pull recent git blame on the frames
-                         │  - ask Claude for root-cause + fix suggestion
-                         ▼
-                  crash_verdicts table (Supabase Postgres, alongside
-                  existing scan data — this is where Trojan's own DB
-                  starts, not GlitchTip's)
        │
        ▼
-Desktop app — new "Crashes" tab (same nav pattern as the existing
-Reports tabs): issue list, sparkline, AI verdict, link to the file/line,
-cross-link to the original SAST finding when there is one.
+Desktop app / web dashboard — new, standalone "Errors" tab (its own
+nav entry, not nested under Security or the scan Reports): issue list,
+count, first/last seen, trend, stack trace, link to the file/line.
 ```
 
-Token/billing hook: meter AI-verdict generation the same way `threat-lab`/
-`compliance-lab` already meter Claude calls — this slots into the existing
-token system instead of needing a new billing model.
+The one piece of custom code this genuinely requires, even at minimum scope:
+a **thin ingestion shim** in front of GlitchTip rather than pointing customer
+SDKs straight at it. It does two jobs: (1) maps a Trojan project/API key to
+the right GlitchTip project, so customers auth against Trojan, not a
+GlitchTip account they never see; (2) the DAST-mute check below. Small
+surface — a handful of routes — not a rebuild of anything GlitchTip already
+does.
+
+No AI step, no token metering, no correlation with scan data in this scope —
+the whole point of the simplification is that this doesn't touch the AI/
+billing infrastructure at all. Straight capture → group → display.
+
+### 3a. Muting during agentic DAST runs
+
+Trojan's DAST orchestrator (`internal/dast`) already knows the start/end of a
+pen-test run against a given target. Two options, and I'd pick the second:
+
+- **Drop events during the run.** Simple, but if a real, unrelated production
+  bug happens to fire during that window, it's lost — not acceptable for a
+  feature whose entire value proposition is "never miss an error."
+- **Tag, don't drop.** The shim checks an `active_dast_run_id` flag on the
+  project (set by the orchestrator at run start, cleared at run end via the
+  same two calls it already makes to start/stop a scan) and stamps matching
+  events `source: dast_run` instead of `source: production`. The dashboard
+  filters `dast_run`-tagged events out of the default "Errors" view but
+  doesn't discard them — visible under a "during pen-test" filter if someone
+  wants to check. Real bugs never silently disappear; pen-test noise never
+  shows up as "your app is down" by default.
+
+This is a small, mechanical addition to the shim (one flag lookup per
+event) and a one-line addition to the DAST orchestrator's existing
+run-start/run-end hooks — not a new subsystem.
 
 ### DDoS detection — scoped out of v1, and here's why
 
@@ -149,88 +185,97 @@ current infra reach.
 
 ### On "agents and \[an\] orchestrator"
 
-Read this as: a background job runs per new issue, calls the AI triage agent,
-writes a verdict, and (optionally) notifies. For an MVP a simple Postgres-backed
-job queue (Supabase already gives us this) is enough — this is a low-frequency,
-non-latency-sensitive job (one per *new* issue, not per event). If durability/
-retry semantics become a real concern at scale, a proper workflow engine
-(Inngest, Trigger.dev, Temporal) is worth revisiting then, not up front. If a
-specific tool was meant by "Standard," let me know and I'll fold it in — I
-couldn't place that as a proper noun in this space.
+With the AI-correlation idea deferred (§7), there's no agent/job pipeline in
+v1's scope — GlitchTip does capture, grouping, and display on its own, no
+background job needed. This section is kept for when/if §7 gets revisited:
+short version, a background job per *new* issue (not per event) calling an
+agent is a low-frequency, non-latency-sensitive workload a simple
+Postgres-backed queue handles fine; a proper workflow engine (Inngest,
+Trigger.dev, Temporal) would only be worth it at real scale. If a specific
+tool was meant by "Standard," let me know and I'll fold it in — I couldn't
+place that as a proper noun in this space.
 
 ---
 
 ## 4. Pros
 
-- **Real differentiator, not just a cheaper Sentry.** The scan-history ↔
-  crash correlation is something no competitor can do without also owning your
-  SAST/SCA data. That's Trojan's actual moat here.
-- **Reuses existing infra.** AI triage pipeline, token metering, desktop nav
-  pattern, Supabase backend — this isn't a green-field system, it's an
-  extension of things already built.
+- **Cheap to build, at this scope.** No new SDKs, no new wire protocol, no
+  AI/billing integration. GlitchTip does capture, grouping, and storage;
+  Trojan builds a thin auth/mute shim, a setup guide, and a dashboard tab.
+  Realistically days-to-weeks, not months.
 - **Fits the buyer.** Exactly the audience already being pitched ("your
   security team until you hire one") — pre-seed/seed teams who'd otherwise
-  skip Sentry to save $26/mo and 20 minutes of setup.
+  skip Sentry to save $26/mo and 20 minutes of setup, and who'd rather have
+  one dashboard than five.
 - **Stickier than a CLI scan.** Once the SDK is wired into a production
-  deploy, switching cost is real — this is a meaningfully different retention
+  deploy, switching cost is real — a meaningfully different retention
   profile than "run `trojan scan` when you remember to."
-- **Buy-vs-build path is cheap.** Adopting GlitchTip's protocol/backend
-  turns this from a multi-month SDK-family build into weeks of integration
-  work plus the triage layer.
+- **Doesn't touch source code, and doesn't need to be positioned as if it
+  does.** It's runtime telemetry the customer explicitly opts into by adding
+  an SDK to their running app — a clean, easy story, separate from scanning.
+- **Low one-way-door risk.** GlitchTip and Bugsink both speak the Sentry
+  protocol, so the backend choice isn't permanent, and customers are on
+  standard Sentry SDKs — nothing proprietary to migrate away from later.
 
 ## 5. Cons / risks
 
-- **Direct tension with Trojan's core pitch.** The marketing site's entire
-  premise is "your code never leaves your machine, 0 bytes sent to our
-  servers." A crash SDK is the opposite trust model by design — it ships live
-  production runtime data (stack traces, request context, potentially PII) to
-  Trojan's servers continuously. This needs very deliberate positioning
-  ("scanning is local-first and always will be; crash monitoring is a
-  separate, explicitly opt-in cloud feature") or it muddies the thing Trojan
-  is currently known for. This is the risk I'd want a real answer to before
-  building anything.
 - **New always-on operational commitment.** A CLI tool that's briefly down
   costs a re-run. An ingestion endpoint that's down *loses production crash
-  data permanently*. That's a different reliability bar — uptime expectations,
-  on-call, incident response — for a small team pre-launch.
+  data permanently*. That's a different reliability bar — uptime
+  expectations, on-call, incident response — for a small team pre-launch.
 - **PII/compliance surface.** Stack traces and request context routinely
   contain PII. Needs scrubbing (Sentry invests heavily here), a privacy-policy
-  update, and probably DPA language — non-trivial for a two-person-ish team.
+  update, and probably DPA language — non-trivial for a small team, and worth
+  doing before the first real customer sends production data through it.
 - **Cost at scale.** A popular customer app having a bad night can produce
   thousands of events/second. GlitchTip handles this better than
   hand-rolled Postgres, but it's still a cost and capacity-planning problem
   Trojan doesn't currently have.
-- **The bar to switch is high.** Sentry's free tier is generous, and
-  GlitchTip/Bugsink are free, 5-minute self-hosted, drop-in replacements
-  today. Without the AI-correlation angle actually landing, there's limited
-  reason for a customer to route crashes through Trojan instead.
+- **The bar to switch is genuinely high.** Sentry's free tier is generous,
+  and GlitchTip/Bugsink are themselves free, 5-minute self-hosted, drop-in
+  replacements today. At this locked-down scope the pitch to a customer is
+  "one dashboard instead of two," not a capability gap — real value, but a
+  quieter one than "we do something Sentry can't."
 - **Focus risk.** Phase 7 (public launch) is still pending per the project's
-  own roadmap. Crash monitoring is a second, more crowded, more
-  operationally demanding market (Sentry, Datadog, Honeybadger, Bugsnag,
-  Rollbar are all well-funded incumbents). Worth a deliberate check that this
-  doesn't pull focus from shipping the core product's launch.
+  own roadmap. Even at minimal scope, this is a new always-on service to
+  operate while that launch is still the priority — worth a deliberate
+  check that it doesn't pull focus.
 
 ---
 
-## 6. Recommended path, if this moves forward
+## 6. Recommended path
 
-**Phase 0 — validate, cheaply (days, not months).** Stand up GlitchTip
-self-hosted, wrap it behind a Trojan-branded onboarding flow (issue a DSN as
-part of a project, point customers at the existing JS Sentry SDK). No AI
-layer yet. Ship this to a handful of existing customers and see if anyone
-actually wires it in. This tests demand before any real engineering
-investment.
+This is now small enough that there's really one phase, not a staged rollout:
 
-**Phase 1 — the actual differentiator.** Build the triage job: new issue →
-Claude agent with SAST/SCA/git-blame context → verdict → desktop "Crashes"
-tab. This is where Trojan's angle either proves itself or doesn't.
+1. Stand up GlitchTip (or Bugsink) self-hosted.
+2. Build the thin ingestion shim: Trojan project token → GlitchTip project
+   mapping, plus the DAST-mute check (§3a).
+3. Write the setup guide: pick a language/framework, copy a snippet (this is
+   just the existing Sentry SDK docs, re-pointed at a Trojan DSN — not new
+   content to invent from scratch, mostly curation).
+4. Add the "Errors" tab to the desktop app / dashboard, reading from
+   GlitchTip's issue API.
+5. Ship to a handful of existing customers, see if it gets wired in.
 
-**Phase 2 — expand, only if 0 and 1 land.** Python/Go SDK wrappers, alerting
-(Slack/email on new issue), the crash-rate-spike heuristic, retention tuning.
+No separate "validate first" step needed the way the original AI-correlation
+version warranted — the cost of building this at all is low enough that
+shipping it *is* the validation.
 
-**Before Phase 0:** get an explicit answer on the local-first positioning
-tension above — that's a product/brand decision, not an engineering one, and
-it should be made on purpose rather than discovered after the feature ships.
+---
+
+## 7. Deferred idea, not in scope: AI correlation with scan history
+
+Recorded here in case it's worth revisiting once plain error logging is live
+and proven. Sentry has no visibility into a codebase's SAST/SCA scan history;
+Trojan does. A later phase could, on a new GlitchTip issue, hand the stack
+trace to the existing triage pipeline (`internal/ai/triage.go`) along with
+the SAST/SCA findings on file for that file/line and recent git blame, and
+surface "this crash is in the function your last scan flagged" instead of
+just a stack trace. Deliberately cut from v1 because it re-introduces the
+security framing this feature is explicitly not supposed to have, and it
+brings in the AI/token-billing infrastructure a plain error-logging feature
+doesn't need. Worth another look only if the plain version proves people
+want this inside Trojan at all.
 
 ---
 
