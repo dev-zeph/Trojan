@@ -1,0 +1,424 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Checkout Service &middot; Developer Console</title>
+<style>
+  :root {
+    --bg: #eef1f5;
+    --panel: #ffffff;
+    --ink: #1c2530;
+    --muted: #66748a;
+    --line: #d5dbe4;
+    --brand: #1f5fa8;
+    --brand-dark: #17497f;
+    --ok: #1c7a4a;
+    --warn: #9a6a12;
+    --bad: #b02a2a;
+    --code-bg: #141a22;
+    --code-ink: #d6e2f0;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.5 var(--sans);
+  }
+
+  a { color: var(--brand); }
+
+  header.topbar {
+    background: var(--brand-dark);
+    color: #fff;
+    padding: 14px 20px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+  }
+  .logo {
+    width: 30px; height: 30px; border-radius: 6px;
+    background: #fff; color: var(--brand-dark);
+    display: grid; place-items: center;
+    font-weight: 700; font-size: 15px; letter-spacing: -0.5px;
+    flex: none;
+  }
+  .topbar h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  .topbar .sub { font-size: 12.5px; opacity: 0.78; margin-left: auto; }
+
+  main { max-width: 1040px; margin: 0 auto; padding: 22px 20px 60px; }
+
+  .meta {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 14px 16px;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 12px 22px;
+    margin-bottom: 20px;
+  }
+  .meta dt { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 3px; }
+  .meta dd { margin: 0; font-family: var(--mono); font-size: 12.5px; word-break: break-all; }
+
+  .note {
+    border-left: 3px solid var(--brand);
+    background: #f4f8fd;
+    padding: 10px 14px;
+    border-radius: 0 6px 6px 0;
+    color: var(--muted);
+    font-size: 13.5px;
+    margin: 0 0 22px;
+  }
+
+  h2 {
+    font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--muted); margin: 26px 0 10px; font-weight: 700;
+  }
+
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 16px;
+    margin-bottom: 12px;
+  }
+  .card-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .verb {
+    font-family: var(--mono); font-size: 11px; font-weight: 700;
+    padding: 2px 6px; border-radius: 4px;
+    background: #e7edf5; color: var(--brand-dark);
+  }
+  .route { font-family: var(--mono); font-size: 14px; font-weight: 600; }
+  .tag {
+    margin-left: auto; font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.05em;
+  }
+  .tag.ok { color: var(--ok); }
+  .tag.err { color: var(--bad); }
+  .tag.warn { color: var(--warn); }
+
+  .card p { margin: 8px 0 0; color: var(--muted); font-size: 13.5px; }
+  .card p code { font-family: var(--mono); font-size: 12.5px; background: #eef1f5; padding: 1px 4px; border-radius: 3px; color: var(--ink); }
+
+  .controls { display: flex; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+
+  button.fire {
+    font: 600 13.5px var(--sans);
+    background: var(--brand);
+    color: #fff;
+    border: 0;
+    border-radius: 6px;
+    padding: 8px 15px;
+    cursor: pointer;
+  }
+  button.fire:hover { background: var(--brand-dark); }
+  button.fire:disabled { opacity: 0.55; cursor: progress; }
+  button.fire.safe { background: #4a5768; }
+  button.fire.safe:hover { background: #3a4553; }
+
+  .status { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+
+  input[type="number"] {
+    font: 13px var(--mono);
+    width: 62px;
+    padding: 6px 8px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: #fff;
+    color: var(--ink);
+  }
+  label.inline { font-size: 13px; color: var(--muted); }
+
+  pre.out {
+    display: none;
+    margin: 12px 0 0;
+    background: var(--code-bg);
+    color: var(--code-ink);
+    padding: 12px 14px;
+    border-radius: 6px;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    line-height: 1.45;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  pre.out.show { display: block; }
+
+  footer {
+    margin-top: 34px;
+    padding-top: 16px;
+    border-top: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 12.5px;
+  }
+  footer code { font-family: var(--mono); }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12161c; --panel: #1a2029; --ink: #e6ecf3; --muted: #94a2b5;
+      --line: #2b333f; --brand: #4c8fd6; --brand-dark: #23384f; --code-bg: #0c1016;
+    }
+    .note { background: #1b2430; }
+    .verb { background: #243244; color: #9cc3ef; }
+    .card p code { background: #232b36; }
+    input[type="number"] { background: #131920; }
+  }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="logo">CS</div>
+  <h1>Checkout Service</h1>
+  <span class="sub">internal developer console &middot; not for customer use</span>
+</header>
+
+<main>
+  <dl class="meta">
+    <div>
+      <dt>Service</dt>
+      <dd>checkout-service</dd>
+    </div>
+    <div>
+      <dt>Release</dt>
+      <dd>{{RELEASE}}</dd>
+    </div>
+    <div>
+      <dt>Environment</dt>
+      <dd>{{ENVIRONMENT}}</dd>
+    </div>
+    <div>
+      <dt>Error reporting DSN</dt>
+      <dd>{{DSN}}</dd>
+    </div>
+  </dl>
+
+  <p class="note">
+    This service reports uncaught errors with the standard <code>@sentry/node</code> SDK.
+    Each button below calls a real endpoint on this server. Endpoints marked
+    <strong>breaks</strong> raise a genuine exception, report it, and answer 500.
+    The process stays up, so you can fire them in any order.
+  </p>
+
+  <h2>Working endpoints</h2>
+
+  <section class="card">
+    <div class="card-head">
+      <span class="verb">GET</span>
+      <span class="route">/api/checkout</span>
+      <span class="tag ok">succeeds</span>
+    </div>
+    <p>Completes an order for a customer who is actually in the cache. Returns a receipt. Nothing is reported.</p>
+    <div class="controls">
+      <button class="fire safe" data-method="GET" data-path="/api/checkout">Run checkout</button>
+      <span class="status" data-status></span>
+    </div>
+    <pre class="out" data-out></pre>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <span class="verb">GET</span>
+      <span class="route">/healthz</span>
+      <span class="tag ok">succeeds</span>
+    </div>
+    <p>Liveness probe. Also echoes the release, environment, and where errors are being shipped.</p>
+    <div class="controls">
+      <button class="fire safe" data-method="GET" data-path="/healthz">Check health</button>
+      <span class="status" data-status></span>
+    </div>
+    <pre class="out" data-out></pre>
+  </section>
+
+  <h2>Failing endpoints</h2>
+
+  <section class="card">
+    <div class="card-head">
+      <span class="verb">GET</span>
+      <span class="route">/boom</span>
+      <span class="tag err">breaks</span>
+    </div>
+    <p>
+      Checkout for a customer who is not in the cache. <code>loadCustomer()</code> returns
+      <code>undefined</code>, so <code>applyDiscount()</code> throws a TypeError two frames deep.
+      Good one for reading a stack trace.
+    </p>
+    <div class="controls">
+      <button class="fire" data-method="GET" data-path="/boom">Break checkout</button>
+      <span class="status" data-status></span>
+    </div>
+    <pre class="out" data-out></pre>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <span class="verb">GET</span>
+      <span class="route">/boom/db</span>
+      <span class="tag err">breaks</span>
+    </div>
+    <p>
+      Inventory reservation against a database that never answers. Throws a custom
+      <code>DatabaseError</code>, so it groups separately from the TypeErrors.
+    </p>
+    <div class="controls">
+      <button class="fire" data-method="GET" data-path="/boom/db">Break inventory</button>
+      <span class="status" data-status></span>
+    </div>
+    <pre class="out" data-out></pre>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <span class="verb">GET</span>
+      <span class="route">/boom/async</span>
+      <span class="tag warn">breaks (async)</span>
+    </div>
+    <p>
+      A payment settlement promise that rejects with nothing attached to catch it.
+      Answers <code>202</code> immediately, then fails about 10ms later and is reported by the
+      process-level <code>unhandledRejection</code> handler.
+    </p>
+    <div class="controls">
+      <button class="fire" data-method="GET" data-path="/boom/async">Break settlement</button>
+      <span class="status" data-status></span>
+    </div>
+    <pre class="out" data-out></pre>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <span class="verb">GET</span>
+      <span class="route">/boom/repeat</span>
+      <span class="tag err">breaks N times</span>
+    </div>
+    <p>
+      Fires the same cart-badge TypeError N times in a loop. All N reports belong to one
+      group, so your error tracker should show a single issue with a count of N, not N issues.
+    </p>
+    <div class="controls">
+      <label class="inline" for="repeat-n">times</label>
+      <input id="repeat-n" type="number" min="1" max="25" value="5">
+      <button class="fire" data-method="GET" data-path="/boom/repeat" data-count="repeat-n">Break cart badge</button>
+      <span class="status" data-status></span>
+    </div>
+    <pre class="out" data-out></pre>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <span class="verb">POST</span>
+      <span class="route">/boom/pii</span>
+      <span class="tag err">breaks, carries secrets</span>
+    </div>
+    <p>
+      A payment audit that crashes while the request is carrying an
+      <code>Authorization: Bearer</code> header, a password, an email, and a card number.
+      The error report leaves this process with all of it attached. Check the issue detail in
+      your error tracker: those values should be stored as <code>[redacted]</code>.
+    </p>
+    <div class="controls">
+      <button class="fire" data-method="POST" data-path="/boom/pii" data-pii="1">Break audit with secrets</button>
+      <span class="status" data-status></span>
+    </div>
+    <pre class="out" data-out></pre>
+  </section>
+
+  <footer>
+    Prefer a terminal? <code>curl -s localhost:3003/boom</code>,
+    <code>curl -s "localhost:3003/boom/repeat?n=5"</code>,
+    <code>curl -s -X POST localhost:3003/boom/pii</code>.
+    Full endpoint list is in <code>sample-app/README.md</code>.
+  </footer>
+</main>
+
+<script>
+(function () {
+  'use strict';
+
+  var PII_HEADERS = {
+    'content-type': 'application/json',
+    'authorization': 'Bearer demo-auth-token-not-a-real-secret',
+    'x-api-key': 'ak_demo_2f9c41ab77d0135a'
+  };
+
+  var PII_BODY = JSON.stringify({
+    email: 'ada@example.com',
+    password: 'hunter2-correct-horse',
+    card_number: '4242424242424242',
+    session_token: 'sess_9f2b41ac8e77d0135aab99ee31'
+  });
+
+  function card(el) {
+    return el.closest('.card');
+  }
+
+  function render(btn, statusText, statusClass, bodyText) {
+    var host = card(btn);
+    var status = host.querySelector('[data-status]');
+    var out = host.querySelector('[data-out]');
+    status.textContent = statusText;
+    status.style.color = statusClass;
+    out.textContent = bodyText;
+    out.classList.add('show');
+  }
+
+  async function fire(btn) {
+    var method = btn.getAttribute('data-method') || 'GET';
+    var path = btn.getAttribute('data-path');
+    var countId = btn.getAttribute('data-count');
+    var isPii = btn.getAttribute('data-pii') === '1';
+
+    if (countId) {
+      var n = document.getElementById(countId).value || '5';
+      path += '?n=' + encodeURIComponent(n);
+    }
+
+    var opts = { method: method, cache: 'no-store' };
+    if (isPii) {
+      opts.headers = PII_HEADERS;
+      opts.body = PII_BODY;
+    }
+
+    var label = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Sending...';
+    render(btn, method + ' ' + path + ' ...', '', '');
+
+    var started = Date.now();
+    try {
+      var res = await fetch(path, opts);
+      var text = await res.text();
+      var pretty = text;
+      try { pretty = JSON.stringify(JSON.parse(text), null, 2); } catch (e) {}
+      var ms = Date.now() - started;
+      var good = res.status < 400;
+      render(
+        btn,
+        method + ' ' + path + ' -> ' + res.status + ' ' + res.statusText + '  (' + ms + 'ms)',
+        good ? 'var(--ok)' : 'var(--bad)',
+        pretty
+      );
+    } catch (err) {
+      render(btn, 'request failed', 'var(--bad)', String(err && err.message || err));
+    } finally {
+      btn.disabled = false;
+      btn.textContent = label;
+    }
+  }
+
+  document.querySelectorAll('button.fire').forEach(function (btn) {
+    btn.addEventListener('click', function () { fire(btn); });
+  });
+})();
+</script>
+
+</body>
+</html>
