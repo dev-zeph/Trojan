@@ -11,7 +11,7 @@ import { PrintPenTestReport } from "./PrintPenTestReport";
 import type { PentestReport } from "./PrintPenTestReport";
 import "./App.css";
 
-type NavView  = "overview" | "sast" | "dast" | "dependencies" | "threatlab" | "licenses" | "privacy" | "compliancelab" | "history" | "autofix" | "profile" | "report";
+type NavView  = "overview" | "sast" | "dast" | "dependencies" | "threatlab" | "licenses" | "privacy" | "compliancelab" | "errors" | "history" | "autofix" | "profile" | "report";
 type ScanType = "sast" | "dast";
 
 interface PackageAdvisory { id: string; severity: string; summary: string; fix_version?: string; }
@@ -43,6 +43,31 @@ interface ThreatLabResult {
 }
 interface AuthStatus { loggedIn: boolean; isPro: boolean; plan: string; email?: string; }
 
+// ── Errors (crash analytics) — shapes mirror crash-analytics/CONTRACT.md ──
+type ErrSource = "production" | "dast_run";
+type ErrFilter = "production" | "dast" | "all";
+interface ErrIssue {
+  id: string; shortId: string; type: string; value: string; culprit: string;
+  count: number; firstSeen: string; lastSeen: string;
+  resolved: boolean; muted: boolean; source: ErrSource;
+  release: string | null; environment: string | null;
+}
+interface ErrFrame {
+  filename: string; function: string; lineno: number | null; colno: number | null;
+  inApp: boolean; contextLine: string | null; preContext: string[]; postContext: string[];
+}
+interface ErrEvent {
+  id: string; eventId: string; timestamp: string; level: string;
+  type: string; value: string; source: ErrSource;
+  release: string | null; environment: string | null;
+  serverName: string | null; runtime: string | null;
+  request: { method: string; url: string; headers: Record<string, string> } | null;
+  frames: ErrFrame[];   // Sentry order: innermost/crashing frame LAST
+  scrubbed: string[];
+}
+interface ErrCounts { production: number; dast: number; total: number; }
+interface ErrConfig { dsn: string; ingestUrl: string; projectId: string; projectSlug: string; projectName: string; suggestedRelease: string; suggestedEnvironment: string; backend: string; }
+
 interface RecentProject { path: string; name: string; type: ScanType; scannedAt: string; reportUrl?: string; cachePath?: string; }
 interface UserProfile   { name: string; email: string; token?: string; refreshToken?: string; familiarity?: number; aboutYou?: string; avatarDataUrl?: string; }
 interface Toast {
@@ -61,6 +86,10 @@ const PROFILE_KEY    = "user-profile";
 const TERMINAL_KEY   = "terminal-prefs";
 const SUPABASE_URL   = "https://dtmocojzvgsswjdsrmqr.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_U1qvJb7QebxgH5_0HCMYJQ_jKBybATQ";
+// Trojan Errors shim. Separate process from the Go sidecar's serverUrl — never
+// route Errors calls through that one. Change this single line to repoint.
+const ERRORS_API     = "http://127.0.0.1:3002";
+const ERRORS_POLL_MS = 5000;
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
@@ -476,6 +505,10 @@ const NAV: { view: NavView; label: string; icon: React.ReactNode; pro?: boolean;
   { view: "compliancelab", label: "Compliance Lab", pro: true,
     icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 5H2v7l6.29 6.29c.94.94 2.48.94 3.42 0l3.58-3.58c.94-.94.94-2.48 0-3.42L9 5Z M6 9.01V9 M15 5s2-2 4-2 4 2 4 2v7l-4 4"/></svg>,
   },
+  // ── Monitoring — standalone surface, deliberately not under Security ──
+  { view: "errors", label: "Errors", section: "MONITORING",
+    icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12h3l2.5-6 3.5 13 3-9 2 2h4"/></svg>,
+  },
   // ── General ──
   { view: "history", label: "Scan History", section: "GENERAL",
     icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8 M3 3v5h5 M12 7v5l4 2"/></svg>,
@@ -528,6 +561,17 @@ export default function App() {
   const [labError, setLabError]           = useState<string | null>(null);
   const [showAuthForm, setShowAuthForm]   = useState(false);
   const [historyFilter, setHistoryFilter] = useState<"all" | "sast" | "dast">("all");
+  const [errFilter, setErrFilter]         = useState<ErrFilter>("production");
+  const [errIssues, setErrIssues]         = useState<ErrIssue[]>([]);
+  const [errCounts, setErrCounts]         = useState<ErrCounts>({ production: 0, dast: 0, total: 0 });
+  const [errStatus, setErrStatus]         = useState<"loading" | "ready" | "offline" | "error">("loading");
+  const [errError, setErrError]           = useState<string | null>(null);
+  const [errConfig, setErrConfig]         = useState<ErrConfig | null>(null);
+  const [errOpenId, setErrOpenId]         = useState<string | null>(null);
+  const [errDetail, setErrDetail]         = useState<{ issue: ErrIssue; latestEvent: ErrEvent } | null>(null);
+  const [errDetailBusy, setErrDetailBusy] = useState(false);
+  const [errSetupOpen, setErrSetupOpen]   = useState(false);
+  const [errCopied, setErrCopied]         = useState<string | null>(null);
   const [staleCaches, setStaleCaches]     = useState<Set<string>>(new Set());
   const [terminalOpen, setTerminalOpen]   = useState(true);
   const [terminalHeight, setTerminalHeight] = useState(220);
@@ -1210,6 +1254,76 @@ export default function App() {
       setMcpStatus(s);
     } catch {}
     setMcpSetupBusy(false);
+  }
+
+  // ── Errors (crash analytics) ──────────────────────────────────────────
+  // Everything here talks to the Errors shim on ERRORS_API, which is its own
+  // process — not the Go sidecar's serverUrl. Health is checked before the
+  // issue list so a shim that isn't running renders as a setup panel rather
+  // than a spinner that never resolves.
+  const loadErrIssues = useCallback(async (filter: ErrFilter, quiet: boolean) => {
+    if (!quiet) setErrStatus("loading");
+    try {
+      const h = await fetch(`${ERRORS_API}/api/errors/health`);
+      if (!h.ok) throw new Error(`HTTP ${h.status}`);
+      const health = (await h.json()) as { backendReachable?: boolean };
+      if (!health.backendReachable) { setErrStatus("offline"); return; }
+    } catch {
+      setErrStatus("offline");
+      return;
+    }
+    try {
+      const r = await fetch(`${ERRORS_API}/api/errors/issues?filter=${filter}&limit=50`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const data = (await r.json()) as { issues: ErrIssue[]; counts: ErrCounts };
+      setErrIssues(data.issues ?? []);
+      setErrCounts(data.counts ?? { production: 0, dast: 0, total: 0 });
+      setErrError(null);
+      setErrStatus("ready");
+    } catch (e) {
+      setErrError(e instanceof Error ? e.message : String(e));
+      setErrStatus("error");
+    }
+  }, []);
+
+  const loadErrConfig = useCallback(async () => {
+    try {
+      const r = await fetch(`${ERRORS_API}/api/errors/config`);
+      if (!r.ok) return;
+      setErrConfig((await r.json()) as ErrConfig);
+    } catch {}
+  }, []);
+
+  // Poll while the view is mounted and active; the cleanup stops it otherwise.
+  useEffect(() => {
+    if (view !== "errors") return;
+    loadErrConfig();
+    loadErrIssues(errFilter, false);
+    const t = setInterval(() => loadErrIssues(errFilter, true), ERRORS_POLL_MS);
+    return () => clearInterval(t);
+  }, [view, errFilter, loadErrIssues, loadErrConfig]);
+
+  async function openErrIssue(id: string) {
+    setErrOpenId(id);
+    setErrDetail(null);
+    setErrDetailBusy(true);
+    try {
+      const r = await fetch(`${ERRORS_API}/api/errors/issues/${encodeURIComponent(id)}`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      setErrDetail((await r.json()) as { issue: ErrIssue; latestEvent: ErrEvent });
+    } catch (e) {
+      setErrError(e instanceof Error ? e.message : String(e));
+    }
+    setErrDetailBusy(false);
+  }
+
+  function copyErrText(key: string, text: string) {
+    navigator.clipboard.writeText(text)
+      .then(() => {
+        setErrCopied(key);
+        setTimeout(() => setErrCopied((c) => (c === key ? null : c)), 1600);
+      })
+      .catch(() => {});
   }
 
   // ── Gate renders ─────────────────────────────────────────────────────
@@ -2269,6 +2383,273 @@ export default function App() {
                       </div>
                     )}
                   </>
+                )}
+              </div>
+            );
+          })()}
+
+          {/* ── Errors ── */}
+          {view === "errors" && (() => {
+            const copyIcon = (
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M8 8h12v12H8z M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>
+              </svg>
+            );
+            const codeBlock = (key: string, code: string) => (
+              <div className="err-code-wrap">
+                <pre className="err-code">{code}</pre>
+                <button className="err-copy-btn" onClick={() => copyErrText(key, code)} title="Copy">
+                  {errCopied === key ? <span className="err-copied">Copied</span> : copyIcon}
+                </button>
+              </div>
+            );
+
+            // Sentry.init has to run before anything else is imported, or the
+            // SDK misses errors thrown while the rest of the app loads.
+            const initCode  = errConfig
+              ? `import * as Sentry from "@sentry/node";\n\nSentry.init({\n  dsn: "${errConfig.dsn}",\n  release: "${errConfig.suggestedRelease}",\n  environment: "${errConfig.suggestedEnvironment}",\n});`
+              : "";
+            const verifyCode = `setTimeout(() => { throw new Error("Trojan Errors test"); }, 0);`;
+
+            const setupGuide = (
+              <div className="err-setup">
+                <div className="err-step">
+                  <span className="err-step-num">1</span>
+                  <div className="err-step-body">
+                    <div className="err-step-title">Install the SDK</div>
+                    {codeBlock("err-install", "npm install @sentry/node")}
+                  </div>
+                </div>
+                <div className="err-step">
+                  <span className="err-step-num">2</span>
+                  <div className="err-step-body">
+                    <div className="err-step-title">Initialise it as the first import of your entrypoint</div>
+                    {errConfig
+                      ? codeBlock("err-init", initCode)
+                      : <p className="err-step-hint">Waiting for the Errors service to report your project DSN.</p>}
+                  </div>
+                </div>
+                <div className="err-step">
+                  <span className="err-step-num">3</span>
+                  <div className="err-step-body">
+                    <div className="err-step-title">Verify by throwing once</div>
+                    {codeBlock("err-verify", verifyCode)}
+                    <p className="err-step-hint">Run your app, hit the throw, and the issue shows up here within seconds.</p>
+                  </div>
+                </div>
+              </div>
+            );
+
+            const desc =
+              errStatus === "offline" ? "The Errors service is not running."
+              : errStatus === "error" ? "Could not reach the Errors service."
+              : errStatus === "loading" ? "Checking for reported errors."
+              : errCounts.total === 0 ? "No errors reported yet. Add the SDK to start receiving them."
+              : `${errCounts.production} in production, ${errCounts.dast} during pen-test, ${errCounts.total} total.`;
+
+            // ── Detail mode ──
+            if (errOpenId) {
+              const ev = errDetail?.latestEvent;
+              const is = errDetail?.issue;
+              return (
+                <div className="content-inner">
+                  <button className="err-back-btn" onClick={() => { setErrOpenId(null); setErrDetail(null); }}>
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+                    All errors
+                  </button>
+
+                  {errDetailBusy && !errDetail && <div className="err-loading">Loading issue…</div>}
+
+                  {!errDetailBusy && !errDetail && (
+                    <div className="empty-state"><p>That issue could not be loaded.</p></div>
+                  )}
+
+                  {is && ev && (
+                    <>
+                      <div className="view-header">
+                        <div className="err-detail-head">
+                          <h2 className="err-detail-type">{is.type}</h2>
+                          {is.source === "dast_run" && <span className="err-source-badge">PEN-TEST</span>}
+                        </div>
+                        <p className="err-detail-value">{is.value}</p>
+                      </div>
+
+                      <div className="err-meta-grid">
+                        <div className="err-meta"><span className="err-meta-label">FIRST SEEN</span><span className="err-meta-value">{timeAgo(is.firstSeen)}</span></div>
+                        <div className="err-meta"><span className="err-meta-label">LAST SEEN</span><span className="err-meta-value">{timeAgo(is.lastSeen)}</span></div>
+                        <div className="err-meta"><span className="err-meta-label">EVENTS</span><span className="err-meta-value">{is.count}</span></div>
+                        <div className="err-meta"><span className="err-meta-label">RELEASE</span><span className="err-meta-value">{is.release || "—"}</span></div>
+                        <div className="err-meta"><span className="err-meta-label">ENVIRONMENT</span><span className="err-meta-value">{is.environment || "—"}</span></div>
+                      </div>
+
+                      {ev.scrubbed.length > 0 && (
+                        <div className="err-note">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5"/></svg>
+                          <div>
+                            <span className="err-note-title">Trojan redacted {ev.scrubbed.length} sensitive field{ev.scrubbed.length !== 1 ? "s" : ""} before storing this event.</span>
+                            <span className="err-note-fields">{ev.scrubbed.join("  ·  ")}</span>
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="err-block">
+                        <div className="err-section-label">STACK TRACE</div>
+                        {ev.frames.length === 0 ? (
+                          <p className="err-step-hint">No stack frames on this event.</p>
+                        ) : (
+                          // Sentry order puts the crashing frame last; reverse so the
+                          // most relevant frame reads first.
+                          <ul className="err-frames">
+                            {[...ev.frames].reverse().map((f, idx) => (
+                              <li key={`${f.filename}:${f.lineno}:${idx}`} className={`err-frame${f.inApp ? " err-frame-inapp" : ""}`}>
+                                <div className="err-frame-head">
+                                  <span className="err-frame-file">{f.filename}{f.lineno != null ? `:${f.lineno}` : ""}</span>
+                                  <span className="err-frame-fn">in {f.function || "<anonymous>"}</span>
+                                  {idx === 0 && <span className="err-frame-tag">CRASHED HERE</span>}
+                                </div>
+                                {f.contextLine != null && (
+                                  <div className="err-ctx">
+                                    {f.preContext.map((l, i) => (
+                                      <div key={`pre${i}`} className="err-ctx-row">
+                                        <span className="err-ctx-no">{f.lineno != null ? f.lineno - (f.preContext.length - i) : ""}</span>
+                                        <span className="err-ctx-code">{l}</span>
+                                      </div>
+                                    ))}
+                                    <div className="err-ctx-row err-ctx-row-crash">
+                                      <span className="err-ctx-no">{f.lineno ?? ""}</span>
+                                      <span className="err-ctx-code">{f.contextLine}</span>
+                                    </div>
+                                    {f.postContext.map((l, i) => (
+                                      <div key={`post${i}`} className="err-ctx-row">
+                                        <span className="err-ctx-no">{f.lineno != null ? f.lineno + i + 1 : ""}</span>
+                                        <span className="err-ctx-code">{l}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+
+                      {ev.request && (
+                        <div className="err-block">
+                          <div className="err-section-label">REQUEST</div>
+                          <div className="err-req-line">
+                            <span className="err-req-method">{ev.request.method}</span>
+                            <span className="err-req-url">{ev.request.url}</span>
+                          </div>
+                          <div className="err-req-headers">
+                            {Object.entries(ev.request.headers).map(([k, v]) => (
+                              <div key={k} className="err-req-header">
+                                <span className="err-req-key">{k}</span>
+                                <span className="err-req-val">{v}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="err-meta-grid">
+                        <div className="err-meta"><span className="err-meta-label">EVENT ID</span><span className="err-meta-value">{ev.eventId}</span></div>
+                        <div className="err-meta"><span className="err-meta-label">RUNTIME</span><span className="err-meta-value">{ev.runtime || "—"}</span></div>
+                        <div className="err-meta"><span className="err-meta-label">SERVER</span><span className="err-meta-value">{ev.serverName || "—"}</span></div>
+                      </div>
+                    </>
+                  )}
+                </div>
+              );
+            }
+
+            // ── List mode ──
+            return (
+              <div className="content-inner">
+                <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between" }}>
+                  <div className="view-header">
+                    <h2 className="view-title">Errors</h2>
+                    <p className="view-desc">{desc}</p>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <button className="err-head-btn" onClick={() => setErrSetupOpen((o) => !o)}>
+                      {errSetupOpen ? "Hide setup" : "Setup"}
+                    </button>
+                    <button className="err-head-btn" onClick={() => loadErrIssues(errFilter, false)} title="Refresh">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36L21 8 M21 3v5h-5"/></svg>
+                      Refresh
+                    </button>
+                    <div className="history-filter-tabs">
+                      {([
+                        { key: "production", label: "Production",     n: errCounts.production },
+                        { key: "dast",       label: "During pen-test", n: errCounts.dast },
+                        { key: "all",        label: "All",             n: errCounts.total },
+                      ] as const).map((f) => (
+                        <button
+                          key={f.key}
+                          className={`history-filter-tab ${errFilter === f.key ? "active" : ""}`}
+                          onClick={() => setErrFilter(f.key)}
+                        >
+                          {f.label} <span className="err-tab-count">{f.n}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {errSetupOpen && (
+                  <div className="err-block">
+                    <div className="err-section-label">SEND ERRORS TO TROJAN</div>
+                    {setupGuide}
+                  </div>
+                )}
+
+                {errStatus === "offline" ? (
+                  <div className="err-offline">
+                    <div className="err-offline-title">The Errors service is not running</div>
+                    <p className="err-offline-desc">
+                      Start it in a terminal from the repo root. This tab picks it up on its own once it is up.
+                    </p>
+                    {codeBlock("err-start", "./crash-analytics/start.sh")}
+                  </div>
+                ) : errStatus === "loading" ? (
+                  <div className="err-loading">Checking the Errors service…</div>
+                ) : errStatus === "error" ? (
+                  <div className="err-offline">
+                    <div className="err-offline-title">Could not load errors</div>
+                    <p className="err-offline-desc">{errError ?? "The request failed."}</p>
+                    <button className="err-head-btn" onClick={() => loadErrIssues(errFilter, false)}>Try again</button>
+                  </div>
+                ) : errCounts.total === 0 ? (
+                  <div className="err-block">
+                    <div className="err-section-label">SET UP IN THREE STEPS</div>
+                    <p className="err-setup-lead">
+                      Nothing has been reported yet. Point your app at Trojan and crashes land here automatically.
+                    </p>
+                    {setupGuide}
+                  </div>
+                ) : errIssues.length === 0 ? (
+                  <div className="empty-state">
+                    <p>No errors match this filter.</p>
+                  </div>
+                ) : (
+                  <ul className="err-list">
+                    {errIssues.map((i) => (
+                      <li key={i.id} className="err-item-wrap">
+                        <button className="err-item" onClick={() => openErrIssue(i.id)}>
+                          <span className="err-item-main">
+                            <span className="err-item-head">
+                              <span className="err-type">{i.type}</span>
+                              {i.source === "dast_run" && <span className="err-source-badge">PEN-TEST</span>}
+                            </span>
+                            <span className="err-value">{i.value}</span>
+                            {i.culprit && <span className="err-culprit">{i.culprit}</span>}
+                          </span>
+                          <span className="err-count-badge">{i.count} {i.count === 1 ? "event" : "events"}</span>
+                          <span className="err-time">{timeAgo(i.lastSeen)}</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
                 )}
               </div>
             );
