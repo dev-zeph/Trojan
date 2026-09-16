@@ -26,6 +26,7 @@ import (
 	"github.com/dev-zeph/trojan/internal/config"
 	"github.com/dev-zeph/trojan/internal/dast"
 	"github.com/dev-zeph/trojan/internal/dast/agent"
+	"github.com/dev-zeph/trojan/internal/errmon"
 	"github.com/dev-zeph/trojan/internal/hook"
 	"github.com/dev-zeph/trojan/internal/mcpserver"
 	"github.com/dev-zeph/trojan/internal/normalizer"
@@ -912,6 +913,10 @@ func installDastCancelHandler() {
 	go func() {
 		<-sigCh
 		scanners.TerminateDastScans()
+		// Close any open pen-test window on the Errors shim. A cancelled run
+		// that never un-mutes would leave the customer's Errors tab filtering
+		// out real production errors indefinitely. Best-effort, sub-second.
+		errmon.EndActiveRun()
 		os.Exit(130)
 	}()
 }
@@ -932,6 +937,14 @@ func runAgenticDast(p agenticParams) {
 	fmt.Printf("  → Crawling application (depth %d)...\n", p.crawlDepth)
 	crawlResult := dast.Crawl(p.targetURL, p.crawlDepth, p.crawlTimeout)
 	fmt.Printf("  → Discovered %d endpoint(s)\n\n", len(crawlResult.Endpoints))
+
+	// Open the pen-test window on the Errors shim before anything starts
+	// attacking, so the errors we're about to provoke get tagged as pen-test
+	// traffic rather than surfacing as "your app is broken" in the customer's
+	// Errors tab (CRASH_ANALYTICS_RESEARCH.md 3a). Tag-don't-drop: events are
+	// still recorded, just filtered out of the default view. No-op when the
+	// Errors shim isn't running, which is the common case.
+	errRunID := errmon.NotifyRunStart(p.targetURL)
 
 	// Deterministic Nuclei pre-pass for breadth (zero tokens).
 	if err := config.EnsureDastScanners(); err != nil {
@@ -984,6 +997,12 @@ func runAgenticDast(p agenticParams) {
 			printAgentEvent(e)
 		},
 	})
+
+	// Attacking is over; everything below is triage and reporting against data
+	// we already collected. Close the pen-test window now rather than at the
+	// end of the function, so errors the target throws while we're writing the
+	// report are correctly attributed to production.
+	errmon.NotifyRunEnd(errRunID)
 
 	if rerr != nil {
 		srv.BroadcastAgentEvent(server.AgentEvent{Type: "run", Status: "error", Detail: rerr.Error()})
