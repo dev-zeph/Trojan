@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -241,7 +242,11 @@ func scanCmd() *cobra.Command {
 				}
 				ui.PrintResultsBox(counts)
 
-				isPro := false
+				// Trojan Tokens: local scanning is free for everyone. Being
+				// signed in is the only precondition the client enforces for
+				// AI synthesis -- whether the balance can cover it is the
+				// edge function's call, and it 402s (see synthesizeConcurrently)
+				// when it can't. There is no tier to check here any more.
 				var accessToken string
 				familiarity := 1
 				aboutYou := ""
@@ -249,12 +254,10 @@ func scanCmd() *cobra.Command {
 					accessToken = cfg.AccessToken
 					familiarity = cfg.Familiarity
 					aboutYou = cfg.AboutYou
-					if info, err := ai.FetchLicense(accessToken); err == nil {
-						isPro = info.IsPro
-					}
 				}
+				signedIn := accessToken != ""
 
-				if isPro {
+				if signedIn {
 					// Enrich findings with project context before synthesis.
 					// Framework and ProjectType are project-level — compute once.
 					framework := ai.DetectFramework(path)
@@ -280,44 +283,13 @@ func scanCmd() *cobra.Command {
 
 					if len(toSynthesize) > 0 {
 						total := len(toSynthesize)
-						const maxConcurrent = 8
-
 						fmt.Printf("  → Synthesizing AI explanations for %d finding(s)...\n", total)
 
-						var (
-							progressMu sync.Mutex
-							completed  int
-						)
-
-						sem := make(chan struct{}, maxConcurrent)
-						var wg sync.WaitGroup
-
-						for _, i := range toSynthesize {
-							idx := i
-							wg.Add(1)
-							sem <- struct{}{}
-							go func() {
-								defer wg.Done()
-								defer func() { <-sem }()
-
-								s, err := ai.SynthesizeFinding(findings[idx], accessToken, familiarity, aboutYou)
-								progressMu.Lock()
-								defer progressMu.Unlock()
-								if err == nil {
-									findings[idx].Simply = s.Simply
-									findings[idx].Actions = s.Actions
-									findings[idx].Confidence = s.Confidence
-									findings[idx].IsFalsePositive = s.IsFalsePositive
-									findings[idx].FixDiff = s.FixDiff
-								}
-								completed++
-								fmt.Printf("\r  → %d / %d complete", completed, total)
-							}()
+						res := synthesizeConcurrently(findings, toSynthesize, accessToken, familiarity, aboutYou)
+						printSynthesisSummary(res, total)
+						if !res.outOfTokens {
+							ui.PrintArrow("Preparing actionable fix recommendations...")
 						}
-
-						wg.Wait()
-						fmt.Printf("\r  → %d / %d complete\n", total, total)
-						ui.PrintArrow("Preparing actionable fix recommendations...")
 						fmt.Println()
 					}
 
@@ -327,7 +299,7 @@ func scanCmd() *cobra.Command {
 						prevFindingIDs[f.ID] = true
 					}
 
-					// Pro: persist findings to disk.
+					// Signed in: persist findings to disk.
 					scanResult, err := normalizer.SaveScanResult(path, findings)
 					if err != nil {
 						color.Yellow("Warning: could not save scan results: %s\n", err)
@@ -343,8 +315,12 @@ func scanCmd() *cobra.Command {
 					return scanResult, findings
 				}
 
-				// Free tier: strip any cached AI content and keep everything
-				// in memory only — nothing written to .trojan/scans/.
+				// Signed out: no AI to strip (findings never got Simply/Actions
+				// in the first place), but still clear defensively in case a
+				// cached scan result is ever reused. Keep everything in
+				// memory only -- nothing written to .trojan/scans/. This is
+				// the correct free experience: a clean scan, no upsell, no
+				// error noise.
 				for i := range findings {
 					findings[i].Simply = ""
 					findings[i].Actions = nil
@@ -1391,32 +1367,111 @@ func synthesizeFindings(findings []normalizer.Finding, accessToken string) {
 		fam, about = cfg.Familiarity, cfg.AboutYou
 	}
 
-	fmt.Printf("  → Synthesizing %d finding(s)...\n", len(findings))
+	total := len(findings)
+	fmt.Printf("  → Synthesizing %d finding(s)...\n", total)
+	idxs := make([]int, total)
+	for i := range idxs {
+		idxs[i] = i
+	}
+	res := synthesizeConcurrently(findings, idxs, accessToken, fam, about)
+	printSynthesisSummary(res, total)
+}
+
+// synthesisResult summarizes one synthesizeConcurrently run so the caller can
+// decide what to print/persist without scraping stdout.
+type synthesisResult struct {
+	completed   int
+	outOfTokens bool
+	balance     int
+	unexplained int
+}
+
+// synthesizeConcurrently calls ai.SynthesizeFinding for each index in idxs, up
+// to maxConcurrent in flight at once, filling in Simply/Actions/etc. on
+// findings in place. Synthesis is billed per finding against the user's
+// Trojan Token balance, so once the balance runs out every remaining finding
+// in the batch will also 402 -- there's no point firing the rest of them.
+// As soon as the first 402 is observed, no further requests are scheduled;
+// already-synthesized findings are left untouched, and in-flight requests
+// (at most maxConcurrent of them) are allowed to finish rather than aborted.
+func synthesizeConcurrently(findings []normalizer.Finding, idxs []int, accessToken string, familiarity int, aboutYou string) synthesisResult {
+	total := len(idxs)
+	if total == 0 {
+		return synthesisResult{}
+	}
+
 	const maxConcurrent = 8
 	sem := make(chan struct{}, maxConcurrent)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
-	for i := range findings {
+	var completed int
+	var outOfTokens bool
+	var balance int
+
+	for _, i := range idxs {
+		mu.Lock()
+		stop := outOfTokens
+		mu.Unlock()
+		if stop {
+			break
+		}
+
 		idx := i
 		wg.Add(1)
 		sem <- struct{}{}
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			s, serr := ai.SynthesizeFinding(findings[idx], accessToken, fam, about)
-			if serr != nil {
+
+			// Re-check after acquiring a slot: another goroutine may have
+			// discovered the 402 while this one was waiting on the semaphore.
+			mu.Lock()
+			stop := outOfTokens
+			mu.Unlock()
+			if stop {
 				return
 			}
+
+			s, err := ai.SynthesizeFinding(findings[idx], accessToken, familiarity, aboutYou)
 			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				var insufficient *ai.InsufficientTokensError
+				if errors.As(err, &insufficient) {
+					outOfTokens = true
+					balance = insufficient.Balance
+				}
+				return
+			}
 			findings[idx].Simply = s.Simply
 			findings[idx].Actions = s.Actions
 			findings[idx].Confidence = s.Confidence
 			findings[idx].IsFalsePositive = s.IsFalsePositive
 			findings[idx].FixDiff = s.FixDiff
-			mu.Unlock()
+			completed++
+			fmt.Printf("\r  → %d / %d complete", completed, total)
 		}()
 	}
 	wg.Wait()
+
+	return synthesisResult{
+		completed:   completed,
+		outOfTokens: outOfTokens,
+		balance:     balance,
+		unexplained: total - completed,
+	}
+}
+
+// printSynthesisSummary prints the one-line progress footer for a
+// synthesizeConcurrently run: the finished tally on a clean run, or, when the
+// balance ran out partway through, a single clear notice -- never one error
+// line per doomed finding.
+func printSynthesisSummary(res synthesisResult, total int) {
+	if res.outOfTokens {
+		fmt.Printf("\n  ⚠ Out of Trojan Tokens, balance: %d -- %d finding(s) left unexplained. Add tokens to see Simply/Actions for the rest.\n", res.balance, res.unexplained)
+		return
+	}
+	fmt.Printf("\r  → %d / %d complete\n", total, total)
 }
 
 // persistScan writes the findings under the cwd's .trojan/scans/ (so MCP can read

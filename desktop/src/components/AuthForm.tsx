@@ -1,8 +1,13 @@
 import { useState } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { supabase } from "../lib/supabase";
+import { MARKETING_URL } from "../constants";
 
-// ── Auth form (email/password + GitHub — runs entirely inside the desktop app) ─
-type AuthMode = "signin" | "signup";
+// ── Auth form (sign-in only — runs entirely inside the desktop app) ─
+// Sign-up happens on the website instead: the desktop app has no email
+// verification handling, plan/token onboarding, or terms acceptance, so it
+// hands new-account creation off to trojancli.com/login (which supports both
+// sign-in and sign-up) rather than faking a sign-up flow in-app.
 
 export function AuthForm({
   onAuth,
@@ -11,35 +16,21 @@ export function AuthForm({
   onAuth: (token: string, name: string, email: string, refreshToken: string) => void;
   onSkip?: () => void;
 }) {
-  const [mode, setMode]               = useState<AuthMode>("signin");
   const [email, setEmail]             = useState("");
   const [password, setPassword]       = useState("");
   const [loading, setLoading]         = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError]             = useState<string | null>(null);
-  const [success, setSuccess]         = useState<string | null>(null);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setLoading(true);
     setError(null);
-    setSuccess(null);
     try {
-      if (mode === "signup") {
-        const { data, error } = await supabase.auth.signUp({ email, password });
-        if (error) throw error;
-        if (data.session) {
-          const meta = data.session.user.user_metadata;
-          onAuth(data.session.access_token, meta?.full_name ?? meta?.name ?? "", email, data.session.refresh_token ?? "");
-        } else {
-          setSuccess("Check your email to confirm your account.");
-        }
-      } else {
-        const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-        if (error) throw error;
-        const meta = data.session.user.user_metadata;
-        onAuth(data.session.access_token, meta?.full_name ?? meta?.name ?? "", email, data.session.refresh_token ?? "");
-      }
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) throw error;
+      const meta = data.session.user.user_metadata;
+      onAuth(data.session.access_token, meta?.full_name ?? meta?.name ?? "", email, data.session.refresh_token ?? "");
     } catch (err: unknown) {
       setError((err as { message?: string }).message ?? "Authentication failed");
     } finally {
@@ -47,10 +38,13 @@ export function AuthForm({
     }
   }
 
+  function handleCreateAccount() {
+    openUrl(`${MARKETING_URL}/login`).catch(() => {});
+  }
+
   return (
     <>
-      {error   && <p className="auth-msg auth-error">{error}</p>}
-      {success && <p className="auth-msg auth-success">{success}</p>}
+      {error && <p className="auth-msg auth-error">{error}</p>}
 
       <form onSubmit={handleSubmit} className="ob-form">
         <div className="ob-field">
@@ -85,20 +79,13 @@ export function AuthForm({
         </div>
         <button type="submit" disabled={loading} className="ob-btn auth-submit-btn">
           {loading && <span className="auth-spinner" />}
-          {loading ? "Please wait…" : mode === "signin" ? "Sign in" : "Create account"}
+          {loading ? "Please wait…" : "Sign in"}
         </button>
       </form>
 
       <p className="auth-toggle">
-        {mode === "signin" ? (
-          <>Don&apos;t have an account?{" "}
-            <button type="button" onClick={() => { setMode("signup"); setError(null); setSuccess(null); }}>Sign up</button>
-          </>
-        ) : (
-          <>Already have an account?{" "}
-            <button type="button" onClick={() => { setMode("signin"); setError(null); setSuccess(null); }}>Sign in</button>
-          </>
-        )}
+        Don&apos;t have an account?{" "}
+        <button type="button" onClick={handleCreateAccount}>Create one on trojancli.com</button>
       </p>
 
       {onSkip && (
