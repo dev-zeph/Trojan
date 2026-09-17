@@ -42,10 +42,22 @@ let _cache: AttackTemplate[] | null = null;
 let _cacheAt = 0;
 let _inflight: Promise<AttackTemplate[]> | null = null;
 
+// Maps a failed /attack-templates response to a truthful message. There is no
+// Pro tier any more -- access is bounded by sign-in and Trojan Token balance,
+// not a feature tier -- so 401/403 must read as a sign-in or permission
+// problem, and 402 (insufficient_tokens) must point at topping up, never at
+// upgrading a plan that no longer exists.
+export function attackMarketErrorMessage(status: number): string {
+  if (status === 401) return "Sign in to browse the Attack Market.";
+  if (status === 403) return "You don't have permission to view the Attack Market.";
+  if (status === 402) return "You're out of Trojan Tokens. Top up to browse the Attack Market.";
+  return `Failed to load (${status})`;
+}
+
 async function fetchCatalog(getToken: () => Promise<string>): Promise<AttackTemplate[]> {
   const token = await getToken();
   const res = await fetch(ENDPOINT, { headers: { Authorization: `Bearer ${token}` } });
-  if (!res.ok) throw new Error(res.status === 403 ? "Attack Market is a Pro feature." : `Failed to load (${res.status})`);
+  if (!res.ok) throw new Error(attackMarketErrorMessage(res.status));
   const data = await res.json();
   return data.templates ?? [];
 }

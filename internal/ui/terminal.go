@@ -160,7 +160,7 @@ func (sp *ScanProgress) renderAll(frame int) bool {
 func (sp *ScanProgress) printRow(idx int) {
 	name := sp.names[idx]
 	if sp.errs[idx] != nil {
-		color.Red("  %-10s  %s  failed\n", name, emptyBar())
+		color.Red("  %-10s  %s  failed: %s\n", name, emptyBar(), summarizeErr(sp.errs[idx]))
 		return
 	}
 	n := sp.counts[idx]
@@ -171,6 +171,20 @@ func (sp *ScanProgress) printRow(idx int) {
 		suffix = fmt.Sprintf("done · %d findings", n)
 	}
 	greenStyle.Printf("  %-10s  %s  %s\n", name, fullBar(), suffix)
+}
+
+// summarizeErr renders a scanner error as a single terminal line: newlines
+// and repeated whitespace (common in raw stderr from a failing subprocess)
+// are collapsed to single spaces, and long messages are truncated with an
+// ellipsis so a verbose failure (e.g. Trivy's fatal DB-download error) can't
+// wrap or blow out the in-place animated row.
+func summarizeErr(err error) string {
+	const maxLen = 60
+	msg := strings.Join(strings.Fields(err.Error()), " ")
+	if len(msg) > maxLen {
+		msg = msg[:maxLen-1] + "…"
+	}
+	return msg
 }
 
 // snakeBar returns a barWidth-wide bar with a 3-rune block bouncing left-right.

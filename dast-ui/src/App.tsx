@@ -5,6 +5,7 @@ import { AgenticReport } from './components/AgenticReport'
 import { getLatestScan, getAuthStatus, getAgenticStatus } from './api'
 import type { AuthStatus, RunStatus } from './api'
 import type { Finding, ScanResult } from './types'
+import { ExternalLink } from './components/ExternalLink'
 
 export default function App() {
   const [scan, setScan] = useState<ScanResult | null>(null)
@@ -64,51 +65,39 @@ export default function App() {
   return (
     <div className="min-h-screen bg-background text-foreground">
 
-      {/* Auth banner */}
+      {/* Auth banner.
+          Only two states exist post-token-migration: signed out, and signed
+          in. There is no Pro tier to be "on the free plan" versus "unlocked"
+          for -- access is bounded by Trojan Token balance, not a feature
+          tier, same as ui/src/App.tsx's report banner. Keep both in sync. */}
       {auth && !auth.loggedIn && (
         <div className="border-b border-border bg-muted/40">
           <div className="max-w-5xl mx-auto px-8 py-2.5 flex items-center justify-between">
             <p className="text-xs text-muted-foreground">
-              Unlock AI explanations and fix suggestions with Trojan Pro.
+              Sign in for AI explanations and fix steps, 500 free tokens a month.
             </p>
-            <a
+            <ExternalLink
               href="https://trojancli.com/login"
-              target="_blank"
-              rel="noopener noreferrer"
               className="text-xs font-medium underline underline-offset-4 hover:text-muted-foreground transition-colors"
             >
               Log in or sign up →
-            </a>
+            </ExternalLink>
           </div>
         </div>
       )}
-      {auth?.loggedIn && !auth.isPro && (
-        <div className="border-b border-border bg-muted/40">
-          <div className="max-w-5xl mx-auto px-8 py-2.5 flex items-center justify-between">
-            <p className="text-xs text-muted-foreground">
-              You're on the free plan. Upgrade to Pro to unlock AI explanations.
-            </p>
-            <a
-              href="https://trojancli.com/pricing"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-xs font-medium underline underline-offset-4 hover:text-muted-foreground transition-colors"
-            >
-              Upgrade to Pro →
-            </a>
-          </div>
-        </div>
-      )}
-      {auth?.loggedIn && auth.isPro && (
+      {auth?.loggedIn && (
         <div className="border-b border-border bg-muted/40">
           <div className="max-w-5xl mx-auto px-8 py-2.5 flex items-center justify-between">
             <p className="text-xs text-muted-foreground">
               <span className="text-foreground font-medium">{auth.email}</span>
-              {' '}· You're the pro.
+              {' '}· signed in
             </p>
-            <span className="text-xs font-medium uppercase tracking-widest text-foreground">
-              {auth.plan ?? 'Pro'}
-            </span>
+            <ExternalLink
+              href="https://trojancli.com/dashboard"
+              className="text-xs font-medium underline underline-offset-4 hover:text-muted-foreground transition-colors"
+            >
+              Token balance →
+            </ExternalLink>
           </div>
         </div>
       )}
