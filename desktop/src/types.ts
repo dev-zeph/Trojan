@@ -1,7 +1,7 @@
 // Shared domain types for the desktop app.
 // Extracted verbatim from App.tsx; no shape changes.
 
-export type NavView  = "overview" | "sast" | "dast" | "market" | "dependencies" | "threatlab" | "licenses" | "privacy" | "compliancelab" | "history" | "autofix" | "profile" | "report";
+export type NavView  = "overview" | "sast" | "dast" | "market" | "dependencies" | "threatlab" | "licenses" | "privacy" | "compliancelab" | "errors" | "history" | "autofix" | "profile" | "report";
 export type ScanType = "sast" | "dast";
 
 export interface PackageAdvisory { id: string; severity: string; summary: string; fix_version?: string; }
