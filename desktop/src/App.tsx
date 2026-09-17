@@ -56,11 +56,14 @@ interface ErrFrame {
   filename: string; function: string; lineno: number | null; colno: number | null;
   inApp: boolean; contextLine: string | null; preContext: string[]; postContext: string[];
 }
+interface ErrNamedContext { name: string; version: string | null; }
+interface ErrDeviceContext { family: string | null; model: string | null; brand: string | null; }
 interface ErrEvent {
   id: string; eventId: string; timestamp: string; level: string;
   type: string; value: string; source: ErrSource;
   release: string | null; environment: string | null;
   serverName: string | null; runtime: string | null;
+  browser: ErrNamedContext | null; os: ErrNamedContext | null; device: ErrDeviceContext | null;
   request: { method: string; url: string; headers: Record<string, string> } | null;
   frames: ErrFrame[];   // Sentry order: innermost/crashing frame LAST
   scrubbed: string[];
@@ -572,6 +575,8 @@ export default function App() {
   const [errDetailBusy, setErrDetailBusy] = useState(false);
   const [errSetupOpen, setErrSetupOpen]   = useState(false);
   const [errCopied, setErrCopied]         = useState<string | null>(null);
+  const [errDetailEvents, setErrDetailEvents] = useState<{ id: string; eventId: string; timestamp: string; source: ErrSource }[]>([]);
+  const [errActionBusy, setErrActionBusy] = useState<string | null>(null);
   const [staleCaches, setStaleCaches]     = useState<Set<string>>(new Set());
   const [terminalOpen, setTerminalOpen]   = useState(true);
   const [terminalHeight, setTerminalHeight] = useState(220);
@@ -687,7 +692,7 @@ export default function App() {
     init();
 
     // Load MCP editor status on mount
-    invoke("check_mcp_status").then((s) => setMcpStatus(s as Record<string, { installed: boolean; configured: boolean }>)).catch(() => {});
+    invoke("check_mcp_status").then((s) => setMcpStatus((s as Record<string, { installed: boolean; configured: boolean }> | null) ?? {})).catch(() => {});
   }, []);
 
   // ── Token refresh ─────────────────────────────────────────────────
@@ -1250,8 +1255,8 @@ export default function App() {
     setMcpSetupBusy(true);
     try {
       await invoke("setup_mcp");
-      const s = await invoke("check_mcp_status") as Record<string, { installed: boolean; configured: boolean }>;
-      setMcpStatus(s);
+      const s = await invoke("check_mcp_status") as Record<string, { installed: boolean; configured: boolean }> | null;
+      setMcpStatus(s ?? {});
     } catch {}
     setMcpSetupBusy(false);
   }
@@ -1306,6 +1311,7 @@ export default function App() {
   async function openErrIssue(id: string) {
     setErrOpenId(id);
     setErrDetail(null);
+    setErrDetailEvents([]);
     setErrDetailBusy(true);
     try {
       const r = await fetch(`${ERRORS_API}/api/errors/issues/${encodeURIComponent(id)}`);
@@ -1315,6 +1321,42 @@ export default function App() {
       setErrError(e instanceof Error ? e.message : String(e));
     }
     setErrDetailBusy(false);
+    // Best-effort: the event-history strip degrades to "no chart" on failure,
+    // it must never block the rest of the detail view from rendering.
+    try {
+      const r = await fetch(`${ERRORS_API}/api/errors/issues/${encodeURIComponent(id)}/events?limit=50`);
+      if (r.ok) {
+        const data = (await r.json()) as { events: { id: string; eventId: string; timestamp: string; source: ErrSource }[] };
+        setErrDetailEvents(data.events ?? []);
+      }
+    } catch {}
+  }
+
+  // Resolve/mute/unmute an issue. Optimistic: flips local state immediately in
+  // both the list and (if open) the detail view, then reconciles with whatever
+  // the shim actually persisted. On failure, re-fetches from the server rather
+  // than leaving a stale optimistic value on screen.
+  async function setErrIssueAction(id: string, action: "resolve" | "reopen" | "mute" | "unmute") {
+    const optimistic = (i: ErrIssue): ErrIssue =>
+      i.id !== id ? i : {
+        ...i,
+        resolved: action === "resolve" ? true : action === "reopen" ? false : i.resolved,
+        muted: action === "mute" ? true : action === "unmute" ? false : i.muted,
+      };
+    setErrIssues((list) => list.map(optimistic));
+    setErrDetail((d) => (d && d.issue.id === id ? { ...d, issue: optimistic(d.issue) } : d));
+    setErrActionBusy(`${id}:${action}`);
+    try {
+      const r = await fetch(`${ERRORS_API}/api/errors/issues/${encodeURIComponent(id)}/${action}`, { method: "POST" });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const data = (await r.json()) as { issue: ErrIssue };
+      setErrIssues((list) => list.map((i) => (i.id === id ? data.issue : i)));
+      setErrDetail((d) => (d && d.issue.id === id ? { ...d, issue: data.issue } : d));
+    } catch {
+      loadErrIssues(errFilter, true);
+      if (errOpenId === id) openErrIssue(id);
+    }
+    setErrActionBusy(null);
   }
 
   function copyErrText(key: string, text: string) {
@@ -2466,12 +2508,39 @@ export default function App() {
 
                   {is && ev && (
                     <>
-                      <div className="view-header">
-                        <div className="err-detail-head">
-                          <h2 className="err-detail-type">{is.type}</h2>
-                          {is.source === "dast_run" && <span className="err-source-badge">PEN-TEST</span>}
+                      <div className="view-header err-detail-header">
+                        <div className="err-detail-headline">
+                          <div className="err-detail-head">
+                            <span className="err-detail-icon" aria-hidden="true">
+                              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 9v4 M12 17h.01 M10.29 3.86l-8.18 14.18A2 2 0 0 0 3.93 21h16.14a2 2 0 0 0 1.82-2.96L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>
+                            </span>
+                            <h2 className="err-detail-type">{is.type}</h2>
+                            {is.source === "dast_run" && <span className="err-source-badge">PEN-TEST</span>}
+                            {is.resolved && <span className="err-state-badge err-state-resolved">RESOLVED</span>}
+                            {is.muted && <span className="err-state-badge err-state-muted">MUTED</span>}
+                          </div>
+                          <p className="err-detail-value">{is.value}</p>
                         </div>
-                        <p className="err-detail-value">{is.value}</p>
+                        <div className="err-detail-actions">
+                          {is.resolved ? (
+                            <button className="err-head-btn" disabled={errActionBusy === `${is.id}:reopen`} onClick={() => setErrIssueAction(is.id, "reopen")}>
+                              Reopen
+                            </button>
+                          ) : (
+                            <button className="err-head-btn err-head-btn-primary" disabled={errActionBusy === `${is.id}:resolve`} onClick={() => setErrIssueAction(is.id, "resolve")}>
+                              Resolve
+                            </button>
+                          )}
+                          {is.muted ? (
+                            <button className="err-head-btn" disabled={errActionBusy === `${is.id}:unmute`} onClick={() => setErrIssueAction(is.id, "unmute")}>
+                              Unmute
+                            </button>
+                          ) : (
+                            <button className="err-head-btn" disabled={is.resolved || errActionBusy === `${is.id}:mute`} onClick={() => setErrIssueAction(is.id, "mute")}>
+                              Mute
+                            </button>
+                          )}
+                        </div>
                       </div>
 
                       <div className="err-meta-grid">
@@ -2481,6 +2550,35 @@ export default function App() {
                         <div className="err-meta"><span className="err-meta-label">RELEASE</span><span className="err-meta-value">{is.release || "—"}</span></div>
                         <div className="err-meta"><span className="err-meta-label">ENVIRONMENT</span><span className="err-meta-value">{is.environment || "—"}</span></div>
                       </div>
+
+                      {errDetailEvents.length > 1 && (() => {
+                        const times = errDetailEvents.map((e) => new Date(e.timestamp).getTime()).sort((a, b) => a - b);
+                        const min = times[0]!, max = times[times.length - 1]!;
+                        const span = Math.max(max - min, 1);
+                        const BUCKETS = 20;
+                        const counts = new Array(BUCKETS).fill(0);
+                        for (const t of times) {
+                          const idx = Math.min(BUCKETS - 1, Math.floor(((t - min) / span) * BUCKETS));
+                          counts[idx]++;
+                        }
+                        const peak = Math.max(...counts, 1);
+                        return (
+                          <div className="err-block">
+                            <div className="err-section-label">EVENTS OVER TIME</div>
+                            <div className="err-chart">
+                              {counts.map((c, i) => (
+                                <div key={i} className="err-chart-bar-wrap" title={`${c} event${c === 1 ? "" : "s"}`}>
+                                  <div className="err-chart-bar" style={{ height: `${Math.max(4, (c / peak) * 100)}%` }} />
+                                </div>
+                              ))}
+                            </div>
+                            <div className="err-chart-axis">
+                              <span>{timeAgo(new Date(min).toISOString())}</span>
+                              <span>{timeAgo(new Date(max).toISOString())}</span>
+                            </div>
+                          </div>
+                        );
+                      })()}
 
                       {ev.scrubbed.length > 0 && (
                         <div className="err-note">
@@ -2551,11 +2649,52 @@ export default function App() {
                         </div>
                       )}
 
-                      <div className="err-meta-grid">
-                        <div className="err-meta"><span className="err-meta-label">EVENT ID</span><span className="err-meta-value">{ev.eventId}</span></div>
-                        <div className="err-meta"><span className="err-meta-label">RUNTIME</span><span className="err-meta-value">{ev.runtime || "—"}</span></div>
-                        <div className="err-meta"><span className="err-meta-label">SERVER</span><span className="err-meta-value">{ev.serverName || "—"}</span></div>
+                      <div className="err-block">
+                        <div className="err-section-label">WHERE THIS HAPPENED</div>
+                        <div className="err-meta-grid">
+                          <div className="err-meta"><span className="err-meta-label">EVENT ID</span><span className="err-meta-value">{ev.eventId}</span></div>
+                          <div className="err-meta"><span className="err-meta-label">RUNTIME</span><span className="err-meta-value">{ev.runtime || "—"}</span></div>
+                          <div className="err-meta"><span className="err-meta-label">SERVER</span><span className="err-meta-value">{ev.serverName || "—"}</span></div>
+                          <div className="err-meta"><span className="err-meta-label">OS</span><span className="err-meta-value">{ev.os ? `${ev.os.name}${ev.os.version ? ` ${ev.os.version}` : ""}` : "—"}</span></div>
+                          <div className="err-meta"><span className="err-meta-label">BROWSER</span><span className="err-meta-value">{ev.browser ? `${ev.browser.name}${ev.browser.version ? ` ${ev.browser.version}` : ""}` : "—"}</span></div>
+                          <div className="err-meta"><span className="err-meta-label">DEVICE</span><span className="err-meta-value">{ev.device ? (ev.device.model || ev.device.family || ev.device.brand || "—") : "—"}</span></div>
+                        </div>
+                        {!ev.browser && !ev.device && (
+                          <p className="err-step-hint">No browser/device context on this event — expected for a server-side (backend) crash. Browser errors captured with @sentry/browser will show this.</p>
+                        )}
                       </div>
+
+                      {(() => {
+                        // Mirrors the "Fix with AI" tab's own pull-based MCP flow exactly:
+                        // Trojan never pushes anything to the editor, it only shows a
+                        // prompt for the human to paste. Same mcpStatus this app already
+                        // loads once on mount (desktop/src/App.tsx ~line 695).
+                        const editorsConnected = Object.values(mcpStatus ?? {}).some((s) => s?.configured);
+                        const editorsDetected = Object.values(mcpStatus ?? {}).some((s) => s?.installed);
+                        const fixPrompt = `Fix the Trojan-reported error ${is.shortId} — call get_error_detail(id: "${is.id}"), read the stack trace, apply a fix, then call mark_error_fixed(id: "${is.id}").`;
+                        return (
+                          <div className="err-block">
+                            <div className="err-section-label">FIX WITH AI</div>
+                            {editorsConnected ? (
+                              <>
+                                <p className="err-step-hint">Paste this into your connected AI editor (Claude Code, Cursor, Codex CLI) — it will read the stack trace, fix it, and mark it resolved.</p>
+                                {codeBlock("err-fix-prompt", fixPrompt)}
+                              </>
+                            ) : (
+                              <>
+                                <p className="err-step-hint">
+                                  {editorsDetected
+                                    ? "An AI editor was detected on this machine but isn't connected to Trojan yet."
+                                    : "Connect an AI editor via MCP to fix crashes the same way Trojan fixes vulnerabilities — your code never leaves your machine."}
+                                </p>
+                                <button className="err-head-btn err-head-btn-primary" onClick={() => setView("autofix")}>
+                                  Set up Fix with AI →
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </>
                   )}
                 </div>
@@ -2632,24 +2771,71 @@ export default function App() {
                     <p>No errors match this filter.</p>
                   </div>
                 ) : (
-                  <ul className="err-list">
-                    {errIssues.map((i) => (
-                      <li key={i.id} className="err-item-wrap">
-                        <button className="err-item" onClick={() => openErrIssue(i.id)}>
-                          <span className="err-item-main">
-                            <span className="err-item-head">
-                              <span className="err-type">{i.type}</span>
-                              {i.source === "dast_run" && <span className="err-source-badge">PEN-TEST</span>}
+                  <>
+                    {(() => {
+                      // Client-side breakdown of the currently-loaded page of issues —
+                      // no backend aggregation endpoint, same "don't add a new contract
+                      // surface for something derivable from data already on hand" call
+                      // as the events-over-time chart above.
+                      const tally = (get: (i: ErrIssue) => string | null) => {
+                        const counts = new Map<string, number>();
+                        for (const i of errIssues) {
+                          const k = get(i) ?? "unknown";
+                          counts.set(k, (counts.get(k) ?? 0) + 1);
+                        }
+                        return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4);
+                      };
+                      const byRelease = tally((i) => i.release);
+                      const byEnv = tally((i) => i.environment);
+                      const total = errIssues.length;
+                      const bars = (rows: [string, number][]) => (
+                        <div className="err-breakdown-bars">
+                          {rows.map(([label, n]) => (
+                            <div key={label} className="err-breakdown-row">
+                              <span className="err-breakdown-label" title={label}>{label}</span>
+                              <div className="err-breakdown-track"><div className="err-breakdown-fill" style={{ width: `${(n / total) * 100}%` }} /></div>
+                              <span className="err-breakdown-pct">{Math.round((n / total) * 100)}%</span>
+                            </div>
+                          ))}
+                        </div>
+                      );
+                      return (
+                        <div className="err-summary-strip">
+                          <div className="err-summary-block">
+                            <div className="err-section-label">BY RELEASE</div>
+                            {bars(byRelease)}
+                          </div>
+                          <div className="err-summary-block">
+                            <div className="err-section-label">BY ENVIRONMENT</div>
+                            {bars(byEnv)}
+                          </div>
+                        </div>
+                      );
+                    })()}
+                    <ul className="err-list">
+                      {errIssues.map((i) => (
+                        <li key={i.id} className={`err-item-wrap${i.resolved ? " err-item-resolved" : ""}`}>
+                          <button className="err-item" onClick={() => openErrIssue(i.id)}>
+                            <span className="err-item-icon" aria-hidden="true">
+                              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M12 9v4 M12 17h.01 M10.29 3.86l-8.18 14.18A2 2 0 0 0 3.93 21h16.14a2 2 0 0 0 1.82-2.96L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg>
                             </span>
-                            <span className="err-value">{i.value}</span>
-                            {i.culprit && <span className="err-culprit">{i.culprit}</span>}
-                          </span>
-                          <span className="err-count-badge">{i.count} {i.count === 1 ? "event" : "events"}</span>
-                          <span className="err-time">{timeAgo(i.lastSeen)}</span>
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
+                            <span className="err-item-main">
+                              <span className="err-item-head">
+                                <span className="err-type">{i.type}</span>
+                                {i.source === "dast_run" && <span className="err-source-badge">PEN-TEST</span>}
+                                {i.resolved && <span className="err-state-badge err-state-resolved">RESOLVED</span>}
+                                {i.muted && <span className="err-state-badge err-state-muted">MUTED</span>}
+                              </span>
+                              <span className="err-value">{i.value}</span>
+                              {i.culprit && <span className="err-culprit">{i.culprit}</span>}
+                            </span>
+                            <span className="err-count-badge">{i.count} {i.count === 1 ? "event" : "events"}</span>
+                            <span className="err-time">{timeAgo(i.lastSeen)}</span>
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
                 )}
               </div>
             );

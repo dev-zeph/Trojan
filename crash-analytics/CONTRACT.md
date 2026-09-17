@@ -168,6 +168,26 @@ label its filter chips.
 { "events": [ { "id", "eventId", "timestamp", "source" }, ... ] }
 ```
 
+### `POST /api/errors/issues/:id/resolve`
+### `POST /api/errors/issues/:id/reopen`
+### `POST /api/errors/issues/:id/mute`
+### `POST /api/errors/issues/:id/unmute`
+No body. Passes through to Bugsink's own issue-action API
+(`POST /api/canonical/0/issues/:id/<action>/`, verified against the installed
+package's `issues/api_views.py`, not guessed). **Idempotent**: calling
+`resolve` on an already-resolved issue (`reopen` on an already-open one,
+`mute`/`unmute` on an already-mute/unmuted one) is a success, not an error —
+Bugsink 400s on that, the shim catches it and re-fetches the issue so the
+response still reflects current state. Note `resolved` and `muted` are
+independent flags on the Bugsink side, but Bugsink refuses to `mute` (or stay
+muted via `unmute`) a resolved issue — `resolve`/`reopen` is what the UI's
+primary button always sends; `mute`/`unmute` is a separate, secondary action.
+```json
+{ "issue": TrojanIssue }
+```
+`502` if the storage backend is unreachable or returns something other than
+a 400/200.
+
 ### Types
 
 ```ts
@@ -212,6 +232,11 @@ interface TrojanEvent {
   environment: string | null;
   serverName: string | null;
   runtime: string | null;     // "node v25.9.0"
+  // Sentry SDKs attach these automatically to every event — browser/device are
+  // normally null on server-side (node/python) events, that's expected.
+  browser: { name: string; version: string | null } | null;
+  os: { name: string; version: string | null } | null;
+  device: { family: string | null; model: string | null; brand: string | null } | null;
   request: { method: string; url: string; headers: Record<string,string> } | null;
   frames: TrojanFrame[];      // Sentry order: innermost/crashing frame LAST
   scrubbed: string[];         // field paths that were redacted

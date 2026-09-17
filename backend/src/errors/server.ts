@@ -186,6 +186,28 @@ async function handleIssueDetail(id: string, res: ServerResponse): Promise<void>
   sendJson(res, 200, { issue, latestEvent })
 }
 
+const ISSUE_ACTIONS = {
+  resolve: 'resolveIssue',
+  reopen: 'reopenIssue',
+  mute: 'muteIssue',
+  unmute: 'unmuteIssue',
+} as const
+
+async function handleIssueAction(
+  id: string,
+  action: keyof typeof ISSUE_ACTIONS,
+  res: ServerResponse,
+): Promise<void> {
+  try {
+    const raw = await backend[ISSUE_ACTIONS[action]](id)
+    const issue = await hydrateIssue(raw)
+    sendJson(res, 200, { issue })
+  } catch (err) {
+    console.error(`[errors] ${action} failed for ${id}:`, String(err))
+    sendJson(res, 502, { error: `could not ${action} issue` })
+  }
+}
+
 async function handleIssueEvents(id: string, url: URL, res: ServerResponse): Promise<void> {
   const limit = Number(url.searchParams.get('limit') ?? 20)
   const summaries = await backend.listIssueEvents(id, Number.isFinite(limit) && limit > 0 ? limit : 20)
@@ -292,6 +314,7 @@ async function handleIngest(
 // ── Routing ───────────────────────────────────────────────────────────────
 
 const ISSUE_EVENTS_RE = /^\/api\/errors\/issues\/([^/]+)\/events\/?$/
+const ISSUE_ACTION_RE = /^\/api\/errors\/issues\/([^/]+)\/(resolve|reopen|mute|unmute)\/?$/
 const ISSUE_DETAIL_RE = /^\/api\/errors\/issues\/([^/]+)\/?$/
 // Matched only AFTER every /api/errors/* route, or "errors" reads as a project id.
 const INGEST_RE = /^\/api\/([^/]+)\/(envelope|store)\/?$/
@@ -373,6 +396,16 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const eventsMatch = ISSUE_EVENTS_RE.exec(path)
   if (eventsMatch?.[1] && method === 'GET') {
     await handleIssueEvents(decodeURIComponent(eventsMatch[1]), url, res)
+    return
+  }
+
+  const actionMatch = ISSUE_ACTION_RE.exec(path)
+  if (actionMatch?.[1] && actionMatch[2] && method === 'POST') {
+    await handleIssueAction(
+      decodeURIComponent(actionMatch[1]),
+      actionMatch[2] as keyof typeof ISSUE_ACTIONS,
+      res,
+    )
     return
   }
 

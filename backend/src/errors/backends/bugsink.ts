@@ -13,7 +13,9 @@ import type {
   BackendEventSummary,
   BackendIssue,
   ErrorsBackend,
+  TrojanDeviceContext,
   TrojanFrame,
+  TrojanNamedContext,
   TrojanRequest,
 } from '../types.ts'
 import { fetchWithTimeout } from '../util.ts'
@@ -140,6 +142,32 @@ function normalizeRuntime(data: Record<string, unknown>): string | null {
   return str(runtime['description']) ?? name ?? version
 }
 
+// Sentry SDKs attach `contexts.browser` / `contexts.os` / `contexts.device`
+// automatically — this was always in the raw envelope, just never read past
+// `contexts.runtime`. Browser/device are typically absent on server-side
+// (node/python) events; that's expected, not a bug.
+function namedContext(data: Record<string, unknown>, key: string): TrojanNamedContext | null {
+  const contexts = data['contexts']
+  if (!isObj(contexts)) return null
+  const ctx = contexts[key]
+  if (!isObj(ctx)) return null
+  const name = str(ctx['name'])
+  if (!name) return null
+  return { name, version: str(ctx['version']) }
+}
+
+function deviceContext(data: Record<string, unknown>): TrojanDeviceContext | null {
+  const contexts = data['contexts']
+  if (!isObj(contexts)) return null
+  const device = contexts['device']
+  if (!isObj(device)) return null
+  const family = str(device['family'])
+  const model = str(device['model'])
+  const brand = str(device['brand'])
+  if (!family && !model && !brand) return null
+  return { family, model, brand }
+}
+
 function primaryException(data: Record<string, unknown>): { type: string; value: string } {
   const exception = data['exception']
   const values = isObj(exception) ? exception['values'] : undefined
@@ -174,6 +202,9 @@ function normalizeEvent(row: BugsinkEventRow): BackendEvent {
     environment: str(data['environment']),
     serverName: str(data['server_name']),
     runtime: normalizeRuntime(data),
+    browser: namedContext(data, 'browser'),
+    os: namedContext(data, 'os'),
+    device: deviceContext(data),
     request: normalizeRequest(data),
     frames: normalizeFrames(data),
     scrubbed: readScrubbed(data),
@@ -296,6 +327,43 @@ export class BugsinkBackend implements ErrorsBackend {
       `${API}/events/${encodeURIComponent(eventId)}/`,
     )
     return row && row.id ? normalizeEvent(row) : null
+  }
+
+  // Bugsink's issue-action endpoints (verified against the installed package's
+  // issues/api_views.py, not guessed): POST .../issues/{id}/{action}/, Bearer
+  // auth, no body. They 400 on a state the issue is already in (e.g. resolving
+  // an already-resolved issue) — Trojan treats that as success, since the
+  // caller's desired end state is already true, and re-fetches the issue so
+  // the response is still accurate rather than stale.
+  private async postAction(id: string, action: 'resolve' | 'reopen' | 'mute' | 'unmute'): Promise<BackendIssue> {
+    const url = `${this.cfg.backendUrl}${API}/issues/${encodeURIComponent(id)}/${action}/`
+    const res = await fetchWithTimeout(url, { method: 'POST', headers: this.authHeaders }, READ_TIMEOUT_MS)
+
+    if (res.ok) {
+      return normalizeIssue((await res.json()) as BugsinkIssue)
+    }
+    if (res.status === 400) {
+      const current = await this.getIssue(id)
+      if (current) return current
+    }
+    const body = await res.text().catch(() => '')
+    throw new Error(`bugsink ${action} ${res.status} ${res.statusText}: ${body.slice(0, 300)}`)
+  }
+
+  async resolveIssue(id: string): Promise<BackendIssue> {
+    return this.postAction(id, 'resolve')
+  }
+
+  async reopenIssue(id: string): Promise<BackendIssue> {
+    return this.postAction(id, 'reopen')
+  }
+
+  async muteIssue(id: string): Promise<BackendIssue> {
+    return this.postAction(id, 'mute')
+  }
+
+  async unmuteIssue(id: string): Promise<BackendIssue> {
+    return this.postAction(id, 'unmute')
   }
 }
 

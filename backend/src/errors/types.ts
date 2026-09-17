@@ -40,6 +40,21 @@ export interface TrojanRequest {
   headers: Record<string, string>
 }
 
+// Sentry SDKs (browser and node alike) attach these automatically to every
+// event under `contexts.*` — the shim was discarding them. `browser`/`device`
+// are typically null for server-side (node/python) events; `os` is populated
+// for both.
+export interface TrojanNamedContext {
+  name: string
+  version: string | null
+}
+
+export interface TrojanDeviceContext {
+  family: string | null
+  model: string | null
+  brand: string | null
+}
+
 export interface TrojanEvent {
   id: string
   eventId: string
@@ -52,6 +67,9 @@ export interface TrojanEvent {
   environment: string | null
   serverName: string | null
   runtime: string | null
+  browser: TrojanNamedContext | null
+  os: TrojanNamedContext | null
+  device: TrojanDeviceContext | null
   request: TrojanRequest | null
   frames: TrojanFrame[]
   scrubbed: string[]
@@ -86,4 +104,11 @@ export interface ErrorsBackend {
   getIssue(id: string): Promise<BackendIssue | null>
   listIssueEvents(issueId: string, limit: number): Promise<BackendEventSummary[]>
   getEvent(eventId: string): Promise<BackendEvent | null>
+  /** Idempotent: resolving an already-resolved issue is a no-op success, not an error. */
+  resolveIssue(id: string): Promise<BackendIssue>
+  /** Idempotent: reopening an already-open (unresolved) issue is a no-op success. */
+  reopenIssue(id: string): Promise<BackendIssue>
+  /** Idempotent: muting an already-muted issue is a no-op success, not an error. */
+  muteIssue(id: string): Promise<BackendIssue>
+  unmuteIssue(id: string): Promise<BackendIssue>
 }

@@ -116,6 +116,38 @@ func Serve(projectPath string) error {
 		handleUpdateStatus(projectPath, normalizer.StatusResolved),
 	)
 
+	// --- Trojan Errors (crash analytics) — talks to the Errors shim over
+	// HTTP (crash-analytics/CONTRACT.md), never touches .trojan/scans. Same
+	// Pro gate as everything above (enforced once, at the top of Serve).
+	s.AddTool(
+		mcp.NewTool("get_fixable_errors",
+			mcp.WithDescription("Return all open (unresolved) production errors from Trojan's Errors tab, each with its stack trace and surrounding source context already captured — no local file needed. Use this to batch-fix crashes the same way get_fixable_findings batch-fixes vulnerabilities."),
+		),
+		handleGetFixableErrors(projectPath),
+	)
+
+	s.AddTool(
+		mcp.NewTool("get_error_detail",
+			mcp.WithDescription("Return full detail for one Trojan Errors issue by id: stack trace with source context, request info, release/environment, and where it happened (OS/browser/runtime). Use this when you intend to fix a specific crash."),
+			mcp.WithString("id",
+				mcp.Required(),
+				mcp.Description("The error issue id (from get_fixable_errors or the Errors tab's suggested prompt)."),
+			),
+		),
+		handleGetErrorDetail(projectPath),
+	)
+
+	s.AddTool(
+		mcp.NewTool("mark_error_fixed",
+			mcp.WithDescription("Mark a Trojan Errors issue as resolved after you have applied a fix. Mirrors the Errors tab's own Resolve button."),
+			mcp.WithString("id",
+				mcp.Required(),
+				mcp.Description("The error issue id to mark as resolved."),
+			),
+		),
+		server.ToolHandlerFunc(handleMarkErrorFixed),
+	)
+
 	return server.ServeStdio(s)
 }
 
