@@ -425,7 +425,8 @@ html, body, #root { height: 100%; overflow: hidden; background: var(--bg); color
   display: flex; align-items: center; justify-content: center; gap: 7px;
 }
 
-/* "Don't have an account? Sign up" toggle */
+/* "Don't have an account? Create one on trojancli.com" link (opens the
+   website's sign-up flow in the user's real browser, not in-app) */
 .auth-toggle {
   text-align: center; font-size: 12px; color: var(--muted-fg);
   margin-top: 14px;
