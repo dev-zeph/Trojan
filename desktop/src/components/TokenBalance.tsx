@@ -20,7 +20,7 @@ export function TokenBalance({ balance, lowThreshold = 400, onTopUp, compact }: 
   const empty = !loading && balance <= 0;
   const low = !loading && !empty && balance < lowThreshold;
 
-  const color = empty ? "#f87171" : low ? "#fbbf24" : "#a3a3a3";
+  const color = empty ? "var(--sb-danger)" : low ? "var(--sb-warn)" : "var(--sb-muted)";
   const border = empty
     ? "rgba(248,113,113,0.4)"
     : low
@@ -40,7 +40,7 @@ export function TokenBalance({ balance, lowThreshold = 400, onTopUp, compact }: 
         display: "flex", alignItems: "center", gap: 6,
         width: "100%", padding: compact ? "4px 8px" : "6px 10px",
         background: "transparent", border: `1px solid ${border}`,
-        color, cursor: "pointer", font: "500 11px Inter, sans-serif",
+        color, cursor: "pointer", font: "500 11px var(--font-sans)",
         letterSpacing: "0.2px",
       }}
     >
@@ -76,11 +76,11 @@ export function RunCostHint({ balance, model }: { balance: number | null; model:
     <div style={{
       display: "flex", flexDirection: "column", gap: 4,
       padding: "10px 12px", border: "1px solid rgba(255,255,255,0.1)",
-      font: "400 11px Inter, sans-serif", color: "#a3a3a3",
+      font: "400 11px var(--font-sans)", color: "var(--sb-muted)",
     }}>
       <div style={{ display: "flex", justifyContent: "space-between" }}>
         <span>Typical cost</span>
-        <span style={{ color: "#e5e5e5" }}>{range} tokens</span>
+        <span style={{ color: "rgba(255,255,255,0.85)" }}>{range} tokens</span>
       </div>
       <div style={{ opacity: 0.7, lineHeight: 1.5 }}>
         Charged per step as the agent works, not upfront. If you run out
@@ -88,7 +88,7 @@ export function RunCostHint({ balance, model }: { balance: number | null; model:
         nothing is lost.
       </div>
       {balance !== null && !affordable && (
-        <div style={{ color: "#fbbf24", marginTop: 2 }}>
+        <div style={{ color: "var(--sb-warn)", marginTop: 2 }}>
           Your balance may not cover a full run. It will pause rather than fail.
         </div>
       )}

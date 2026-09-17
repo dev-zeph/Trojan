@@ -9,6 +9,7 @@
 
 import { createPortal } from "react-dom";
 import { QRCodeSVG } from "qrcode.react";
+import { gradeColor, severityColor } from "./lib/reportColors";
 
 interface ScanSummary {
   critical: number;
@@ -45,14 +46,6 @@ interface PrintCertificateProps {
   userLevel?: string;   // "founder" | "developer" | undefined
 }
 
-const GRADE_COLOR: Record<string, string> = {
-  A: "#16a34a", B: "#65a30d", C: "#d97706", D: "#ea580c", F: "#dc2626",
-};
-
-const SEV_COLOR: Record<string, string> = {
-  critical: "#dc2626", high: "#ea580c", medium: "#a16207", low: "#1d4ed8", info: "#4b5563",
-};
-
 export function PrintCertificate({
   projectPath,
   scanSummary,
@@ -67,10 +60,10 @@ export function PrintCertificate({
       })
     : new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
 
-  const vulnPkgs     = packages.filter(p => p.cve_count > 0).length;
-  const grade        = threatLabResult?.grade;
-  const gradeColor   = grade ? (GRADE_COLOR[grade] ?? "#6b7280") : "#6b7280";
-  const threatIndex  = threatLabResult?.threat_index;
+  const vulnPkgs        = packages.filter(p => p.cve_count > 0).length;
+  const grade           = threatLabResult?.grade;
+  const gradeColorValue = gradeColor(grade);
+  const threatIndex     = threatLabResult?.threat_index;
 
   // Unique (non-cryptographic) report ID from path + date
   const reportId = btoa(`${projectPath}-${scanSummary?.scannedAt ?? Date.now()}`)
@@ -115,11 +108,11 @@ export function PrintCertificate({
       {threatLabResult ? (
         <div className="cert-grade-row">
           <div className="cert-grade-box">
-            <div className="cert-grade-letter" style={{ color: gradeColor }}>{grade}</div>
+            <div className="cert-grade-letter" style={{ color: gradeColorValue }}>{grade}</div>
             <div className="cert-grade-label">Security Grade</div>
           </div>
           <div className="cert-index-box">
-            <div className="cert-index-num" style={{ color: gradeColor }}>{threatIndex}</div>
+            <div className="cert-index-num" style={{ color: gradeColorValue }}>{threatIndex}</div>
             <div className="cert-grade-label">Threat Index (0 = secure)</div>
           </div>
           <div className="cert-verdict-box">
@@ -151,7 +144,7 @@ export function PrintCertificate({
                   scanSummary[sev] > 0 && (
                     <tr key={sev}>
                       <td>
-                        <span className="cert-sev-dot" style={{ background: SEV_COLOR[sev] }} />
+                        <span className="cert-sev-dot" style={{ background: severityColor(sev) }} />
                         {sev.charAt(0).toUpperCase() + sev.slice(1)}
                       </td>
                       <td><strong>{scanSummary[sev]}</strong></td>
@@ -179,7 +172,7 @@ export function PrintCertificate({
               </tr>
               <tr>
                 <td>Packages with CVEs</td>
-                <td><strong style={{ color: vulnPkgs > 0 ? SEV_COLOR.high : SEV_COLOR.info }}>{vulnPkgs}</strong></td>
+                <td><strong style={{ color: vulnPkgs > 0 ? severityColor("high") : severityColor("info") }}>{vulnPkgs}</strong></td>
               </tr>
               <tr>
                 <td>Clean packages</td>
@@ -217,7 +210,7 @@ export function PrintCertificate({
                 <tr key={i}>
                   <td>{v.title}</td>
                   <td>
-                    <span className="cert-sev-dot" style={{ background: SEV_COLOR[v.severity] ?? "#6b7280" }} />
+                    <span className="cert-sev-dot" style={{ background: severityColor(v.severity) }} />
                     {v.severity}
                   </td>
                   <td>{(v as { exploitability?: string }).exploitability ?? "—"}</td>
@@ -270,7 +263,7 @@ export function PrintCertificate({
           <QRCodeSVG
             value="https://trojancli.com"
             size={72}
-            fgColor="#0a0a0a"
+            fgColor="#17171a"
             bgColor="#ffffff"
             level="M"
           />

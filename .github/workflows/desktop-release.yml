@@ -90,6 +90,60 @@ jobs:
         # Use "npm run tauri" (not "npm run build:tauri") to skip the
         # prebuild:tauri hook — the Go sidecar is already built above.
         run: npm run tauri build -- --target ${{ matrix.target }}
+        env:
+          # Signing + notarization, macOS leg only. Every value below is empty
+          # on the Windows runner, and the Tauri CLI skips signing entirely when
+          # APPLE_CERTIFICATE is unset — so Windows keeps building unsigned
+          # exactly as before (see the matrix comment above).
+          #
+          # Tauri v2 does the whole dance inside `tauri build`: it imports the
+          # .p12 into a temporary keychain, signs the .app AND the nested Go
+          # sidecar from bundle.externalBin, then submits to notarytool and
+          # staples. There is deliberately no separate codesign/notarytool step.
+          #
+          # APPLE_PASSWORD is an app-specific password, NOT the Apple ID
+          # password. It is tied to the Apple ID, so it stops working if that
+          # password is ever changed — if notarization starts failing with an
+          # auth error, regenerate it at appleid.apple.com first. Moving to an
+          # App Store Connect API key (APPLE_API_ISSUER / APPLE_API_KEY /
+          # APPLE_API_KEY_PATH) removes that failure mode.
+          APPLE_CERTIFICATE: ${{ matrix.os == 'macos-14' && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ matrix.os == 'macos-14' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ matrix.os == 'macos-14' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_ID: ${{ matrix.os == 'macos-14' && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ matrix.os == 'macos-14' && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ matrix.os == 'macos-14' && secrets.APPLE_TEAM_ID || '' }}
+
+      # Fail the build rather than ship another unsigned release. Seven public
+      # desktop releases went out unsigned because nothing ever checked, and the
+      # website picks up whatever .dmg it finds (lib/releases.ts) without
+      # looking at its signature.
+      - name: Verify signature and notarization
+        if: matrix.os == 'macos-14'
+        working-directory: desktop
+        run: |
+          set -euo pipefail
+          APP="src-tauri/target/${{ matrix.target }}/release/bundle/macos/Trojan.app"
+          DMG=$(ls src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg | head -1)
+
+          echo "::group::codesign"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          codesign -dvvv "$APP" 2>&1 | grep -E 'Authority|TeamIdentifier|flags'
+          echo "::endgroup::"
+
+          # The sidecar is a nested Mach-O. If it is unsigned, notarization
+          # fails -- and if it were somehow missed, the app breaks on launch.
+          echo "::group::sidecar"
+          codesign --verify --strict --verbose=2 \
+            "$APP/Contents/MacOS/trojan-${{ matrix.target }}"
+          echo "::endgroup::"
+
+          # The real test. "source=Notarized Developer ID" is the only output
+          # that means a downloader will not see a Gatekeeper warning.
+          echo "::group::gatekeeper"
+          spctl -a -vvv -t install "$DMG"
+          xcrun stapler validate "$DMG"
+          echo "::endgroup::"
 
       # Uploads whatever this OS produced; globs that match nothing are ignored
       # (fail_on_unmatched_files defaults to false). macOS → .dmg; Windows →

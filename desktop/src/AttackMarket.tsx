@@ -177,9 +177,10 @@ export function AttackMarket({ getToken, selectedSlug, onUseTemplate }: Props) {
   if (loading) {
     return (
       <div className="am-wrap">
-        <div className="view-header">
-          <h2 className="view-title">Attack Market</h2>
-          <p className="view-desc">Curated playbooks drawn from real breaches. Pick one and the agent replays the pattern against your app, within your rules of engagement.</p>
+        <div className="page-header">
+          <span className="page-header-eyebrow">SECURITY</span>
+          <h1 className="page-header-title">Attack Market</h1>
+          <p className="page-header-desc">Curated playbooks drawn from real breaches. Pick one and the agent replays the pattern against your app, within your rules of engagement.</p>
         </div>
         <div className="am-grid">{Array.from({ length: 4 }).map((_, i) => <SkeletonCard key={i} />)}</div>
       </div>
@@ -201,9 +202,10 @@ export function AttackMarket({ getToken, selectedSlug, onUseTemplate }: Props) {
 
   return (
     <div className="am-wrap">
-      <div className="view-header">
-        <h2 className="view-title">Attack Market</h2>
-        <p className="view-desc">Curated playbooks drawn from real breaches. Pick one and the agent replays the pattern against your app, within your rules of engagement.</p>
+      <div className="page-header">
+        <span className="page-header-eyebrow">SECURITY</span>
+        <h1 className="page-header-title">Attack Market</h1>
+        <p className="page-header-desc">Curated playbooks drawn from real breaches. Pick one and the agent replays the pattern against your app, within your rules of engagement.</p>
       </div>
 
       <div className="am-controls">

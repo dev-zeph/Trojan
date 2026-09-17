@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened runtime entitlements for the notarized macOS build.
+
+  DELIBERATELY MINIMAL. Every entitlement here is a hole punched in the hardened
+  runtime, and this is a security product: shipping a permissive set to save one
+  debugging round would undercut the thing we sell. Start with the smallest set
+  that builds and runs, and add below only with a recorded reason.
+
+  Note that App Sandbox entitlements (com.apple.security.network.client and
+  friends) do NOT belong here. The app is not sandboxed; it deliberately reads
+  arbitrary project directories and spawns scanners, neither of which survives
+  sandboxing.
+
+  WHAT IS NOT HERE, AND WHY:
+
+  * com.apple.security.cs.allow-unsigned-executable-memory
+  * com.apple.security.cs.disable-library-validation
+      Both were candidates because `trojan init` downloads third-party scanners
+      (Semgrep, Nuclei) into ~/.trojan/bin and runs them, some via python3.
+      Neither should actually be needed: those scanners run as SEPARATE child
+      processes, and a child does not inherit this process's hardened runtime.
+      These entitlements only matter for code loaded INTO the Trojan process.
+      Add one only if a scan genuinely fails on a hardened build, and write down
+      which scanner forced it.
+
+  * com.apple.security.cs.allow-dyld-environment-variables
+      Only needed if we start injecting DYLD_* into the app itself. We do not.
+
+  VERIFY after signing:
+      codesign -d --entitlements - Trojan.app
+-->
+<plist version="1.0">
+<dict>
+	<!--
+	  The UI is a WKWebView running JavaScript. WebKit executes JS in its own
+	  out-of-process WebContent service, which carries Apple's own entitlements,
+	  so this is belt-and-braces rather than strictly required. It is the one
+	  entitlement whose absence produces a silent white window rather than a
+	  clear error, which is why it is worth having from the start.
+	-->
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+</dict>
+</plist>

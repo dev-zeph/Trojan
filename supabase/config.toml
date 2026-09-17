@@ -34,3 +34,13 @@ enable_refresh_token_rotation = true
 enabled = true
 client_id = "env(GITHUB_CLIENT_ID)"
 secret = "env(GITHUB_CLIENT_SECRET)"
+
+# Stripe signs its webhooks with STRIPE_WEBHOOK_SECRET and sends NO Supabase
+# Authorization header, so the platform's JWT gate must be off for this one
+# function -- the signature check inside index.ts is the real authentication.
+#
+# This block exists because `supabase functions deploy` defaults verify_jwt to
+# true and silently re-armed the gate on 2026-09-16, which would have made every
+# Stripe event 401 and every paid purchase grant zero tokens.
+[functions.stripe-webhook]
+verify_jwt = false

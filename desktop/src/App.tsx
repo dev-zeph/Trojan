@@ -11,7 +11,8 @@ import type { PentestReport } from "./PrintPenTestReport";
 import { AttackMarket, prefetchAttackMarket } from "./AttackMarket";
 import type { AttackTemplate } from "./AttackMarket";
 import { McpConnect } from "./McpConnect";
-import { MARKETING_URL, STORE_KEY, SUPABASE_URL, TERMINAL_KEY } from "./constants";
+import { gradeColor, licenseRiskColor } from "./lib/reportColors";
+import { MARKETING_URL, STORE_KEY, SUPABASE_URL, TERMINAL_KEY, APP_VERSION } from "./constants";
 import { supabase, decodeJWT, encodeBody, syncAuthToGoConfig } from "./lib/supabase";
 import {
   getStore,
@@ -27,6 +28,7 @@ import { friendlyError, timeAgo, parseAuthCallback, greet, initials } from "./li
 import { AuthForm } from "./components/AuthForm";
 import { Onboarding } from "./components/Onboarding";
 import { CM } from "./components/CornerMarks";
+import { FeedbackForm } from "./components/FeedbackForm";
 import { TokenBalance, RunCostHint } from "./components/TokenBalance";
 import type {
   NavView,
@@ -134,6 +136,7 @@ export default function App() {
   const [isLabRunning, setIsLabRunning]   = useState(false);
   const [labError, setLabError]           = useState<string | null>(null);
   const [showAuthForm, setShowAuthForm]   = useState(false);
+  const [showFeedback, setShowFeedback]   = useState(false);
   const [historyFilter, setHistoryFilter] = useState<"all" | "sast" | "dast">("all");
   const [staleCaches, setStaleCaches]     = useState<Set<string>>(new Set());
   const [terminalOpen, setTerminalOpen]   = useState(true);
@@ -427,6 +430,17 @@ export default function App() {
     return () => unlisten?.();
   }, []);
 
+  // Balance can also change from outside this window entirely -- a top-up on
+  // the web dashboard, a teammate's run on a shared org. Refreshing on every
+  // token-spending action in this app (above) keeps it accurate for what we
+  // did; this catches everything else without polling while the window sits
+  // idle in the background.
+  useEffect(() => {
+    function onFocus() { void refreshTokenBalance(); }
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [refreshTokenBalance]);
+
   useEffect(() => {
     const appWindow = getCurrentWebviewWindow();
     let unlisten: (() => void) | undefined;
@@ -566,6 +580,9 @@ export default function App() {
 
       const result = await res.json() as ThreatLabResult;
       setThreatLabResult(result);
+      // This run just spent tokens (or confirmed a cache hit spent none) --
+      // refresh rather than leave the sidebar showing the pre-run balance.
+      void refreshTokenBalance();
     } catch (e) {
       setLabError(friendlyError(String(e)));
     } finally {
@@ -765,6 +782,9 @@ export default function App() {
 
       const report = await res.json() as PentestReport;
       setPentestReport(report);
+      // This run just spent tokens (or confirmed a cache hit spent none) --
+      // refresh rather than leave the sidebar showing the pre-run balance.
+      void refreshTokenBalance();
       dismissToast(id);
 
       // Let the portal render with the report + findings, then open print → PDF.
@@ -936,7 +956,7 @@ export default function App() {
         <div className="sidebar-logo-wrap">
           <img src="/logo.png" alt="Trojan" className="sidebar-logo" />
           <span className="sidebar-wordmark">TROJAN</span>
-          <span className="sidebar-version">v0.1</span>
+          <span className="sidebar-version">v{APP_VERSION}</span>
         </div>
 
         <nav className="sidebar-nav">
@@ -950,7 +970,7 @@ export default function App() {
               <span className="nav-icon">{icon}</span>
               <span style={{ flex: 1 }}>{label}</span>
               {pro && (
-                <span style={{ font: "600 9px Inter,sans-serif", letterSpacing: "1px", color: "#a78bfa", border: "1px solid rgba(167,139,250,0.4)", padding: "2px 5px" }}>PRO</span>
+                <span style={{ fontFamily: "var(--font-sans)", fontWeight: 600, fontSize: 9, letterSpacing: "1px", color: "var(--accent-lift)", border: "1px solid rgba(167,139,250,0.4)", padding: "2px 5px" }}>PRO</span>
               )}
             </button>
             </span>
@@ -997,6 +1017,24 @@ export default function App() {
             <span>Terminal</span>
           </button>
         </div>
+
+        {/* Feedback — reuses the terminal button's shape so it reads as another
+            utility action rather than a promotion. Signed-in only: the edge
+            function needs a bearer token to attribute the report. */}
+        {authStatus?.loggedIn && (
+          <div className="sidebar-bottom-actions" style={{ paddingTop: 0 }}>
+            <button
+              className="sidebar-terminal-btn"
+              onClick={() => setShowFeedback(true)}
+              title="Send feedback to the maintainer"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>
+              </svg>
+              <span>Send feedback</span>
+            </button>
+          </div>
+        )}
 
         <div className="sidebar-user">
           <div className="sidebar-avatar">{initials(profile.name)}</div>
@@ -1105,8 +1143,7 @@ export default function App() {
             const ringC   = 2 * Math.PI * ringR;
             const secScore = threatLabResult ? Math.max(0, Math.min(100, 100 - threatLabResult.threat_index)) : null;
             const tGrade  = threatLabResult?.grade ?? null;
-            const gradeColors: Record<string, string> = { A:"#16a34a", B:"#65a30d", C:"#d97706", D:"#ea580c", F:"#dc2626" };
-            const ringColor  = tGrade ? gradeColors[tGrade] : "#4ade80";
+            const ringColor  = gradeColor(tGrade);
             const ringDash   = secScore !== null ? `${(ringC * secScore / 100).toFixed(1)} ${ringC.toFixed(1)}` : `0 ${ringC.toFixed(1)}`;
 
             // Stats
@@ -1204,7 +1241,7 @@ export default function App() {
                       </div>
                       <div className="stat-card">
                         <span className="stat-label">CVEs</span>
-                        <span className="stat-value" style={{ color: vulnPkgs > 0 ? "#ea580c" : undefined }}>
+                        <span className="stat-value" style={{ color: vulnPkgs > 0 ? "var(--warning)" : undefined }}>
                           {packages.length ? vulnPkgs : "—"}
                         </span>
                         <span className="stat-sub">vulnerable pkgs</span>
@@ -1218,7 +1255,7 @@ export default function App() {
                     <div className={`scan-tip-wrap ${isScanning ? "scanning-active" : ""}`}>
                       <div className={`station-card ${isDragOver && !isScanning ? "drag-over" : ""} ${isScanning ? "scan-locked" : ""}`}>
                         <CM />
-                        <div className="station-icon-wrap" style={{ color: "#2563eb" }}>
+                        <div className="station-icon-wrap" style={{ color: "var(--blue)" }}>
                           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                             <polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>
                           </svg>
@@ -1246,9 +1283,9 @@ export default function App() {
 
                     {/* DAST station */}
                     <div className={`scan-tip-wrap ${isScanning ? "scanning-active" : ""}`}>
-                      <div className={`station-card ${isScanning ? "scan-locked" : ""}`} style={{ borderColor: "#7c3aed20" }}>
+                      <div className={`station-card ${isScanning ? "scan-locked" : ""}`} style={{ borderColor: "color-mix(in srgb, var(--primary) 12%, transparent)" }}>
                         <CM />
-                        <div className="station-icon-wrap" style={{ color: "#7c3aed" }}>
+                        <div className="station-icon-wrap" style={{ color: "var(--primary)" }}>
                           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                             <circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/>
                             <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
@@ -1312,17 +1349,18 @@ export default function App() {
           {/* ── SAST ── */}
           {view === "sast" && (
             <div className="content-inner">
-              <div className="view-header view-header-row">
-                <div>
-                  <h2 className="view-title">Static Analysis</h2>
-                  <p className="view-desc">Scan a local project for vulnerabilities, secrets, and misconfigurations.</p>
-                </div>
+              <div className="page-header">
                 {recent.some(r => r.type === "sast" && r.cachePath) && (
-                  <button className="report-cta" onClick={() => setView("threatlab")} title="Generate an AI security report from your findings">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M9 15l2 2 4-4"/></svg>
-                    Generate Security Report
-                  </button>
+                  <div className="page-header-row">
+                    <button className="report-cta" onClick={() => setView("threatlab")} title="Generate an AI security report from your findings">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M9 15l2 2 4-4"/></svg>
+                      Generate Security Report
+                    </button>
+                  </div>
                 )}
+                <span className="page-header-eyebrow">SECURITY</span>
+                <h1 className="page-header-title">Static Analysis</h1>
+                <p className="page-header-desc">Scan a local project for vulnerabilities, secrets, and misconfigurations.</p>
               </div>
 
               <div className={`scan-tip-wrap ${isScanning ? "scanning-active" : ""}`}>
@@ -1356,11 +1394,11 @@ export default function App() {
                 <p className="scanner-grid-label">SCANNERS — 5 INSTALLED</p>
                 <div className="scanner-grid">
                   {[
-                    { name: "Semgrep",  desc: "Pattern-based code analysis across 30+ languages.", icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#2563eb" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M10 4a6 6 0 1 0 0 12 6 6 0 0 0 0-12 M21 21l-6.65-6.65"/></svg> },
-                    { name: "Trivy",    desc: "Known CVEs and misconfigurations in dependencies and images.", icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#2563eb" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></svg> },
-                    { name: "Gitleaks", desc: "Hard-coded secrets, tokens and credentials in code and git history.", icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#2563eb" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12.4 2.7a2.5 2.5 0 0 1 3.4 0l5.5 5.5a2.5 2.5 0 0 1 0 3.4l-3.7 3.7a2.5 2.5 0 0 1-3.4 0L8.7 9.8a2.5 2.5 0 0 1 0-3.4z M14 7l3 3 M9.4 10.6 2 18v4h4l7.4-7.4"/></svg> },
-                    { name: "Checkov",  desc: "IaC policy checks — Terraform, CloudFormation, Kubernetes.", icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#2563eb" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2 2 7l10 5 10-5-10-5 M2 17l10 5 10-5 M2 12l10 5 10-5"/></svg> },
-                    { name: "Syft",     desc: "SBOM generation and license inventory for every artifact.", icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#2563eb" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z M3.3 7l8.7 5 8.7-5 M12 22V12"/></svg> },
+                    { name: "Semgrep",  desc: "Pattern-based code analysis across 30+ languages.", icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--blue)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M10 4a6 6 0 1 0 0 12 6 6 0 0 0 0-12 M21 21l-6.65-6.65"/></svg> },
+                    { name: "Trivy",    desc: "Known CVEs and misconfigurations in dependencies and images.", icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--blue)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></svg> },
+                    { name: "Gitleaks", desc: "Hard-coded secrets, tokens and credentials in code and git history.", icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--blue)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12.4 2.7a2.5 2.5 0 0 1 3.4 0l5.5 5.5a2.5 2.5 0 0 1 0 3.4l-3.7 3.7a2.5 2.5 0 0 1-3.4 0L8.7 9.8a2.5 2.5 0 0 1 0-3.4z M14 7l3 3 M9.4 10.6 2 18v4h4l7.4-7.4"/></svg> },
+                    { name: "Checkov",  desc: "IaC policy checks — Terraform, CloudFormation, Kubernetes.", icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--blue)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2 2 7l10 5 10-5-10-5 M2 17l10 5 10-5 M2 12l10 5 10-5"/></svg> },
+                    { name: "Syft",     desc: "SBOM generation and license inventory for every artifact.", icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--blue)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z M3.3 7l8.7 5 8.7-5 M12 22V12"/></svg> },
                   ].map((f) => (
                     <div key={f.name} className="scanner-chip">
                       <div className="scanner-chip-head">
@@ -1412,9 +1450,10 @@ export default function App() {
             const signedIn = authStatus?.loggedIn ?? false;
             return (
             <div className="content-inner">
-              <div className="view-header">
-                <h2 className="view-title">Penetration Testing <span className="lab-pro-tag">365 TOKENS</span></h2>
-                <p className="view-desc">Scan a running server for runtime vulnerabilities using Nuclei's 6,000+ templates plus AI-generated attack patterns.</p>
+              <div className="page-header">
+                <span className="page-header-eyebrow">SECURITY</span>
+                <h1 className="page-header-title">Penetration Testing <span className="lab-pro-tag">365 TOKENS</span></h1>
+                <p className="page-header-desc">Scan a running server for runtime vulnerabilities using Nuclei's 6,000+ templates plus AI-generated attack patterns.</p>
               </div>
 
               {!signedIn && (
@@ -1446,7 +1485,7 @@ export default function App() {
                     onChange={(e) => setDastUrl(e.target.value)}
                     disabled={isScanning}
                     autoFocus
-                    style={{ fontFamily: "'Fira Code', monospace" }}
+                    style={{ fontFamily: "var(--font-mono)" }}
                   />
                   <button type="submit" className="station-btn" disabled={isScanning || !dastUrl.trim()} style={{ whiteSpace: "nowrap", padding: "0 22px" }}>
                     {isScanning ? "Scan in progress…" : "Launch pen test"}
@@ -1621,7 +1660,7 @@ export default function App() {
                       <div>
                         <p className="pt-idhint" style={{ marginTop: 0 }}>Allowed endpoints (one per line, trailing * = prefix; blank = all in scope)</p>
                         <textarea
-                          className="pt-id-header" style={{ width: "100%", minHeight: 46, resize: "vertical", fontFamily: "var(--font-mono, monospace)" }}
+                          className="pt-id-header" style={{ width: "100%", minHeight: 46, resize: "vertical", fontFamily: "var(--font-mono)" }}
                           placeholder={"/api/*\n/orders/*"}
                           value={agAllowEndpoints} disabled={isScanning}
                           onChange={(e) => setAgAllowEndpoints(e.target.value)}
@@ -1630,7 +1669,7 @@ export default function App() {
                       <div>
                         <p className="pt-idhint" style={{ marginTop: 0 }}>Denied endpoints (never touched)</p>
                         <textarea
-                          className="pt-id-header" style={{ width: "100%", minHeight: 46, resize: "vertical", fontFamily: "var(--font-mono, monospace)" }}
+                          className="pt-id-header" style={{ width: "100%", minHeight: 46, resize: "vertical", fontFamily: "var(--font-mono)" }}
                           placeholder={"/admin/*\n/internal/*"}
                           value={agDenyEndpoints} disabled={isScanning}
                           onChange={(e) => setAgDenyEndpoints(e.target.value)}
@@ -1673,20 +1712,21 @@ export default function App() {
           {/* ── Licenses ── */}
           {view === "licenses" && (
             <div className="content-inner">
-              <div className="view-header">
-                <h2 className="view-title">License Compliance</h2>
-                <p className="view-desc">Open-source license risk across your dependency tree. Copyleft licenses may require you to open-source your code.</p>
+              <div className="page-header">
+                <span className="page-header-eyebrow">COMPLIANCE</span>
+                <h1 className="page-header-title">License Compliance</h1>
+                <p className="page-header-desc">Open-source license risk across your dependency tree. Copyleft licenses may require you to open-source your code.</p>
               </div>
               {packages.length === 0 ? (
                 <div className="lab-state-card">
                   <p className="lab-no-data" style={{ marginBottom: recent.filter(r => r.cachePath).length > 0 ? 10 : 0 }}>No license data loaded.</p>
                   {recent.filter(r => r.cachePath && r.type === "sast").length > 0 && (
                     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                      <span style={{ fontSize: 11, color: "oklch(0.45 0 0)", fontWeight: 500 }}>LOAD FROM PREVIOUS SCAN</span>
+                      <span style={{ fontSize: 11, color: "var(--muted-fg)", fontWeight: 500 }}>LOAD FROM PREVIOUS SCAN</span>
                       {recent.filter(r => r.cachePath && r.type === "sast").slice(0, 5).map(r => (
-                        <button key={r.path} onClick={() => loadScanData(r)} style={{ background: "none", border: "1px solid oklch(0.88 0 0)", padding: "6px 10px", cursor: "pointer", fontSize: 12, color: "oklch(0.30 0 0)", textAlign: "left", display: "flex", justifyContent: "space-between" }}>
+                        <button key={r.path} onClick={() => loadScanData(r)} style={{ background: "none", border: "1px solid var(--border)", padding: "6px 10px", cursor: "pointer", fontSize: 12, color: "var(--fg)", textAlign: "left", display: "flex", justifyContent: "space-between" }}>
                           <span>{r.name}</span>
-                          <span style={{ color: "oklch(0.55 0 0)", fontSize: 11 }}>{timeAgo(r.scannedAt)}</span>
+                          <span style={{ color: "var(--muted-fg)", fontSize: 11 }}>{timeAgo(r.scannedAt)}</span>
                         </button>
                       ))}
                     </div>
@@ -1700,30 +1740,30 @@ export default function App() {
                 const unknown = packages.filter(p => p.license_risk === "unknown" || !p.license_risk);
                 const permissive = packages.filter(p => p.license_risk === "permissive");
                 const sections = [
-                  { key: "copyleft", label: "COPYLEFT — may require open-sourcing", items: copyleft, color: "#dc2626" },
-                  { key: "weak", label: "WEAK COPYLEFT — review modification terms", items: weakCopyleft, color: "#d97706" },
-                  { key: "unknown", label: "UNKNOWN — no license declared", items: unknown, color: "#6b7280" },
-                  { key: "permissive", label: "PERMISSIVE — safe to use", items: permissive, color: "#16a34a" },
+                  { key: "copyleft", label: "COPYLEFT — may require open-sourcing", items: copyleft, color: licenseRiskColor("copyleft") },
+                  { key: "weak", label: "WEAK COPYLEFT — review modification terms", items: weakCopyleft, color: licenseRiskColor("weak-copyleft") },
+                  { key: "unknown", label: "UNKNOWN — no license declared", items: unknown, color: licenseRiskColor("unknown") },
+                  { key: "permissive", label: "PERMISSIVE — safe to use", items: permissive, color: licenseRiskColor("permissive") },
                 ];
                 return (
                   <>
                     {/* Loaded codebase bar */}
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 14px", background: "white", border: "1px solid oklch(0.88 0 0)", marginBottom: 16 }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 14px", background: "white", border: "1px solid var(--border)", marginBottom: 16 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <span style={{ fontSize: 12, color: "oklch(0.50 0 0)" }}>Analysing</span>
-                        <span style={{ fontSize: 13, fontWeight: 600, color: "oklch(0.15 0 0)" }}>{codebase}</span>
-                        <span style={{ fontSize: 11, color: "oklch(0.55 0 0)" }}>{packages.length} package{packages.length !== 1 ? "s" : ""}</span>
+                        <span style={{ fontSize: 12, color: "var(--muted-fg)" }}>Analysing</span>
+                        <span style={{ fontSize: 13, fontWeight: 600, color: "var(--fg)" }}>{codebase}</span>
+                        <span style={{ fontSize: 11, color: "var(--muted-fg)" }}>{packages.length} package{packages.length !== 1 ? "s" : ""}</span>
                       </div>
-                      <button onClick={() => { setPackages([]); setLicPages({}); }} style={{ background: "none", border: "1px solid oklch(0.88 0 0)", padding: "4px 10px", cursor: "pointer", fontSize: 11, color: "oklch(0.40 0 0)" }}>
+                      <button onClick={() => { setPackages([]); setLicPages({}); }} style={{ background: "none", border: "1px solid var(--border)", padding: "4px 10px", cursor: "pointer", fontSize: 11, color: "var(--muted-fg)" }}>
                         Scan another project
                       </button>
                     </div>
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 16 }}>
                       {[
-                        { label: "Copyleft", count: copyleft.length, color: "#dc2626" },
-                        { label: "Weak Copyleft", count: weakCopyleft.length, color: "#d97706" },
-                        { label: "Unknown", count: unknown.length, color: "#6b7280" },
-                        { label: "Permissive", count: permissive.length, color: "#16a34a" },
+                        { label: "Copyleft", count: copyleft.length, color: licenseRiskColor("copyleft") },
+                        { label: "Weak Copyleft", count: weakCopyleft.length, color: licenseRiskColor("weak-copyleft") },
+                        { label: "Unknown", count: unknown.length, color: licenseRiskColor("unknown") },
+                        { label: "Permissive", count: permissive.length, color: licenseRiskColor("permissive") },
                       ].map(s => (
                         <div key={s.label} className="lab-card" style={{ textAlign: "center", padding: 14 }}>
                           <div style={{ fontSize: 24, fontWeight: 700, color: s.color }}>{s.count}</div>
@@ -1740,19 +1780,19 @@ export default function App() {
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
                             <div className="lab-card-label" style={{ color: s.color }}>{s.label}</div>
                             {totalPages > 1 && (
-                              <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "oklch(0.50 0 0)" }}>
-                                <button disabled={page === 0} onClick={() => setLicPages(p => ({ ...p, [s.key]: page - 1 }))} style={{ background: "none", border: "1px solid oklch(0.88 0 0)", padding: "2px 8px", cursor: page === 0 ? "default" : "pointer", opacity: page === 0 ? 0.4 : 1, fontSize: 11 }}>←</button>
+                              <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--muted-fg)" }}>
+                                <button disabled={page === 0} onClick={() => setLicPages(p => ({ ...p, [s.key]: page - 1 }))} style={{ background: "none", border: "1px solid var(--border)", padding: "2px 8px", cursor: page === 0 ? "default" : "pointer", opacity: page === 0 ? 0.4 : 1, fontSize: 11 }}>←</button>
                                 <span>{page + 1} / {totalPages}</span>
-                                <button disabled={page >= totalPages - 1} onClick={() => setLicPages(p => ({ ...p, [s.key]: page + 1 }))} style={{ background: "none", border: "1px solid oklch(0.88 0 0)", padding: "2px 8px", cursor: page >= totalPages - 1 ? "default" : "pointer", opacity: page >= totalPages - 1 ? 0.4 : 1, fontSize: 11 }}>→</button>
+                                <button disabled={page >= totalPages - 1} onClick={() => setLicPages(p => ({ ...p, [s.key]: page + 1 }))} style={{ background: "none", border: "1px solid var(--border)", padding: "2px 8px", cursor: page >= totalPages - 1 ? "default" : "pointer", opacity: page >= totalPages - 1 ? 0.4 : 1, fontSize: 11 }}>→</button>
                               </div>
                             )}
                           </div>
                           <div className="lab-card" style={{ padding: 0 }}>
                             {pageItems.map((p, i) => (
-                              <div key={`${p.name}-${p.version}-${i}`} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 14px", borderBottom: i < pageItems.length - 1 ? "1px solid oklch(0.94 0 0)" : "none", fontSize: 13 }}>
-                                <span style={{ fontWeight: 500, color: "oklch(0.18 0 0)", flex: 1 }}>{p.name}</span>
-                                <span style={{ fontFamily: "'Fira Code', monospace", fontSize: 11, color: "oklch(0.50 0 0)" }}>{p.version}</span>
-                                <span style={{ fontFamily: "'Fira Code', monospace", fontSize: 10, color: s.color, border: `1px solid ${s.color}33`, padding: "2px 6px" }}>{p.license || "NONE"}</span>
+                              <div key={`${p.name}-${p.version}-${i}`} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 14px", borderBottom: i < pageItems.length - 1 ? "1px solid var(--border)" : "none", fontSize: 13 }}>
+                                <span style={{ fontWeight: 500, color: "var(--fg)", flex: 1 }}>{p.name}</span>
+                                <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted-fg)" }}>{p.version}</span>
+                                <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: s.color, border: `1px solid ${s.color}33`, padding: "2px 6px" }}>{p.license || "NONE"}</span>
                               </div>
                             ))}
                           </div>
@@ -1774,9 +1814,10 @@ export default function App() {
 
             return (
             <div className="content-inner">
-              <div className="view-header">
-                <h2 className="view-title">Privacy Data Flows</h2>
-                <p className="view-desc">Where personal data is processed in your code and which third-party services receive it.</p>
+              <div className="page-header">
+                <span className="page-header-eyebrow">COMPLIANCE</span>
+                <h1 className="page-header-title">Privacy Data Flows</h1>
+                <p className="page-header-desc">Where personal data is processed in your code and which third-party services receive it.</p>
               </div>
 
               {!privacyReport ? (
@@ -1784,11 +1825,11 @@ export default function App() {
                   <p className="lab-no-data" style={{ marginBottom: recent.filter(r => r.cachePath && r.type === "sast").length > 0 ? 10 : 0 }}>No privacy data loaded.</p>
                   {recent.filter(r => r.cachePath && r.type === "sast").length > 0 && (
                     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                      <span style={{ fontSize: 11, color: "oklch(0.45 0 0)", fontWeight: 500 }}>LOAD FROM PREVIOUS SCAN</span>
+                      <span style={{ fontSize: 11, color: "var(--muted-fg)", fontWeight: 500 }}>LOAD FROM PREVIOUS SCAN</span>
                       {recent.filter(r => r.cachePath && r.type === "sast").slice(0, 5).map(r => (
-                        <button key={r.path} onClick={() => loadScanData(r)} style={{ background: "none", border: "1px solid oklch(0.88 0 0)", padding: "6px 10px", cursor: "pointer", fontSize: 12, color: "oklch(0.30 0 0)", textAlign: "left", display: "flex", justifyContent: "space-between" }}>
+                        <button key={r.path} onClick={() => loadScanData(r)} style={{ background: "none", border: "1px solid var(--border)", padding: "6px 10px", cursor: "pointer", fontSize: 12, color: "var(--fg)", textAlign: "left", display: "flex", justifyContent: "space-between" }}>
                           <span>{r.name}</span>
-                          <span style={{ color: "oklch(0.55 0 0)", fontSize: 11 }}>{timeAgo(r.scannedAt)}</span>
+                          <span style={{ color: "var(--muted-fg)", fontSize: 11 }}>{timeAgo(r.scannedAt)}</span>
                         </button>
                       ))}
                     </div>
@@ -1797,13 +1838,13 @@ export default function App() {
               ) : (
                 <>
                   {/* Loaded codebase bar */}
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 14px", background: "white", border: "1px solid oklch(0.88 0 0)", marginBottom: 16 }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 14px", background: "white", border: "1px solid var(--border)", marginBottom: 16 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <span style={{ fontSize: 12, color: "oklch(0.50 0 0)" }}>Analysing</span>
-                      <span style={{ fontSize: 13, fontWeight: 600, color: "oklch(0.15 0 0)" }}>{codebase || "project"}</span>
-                      <span style={{ fontSize: 11, color: "oklch(0.55 0 0)" }}>{dataTypes.length} data type{dataTypes.length !== 1 ? "s" : ""}, {thirdParty.length} third part{thirdParty.length !== 1 ? "ies" : "y"}</span>
+                      <span style={{ fontSize: 12, color: "var(--muted-fg)" }}>Analysing</span>
+                      <span style={{ fontSize: 13, fontWeight: 600, color: "var(--fg)" }}>{codebase || "project"}</span>
+                      <span style={{ fontSize: 11, color: "var(--muted-fg)" }}>{dataTypes.length} data type{dataTypes.length !== 1 ? "s" : ""}, {thirdParty.length} third part{thirdParty.length !== 1 ? "ies" : "y"}</span>
                     </div>
-                    <button onClick={() => { setPrivacyReport(null); setExpandedPrivacy(new Set()); }} style={{ background: "none", border: "1px solid oklch(0.88 0 0)", padding: "4px 10px", cursor: "pointer", fontSize: 11, color: "oklch(0.40 0 0)" }}>
+                    <button onClick={() => { setPrivacyReport(null); setExpandedPrivacy(new Set()); }} style={{ background: "none", border: "1px solid var(--border)", padding: "4px 10px", cursor: "pointer", fontSize: 11, color: "var(--muted-fg)" }}>
                       Scan another project
                     </button>
                   </div>
@@ -1811,15 +1852,15 @@ export default function App() {
                   {/* Summary cards */}
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 16 }}>
                     <div className="lab-card" style={{ textAlign: "center", padding: 14 }}>
-                      <div style={{ fontSize: 24, fontWeight: 700, color: "#7c3aed" }}>{dataTypes.length}</div>
+                      <div style={{ fontSize: 24, fontWeight: 700, color: "var(--primary)" }}>{dataTypes.length}</div>
                       <div className="lab-card-label" style={{ marginTop: 4 }}>PII TYPES DETECTED</div>
                     </div>
                     <div className="lab-card" style={{ textAlign: "center", padding: 14 }}>
-                      <div style={{ fontSize: 24, fontWeight: 700, color: "#d97706" }}>{thirdParty.length}</div>
+                      <div style={{ fontSize: 24, fontWeight: 700, color: "var(--warning)" }}>{thirdParty.length}</div>
                       <div className="lab-card-label" style={{ marginTop: 4 }}>THIRD-PARTY RECIPIENTS</div>
                     </div>
                     <div className="lab-card" style={{ textAlign: "center", padding: 14 }}>
-                      <div style={{ fontSize: 24, fontWeight: 700, color: "#dc2626" }}>{dataTypes.reduce((s, d) => s + d.detection_count, 0)}</div>
+                      <div style={{ fontSize: 24, fontWeight: 700, color: "var(--destructive)" }}>{dataTypes.reduce((s, d) => s + d.detection_count, 0)}</div>
                       <div className="lab-card-label" style={{ marginTop: 4 }}>TOTAL DETECTIONS</div>
                     </div>
                   </div>
@@ -1828,33 +1869,33 @@ export default function App() {
                   <div style={{ marginBottom: 16 }}>
                     <div className="lab-card-label" style={{ marginBottom: 8 }}>PERSONAL DATA DETECTED</div>
                     {dataTypes.length === 0 ? (
-                      <div className="lab-card" style={{ padding: 14, fontSize: 13, color: "oklch(0.50 0 0)" }}>No personal data flows detected in this codebase.</div>
+                      <div className="lab-card" style={{ padding: 14, fontSize: 13, color: "var(--muted-fg)" }}>No personal data flows detected in this codebase.</div>
                     ) : (
                       <div className="lab-card" style={{ padding: 0 }}>
                         {dataTypes.map((dt, i) => {
                           const key = `dt-${dt.name}-${i}`;
                           const isOpen = expandedPrivacy.has(key);
                           return (
-                            <div key={key} style={{ borderBottom: i < dataTypes.length - 1 ? "1px solid oklch(0.94 0 0)" : "none" }}>
+                            <div key={key} style={{ borderBottom: i < dataTypes.length - 1 ? "1px solid var(--border)" : "none" }}>
                               <div
                                 onClick={() => toggle(key)}
                                 style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", cursor: "pointer" }}
                               >
                                 <svg width="10" height="10" viewBox="0 0 10 10" style={{ transform: isOpen ? "rotate(90deg)" : "none", transition: "transform 0.15s", flexShrink: 0 }}>
-                                  <path d="M3 1l4 4-4 4" fill="none" stroke="oklch(0.50 0 0)" strokeWidth="1.5" />
+                                  <path d="M3 1l4 4-4 4" fill="none" stroke="var(--muted-fg)" strokeWidth="1.5" />
                                 </svg>
-                                <span style={{ fontWeight: 500, fontSize: 13, color: "oklch(0.18 0 0)", flex: 1 }}>{dt.name}</span>
-                                <span style={{ fontSize: 10, fontFamily: "'Fira Code', monospace", color: "#7c3aed", border: "1px solid rgba(124,58,237,0.3)", padding: "2px 5px" }}>{dt.category}</span>
+                                <span style={{ fontWeight: 500, fontSize: 13, color: "var(--fg)", flex: 1 }}>{dt.name}</span>
+                                <span style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: "var(--primary)", border: "1px solid rgba(124,58,237,0.3)", padding: "2px 5px" }}>{dt.category}</span>
                                 {dt.category_groups?.map(g => (
-                                  <span key={g} style={{ fontSize: 9, fontFamily: "'Fira Code', monospace", color: "oklch(0.50 0 0)", border: "1px solid oklch(0.88 0 0)", padding: "1px 4px" }}>{g}</span>
+                                  <span key={g} style={{ fontSize: 9, fontFamily: "var(--font-mono)", color: "var(--muted-fg)", border: "1px solid var(--border)", padding: "1px 4px" }}>{g}</span>
                                 ))}
-                                <span style={{ fontSize: 11, color: "oklch(0.50 0 0)" }}>{dt.detection_count} detection{dt.detection_count !== 1 ? "s" : ""}</span>
+                                <span style={{ fontSize: 11, color: "var(--muted-fg)" }}>{dt.detection_count} detection{dt.detection_count !== 1 ? "s" : ""}</span>
                               </div>
                               {isOpen && dt.locations?.length > 0 && (
                                 <div style={{ padding: "0 14px 10px 32px", display: "flex", flexDirection: "column", gap: 3 }}>
-                                  <div style={{ fontSize: 10, fontWeight: 500, color: "oklch(0.45 0 0)", letterSpacing: "0.05em", marginBottom: 2 }}>FILE LOCATIONS</div>
+                                  <div style={{ fontSize: 10, fontWeight: 500, color: "var(--muted-fg)", letterSpacing: "0.05em", marginBottom: 2 }}>FILE LOCATIONS</div>
                                   {dt.locations.map((loc, j) => (
-                                    <span key={j} style={{ fontSize: 11, fontFamily: "'Fira Code', monospace", color: "oklch(0.35 0 0)" }}>
+                                    <span key={j} style={{ fontSize: 11, fontFamily: "var(--font-mono)", color: "var(--fg)" }}>
                                       {loc.file}:{loc.line}
                                     </span>
                                   ))}
@@ -1877,23 +1918,23 @@ export default function App() {
                           const isOpen = expandedPrivacy.has(key);
                           const dtList = (tp.data_types ?? []).filter(d => d !== "Unknown");
                           return (
-                            <div key={key} style={{ borderBottom: i < thirdParty.length - 1 ? "1px solid oklch(0.94 0 0)" : "none" }}>
+                            <div key={key} style={{ borderBottom: i < thirdParty.length - 1 ? "1px solid var(--border)" : "none" }}>
                               <div
                                 onClick={() => toggle(key)}
                                 style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", cursor: "pointer" }}
                               >
                                 <svg width="10" height="10" viewBox="0 0 10 10" style={{ transform: isOpen ? "rotate(90deg)" : "none", transition: "transform 0.15s", flexShrink: 0 }}>
-                                  <path d="M3 1l4 4-4 4" fill="none" stroke="oklch(0.50 0 0)" strokeWidth="1.5" />
+                                  <path d="M3 1l4 4-4 4" fill="none" stroke="var(--muted-fg)" strokeWidth="1.5" />
                                 </svg>
-                                <span style={{ fontWeight: 500, fontSize: 13, color: "oklch(0.18 0 0)" }}>{tp.name}</span>
-                                <span style={{ fontSize: 11, color: "oklch(0.50 0 0)", flex: 1 }}>{dtList.length > 0 ? dtList.join(", ") : "Data types not identified"}</span>
+                                <span style={{ fontWeight: 500, fontSize: 13, color: "var(--fg)" }}>{tp.name}</span>
+                                <span style={{ fontSize: 11, color: "var(--muted-fg)", flex: 1 }}>{dtList.length > 0 ? dtList.join(", ") : "Data types not identified"}</span>
                                 {tp.risk_count > 0 && <span className="dep-sev-badge dep-sev-medium" style={{ fontSize: 10 }}>{tp.risk_count} risk{tp.risk_count !== 1 ? "s" : ""}</span>}
                               </div>
                               {isOpen && (
-                                <div style={{ padding: "0 14px 10px 32px", fontSize: 12, color: "oklch(0.40 0 0)", lineHeight: 1.6 }}>
-                                  <div style={{ fontSize: 10, fontWeight: 500, color: "oklch(0.45 0 0)", letterSpacing: "0.05em", marginBottom: 4 }}>DATA SHARED</div>
+                                <div style={{ padding: "0 14px 10px 32px", fontSize: 12, color: "var(--muted-fg)", lineHeight: 1.6 }}>
+                                  <div style={{ fontSize: 10, fontWeight: 500, color: "var(--muted-fg)", letterSpacing: "0.05em", marginBottom: 4 }}>DATA SHARED</div>
                                   {dtList.length > 0 ? dtList.map(d => <div key={d}>- {d}</div>) : <div>Could not determine specific data types shared with this service.</div>}
-                                  {tp.risk_count > 0 && <div style={{ marginTop: 6, color: "#d97706" }}>{tp.risk_count} privacy rule{tp.risk_count !== 1 ? "s" : ""} flagged for this integration.</div>}
+                                  {tp.risk_count > 0 && <div style={{ marginTop: 6, color: "var(--warning)" }}>{tp.risk_count} privacy rule{tp.risk_count !== 1 ? "s" : ""} flagged for this integration.</div>}
                                 </div>
                               )}
                             </div>
@@ -1918,8 +1959,7 @@ export default function App() {
             const hasData = packages.length > 0;
             const codebaseName = scanPath?.split("/").pop() ?? "Unknown";
             const r = complianceLabResult;
-            const gradeColors: Record<string, string> = { A: "#16a34a", B: "#65a30d", C: "#ca8a04", D: "#ea580c", F: "#dc2626" };
-            const gradeColor = r ? (gradeColors[r.grade] ?? "#6b7280") : "#6b7280";
+            const gradeColorVal = gradeColor(r?.grade);
             const ringC = 2 * Math.PI * 50;
 
             async function runComplianceLab() {
@@ -1952,6 +1992,9 @@ export default function App() {
                 if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error((err as { error?: string }).error ?? `Request failed (${res.status})`); }
 
                 setComplianceLabResult(await res.json() as ComplianceLabResult);
+                // This run just spent tokens (or confirmed a cache hit spent none) --
+                // refresh rather than leave the sidebar showing the pre-run balance.
+                void refreshTokenBalance();
               } catch (e) {
                 setComplianceLabError(friendlyError(String(e)));
               } finally {
@@ -1960,7 +2003,7 @@ export default function App() {
             }
 
             return (
-              <div className="content-inner lab-content" style={{ background: "oklch(0.965 0 0)" }}>
+              <div className="content-inner lab-content" style={{ background: "var(--content-bg)" }}>
                 <div className="lab-header-row">
                   <div>
                     <button className="lab-back" onClick={() => setView("dependencies")}>← Dependencies</button>
@@ -2002,11 +2045,11 @@ export default function App() {
                     <p className="lab-no-data" style={{ marginBottom: recent.filter(r => r.cachePath).length > 0 ? 10 : 0 }}>Load scan data to generate a compliance report.</p>
                     {recent.filter(r => r.cachePath && r.type === "sast").length > 0 && (
                       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                        <span style={{ fontSize: 11, color: "oklch(0.45 0 0)", fontWeight: 500 }}>LOAD FROM PREVIOUS SCAN</span>
+                        <span style={{ fontSize: 11, color: "var(--muted-fg)", fontWeight: 500 }}>LOAD FROM PREVIOUS SCAN</span>
                         {recent.filter(r => r.cachePath && r.type === "sast").slice(0, 5).map(r => (
-                          <button key={r.path} onClick={() => loadScanData(r)} style={{ background: "none", border: "1px solid oklch(0.88 0 0)", padding: "6px 10px", cursor: "pointer", fontSize: 12, color: "oklch(0.30 0 0)", textAlign: "left", display: "flex", justifyContent: "space-between" }}>
+                          <button key={r.path} onClick={() => loadScanData(r)} style={{ background: "none", border: "1px solid var(--border)", padding: "6px 10px", cursor: "pointer", fontSize: 12, color: "var(--fg)", textAlign: "left", display: "flex", justifyContent: "space-between" }}>
                             <span>{r.name}</span>
-                            <span style={{ color: "oklch(0.55 0 0)", fontSize: 11 }}>{timeAgo(r.scannedAt)}</span>
+                            <span style={{ color: "var(--muted-fg)", fontSize: 11 }}>{timeAgo(r.scannedAt)}</span>
                           </button>
                         ))}
                       </div>
@@ -2031,8 +2074,8 @@ export default function App() {
                         <div className="lab-index-card-label">COMPLIANCE SCORE</div>
                         <div className="lab-index-ring-wrap">
                           <svg width="120" height="120" viewBox="0 0 120 120" style={{ transform: "rotate(-90deg)" }}>
-                            <circle cx="60" cy="60" r="50" fill="none" stroke="oklch(0.92 0 0)" strokeWidth="8" />
-                            <circle cx="60" cy="60" r="50" fill="none" stroke={gradeColor} strokeWidth="8" strokeDasharray={`${(ringC * r.score / 100).toFixed(1)} ${ringC.toFixed(1)}`} />
+                            <circle cx="60" cy="60" r="50" fill="none" stroke="var(--border)" strokeWidth="8" />
+                            <circle cx="60" cy="60" r="50" fill="none" stroke={gradeColorVal} strokeWidth="8" strokeDasharray={`${(ringC * r.score / 100).toFixed(1)} ${ringC.toFixed(1)}`} />
                           </svg>
                           <div className="lab-ring-center">
                             <span className="lab-index-num">{r.score}</span>
@@ -2045,7 +2088,7 @@ export default function App() {
                       <div className="lab-grade-card">
                         <div className="lab-index-card-label">GRADE</div>
                         <div className="lab-grade-box">
-                          <span className="lab-grade-letter" style={{ borderColor: gradeColor, color: gradeColor }}>{r.grade}</span>
+                          <span className="lab-grade-letter" style={{ borderColor: gradeColorVal, color: gradeColorVal }}>{r.grade}</span>
                         </div>
                         <div className="lab-index-sub2">
                           {r.grade === "A" ? "excellent" : r.grade === "B" ? "good" : r.grade === "C" ? "fair" : r.grade === "D" ? "needs attention" : "critical"}
@@ -2063,13 +2106,13 @@ export default function App() {
                       <div className="lab-body-left">
                         <div className="lab-card">
                           <div className="lab-card-label">LICENSE ASSESSMENT</div>
-                          <p style={{ fontSize: 12.5, color: "oklch(0.25 0 0)", lineHeight: 1.65, margin: 0 }}>{r.license_verdict}</p>
+                          <p style={{ fontSize: 12.5, color: "var(--fg)", lineHeight: 1.65, margin: 0 }}>{r.license_verdict}</p>
                         </div>
                       </div>
                       <div className="lab-body-right">
                         <div className="lab-card">
                           <div className="lab-card-label">PRIVACY & DATA HANDLING</div>
-                          <p style={{ fontSize: 12.5, color: "oklch(0.25 0 0)", lineHeight: 1.65, margin: 0 }}>{r.privacy_verdict}</p>
+                          <p style={{ fontSize: 12.5, color: "var(--fg)", lineHeight: 1.65, margin: 0 }}>{r.privacy_verdict}</p>
                         </div>
                       </div>
                     </div>
@@ -2080,9 +2123,9 @@ export default function App() {
                         <div className="corner-marks"><i className="corner-mark cm-tl">+</i><i className="corner-mark cm-tr">+</i><i className="corner-mark cm-bl">+</i><i className="corner-mark cm-br">+</i></div>
                         <div className="lab-card-label">RECOMMENDATIONS</div>
                         {r.recommendations.map((rec, i) => (
-                          <div key={i} className="lab-fix-v2" style={{ borderBottom: i < r.recommendations.length - 1 ? "1px solid oklch(0.94 0 0)" : "none" }}>
+                          <div key={i} className="lab-fix-v2" style={{ borderBottom: i < r.recommendations.length - 1 ? "1px solid var(--border)" : "none" }}>
                             <span className="lab-fix-rank">{i + 1}</span>
-                            <p style={{ fontSize: 12.5, color: "oklch(0.25 0 0)", lineHeight: 1.55, margin: 0, flex: 1 }}>{rec}</p>
+                            <p style={{ fontSize: 12.5, color: "var(--fg)", lineHeight: 1.55, margin: 0, flex: 1 }}>{rec}</p>
                           </div>
                         ))}
                       </div>
@@ -2096,21 +2139,8 @@ export default function App() {
           {/* ── History ── */}
           {view === "history" && (
             <div className="content-inner">
-              <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between" }}>
-                <div className="view-header">
-                  <h2 className="view-title">Scan History</h2>
-                  <p className="view-desc">
-                    {recent.length > 0
-                      ? `${recent.length} scan${recent.length !== 1 ? "s" : ""} — cached results re-open instantly.`
-                      : "No scans yet."}
-                  </p>
-                </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                  {recent.length > 0 && (
-                    <button className="history-clear-all-btn" onClick={clearAllRecent}>
-                      Clear all
-                    </button>
-                  )}
+              <div className="page-header">
+                <div className="page-header-row">
                   <div className="history-filter-tabs">
                     {(["all", "sast", "dast"] as const).map(f => (
                       <button
@@ -2122,7 +2152,19 @@ export default function App() {
                       </button>
                     ))}
                   </div>
+                  {recent.length > 0 && (
+                    <button className="history-clear-all-btn" onClick={clearAllRecent}>
+                      Clear all
+                    </button>
+                  )}
                 </div>
+                <span className="page-header-eyebrow">GENERAL</span>
+                <h1 className="page-header-title">Scan History</h1>
+                <p className="page-header-desc">
+                  {recent.length > 0
+                    ? `${recent.length} scan${recent.length !== 1 ? "s" : ""}, cached results re-open instantly.`
+                    : "Every scan you've run, cached and ready to reopen without rescanning."}
+                </p>
               </div>
 
               {(() => {
@@ -2173,21 +2215,22 @@ export default function App() {
           {/* ── Dependencies ── */}
           {view === "dependencies" && (
             <div className="content-inner">
-              <div className="view-header view-header-row">
-                <div>
-                  <h2 className="view-title">Dependencies</h2>
-                  <p className="view-desc">
-                    {packages.length > 0
-                      ? `${packages.length} packages · ${packages.filter(p => p.cve_count > 0).length} with known CVEs.`
-                      : "Run a scan first to see your dependency health."}
-                  </p>
-                </div>
+              <div className="page-header">
                 {packages.length > 0 && (
-                  <button className="report-cta" onClick={() => setView("compliancelab")} title="Generate an AI compliance report from your dependencies">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M9 15l2 2 4-4"/></svg>
-                    Generate Compliance Report
-                  </button>
+                  <div className="page-header-row">
+                    <button className="report-cta" onClick={() => setView("compliancelab")} title="Generate an AI compliance report from your dependencies">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M9 15l2 2 4-4"/></svg>
+                      Generate Compliance Report
+                    </button>
+                  </div>
                 )}
+                <span className="page-header-eyebrow">SECURITY</span>
+                <h1 className="page-header-title">Dependencies</h1>
+                <p className="page-header-desc">
+                  {packages.length > 0
+                    ? `${packages.length} packages, ${packages.filter(p => p.cve_count > 0).length} with known CVEs.`
+                    : "Every package in your project, its known CVEs, and the safe version to upgrade to."}
+                </p>
               </div>
 
               {/* Drop zone — always visible, even when packages are loaded */}
@@ -2382,8 +2425,7 @@ export default function App() {
             const signedIn = authStatus?.loggedIn ?? false;
             const hasData = currentServerUrl != null;
             const r = threatLabResult;
-            const gradeColors: Record<string, string> = { A:"#16a34a", B:"#65a30d", C:"#d97706", D:"#ea580c", F:"#dc2626" };
-            const gradeColorVal = r ? (gradeColors[r.grade] ?? "#4ade80") : "#4ade80";
+            const gradeColorVal = gradeColor(r?.grade);
             // Ring: r=50, circumference=314.16. Score is flipped to "higher = better"
             // (a Security Score) so it reads intuitively and matches the A-F grade
             // and the Compliance Report. The edge fn still returns a threat_index.
@@ -2468,7 +2510,7 @@ export default function App() {
                         <div className="lab-index-card-label">SECURITY SCORE</div>
                         <div className="lab-index-ring-wrap">
                           <svg width="120" height="120" viewBox="0 0 120 120" style={{ transform: "rotate(-90deg)" }}>
-                            <circle cx="60" cy="60" r="50" fill="none" stroke="oklch(0.92 0 0)" strokeWidth="8" />
+                            <circle cx="60" cy="60" r="50" fill="none" stroke="var(--border)" strokeWidth="8" />
                             <circle cx="60" cy="60" r="50" fill="none" stroke={gradeColorVal} strokeWidth="8" strokeDasharray={ringDash} />
                           </svg>
                           <div className="lab-ring-center">
@@ -2509,7 +2551,7 @@ export default function App() {
                           {r.key_risks.map((risk, i) => (
                             <div key={i} className="lab-risk-item">
                               <span className="lab-risk-sq" style={{
-                                background: i <= 1 ? "#dc2626" : i === 2 ? "#ea580c" : "#d97706"
+                                background: i <= 1 ? "var(--destructive)" : "var(--warning)"
                               }} />
                               {risk}
                             </div>
@@ -2602,16 +2644,17 @@ export default function App() {
                 <div className="autofix-inner">
 
                   {/* Row 1: header + status badge */}
-                  <div className="overview-header">
-                    <div>
-                      <h2 className="overview-greeting">Fix with AI</h2>
-                      <p className="overview-meta">
-                        Connect your AI editor to auto-fix vulnerabilities via MCP — your code never leaves your machine.
-                      </p>
-                    </div>
-                    <div className="overview-status-badge">
-                      <span className={`status-dot ${anyConfigured ? "status-dot-ok" : "status-dot-warn"}`} />
-                      {anyConfigured ? `${connectedCount} CONNECTED` : "NOT CONFIGURED"}
+                  <div className="page-header">
+                    <span className="page-header-eyebrow">GENERAL</span>
+                    <h1 className="page-header-title">Fix with AI</h1>
+                    <p className="page-header-desc">
+                      Connect your editor so Trojan can hand off findings as ready-to-run fix prompts, all local via MCP.
+                    </p>
+                    <div className="page-header-actions">
+                      <div className="overview-status-badge">
+                        <span className={`status-dot ${anyConfigured ? "status-dot-ok" : "status-dot-warn"}`} />
+                        {anyConfigured ? `${connectedCount} CONNECTED` : "NOT CONFIGURED"}
+                      </div>
                     </div>
                   </div>
 
@@ -2874,7 +2917,7 @@ export default function App() {
                                 style={{
                                   width:      i === fam ? 16 : 12,
                                   height:     i === fam ? 16 : 12,
-                                  background: i <= fam ? "#7c3aed" : "#c9c9cf",
+                                  background: i <= fam ? "var(--primary)" : "var(--border)",
                                   boxShadow:  i === fam ? "0 0 0 4px rgba(124,58,237,0.16)" : "none",
                                 }}
                               />
@@ -2887,7 +2930,7 @@ export default function App() {
                               key={i}
                               className="profile-fam-label"
                               style={{
-                                color:      i === fam ? "#6d28d9" : "oklch(0.5 0 0)",
+                                color:      i === fam ? "var(--accent-deep)" : "var(--muted-fg)",
                                 fontWeight: i === fam ? 600 : 400,
                                 textAlign:  i === 0 ? "left" : i === 1 ? "center" : "right",
                                 cursor: "pointer",
@@ -2992,6 +3035,29 @@ export default function App() {
               </button>
             </div>
             <AuthForm onAuth={(token, name, email, refreshToken) => handleAuthPayload(token, name, email, refreshToken)} />
+          </div>
+        </div>
+      )}
+
+      {/* ── Feedback modal ── */}
+      {showFeedback && (
+        <div className="auth-overlay" onClick={() => setShowFeedback(false)}>
+          <div className="auth-modal" onClick={(e) => e.stopPropagation()}>
+            <CM />
+            <div className="auth-modal-header">
+              <h2 className="auth-modal-title">Send feedback</h2>
+              <button className="auth-modal-close" onClick={() => setShowFeedback(false)} title="Close">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                  <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                </svg>
+              </button>
+            </div>
+            <FeedbackForm
+              getToken={getFreshToken}
+              appVersion={APP_VERSION}
+              view={view}
+              onSent={() => setShowFeedback(false)}
+            />
           </div>
         </div>
       )}

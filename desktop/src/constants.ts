@@ -13,3 +13,9 @@ export const SUPABASE_ANON_KEY = "sb_publishable_U1qvJb7QebxgH5_0HCMYJQ_jKBybATQ
 // Stripe.js in a real browser page, so the desktop app hands billing off to
 // the website rather than trying to mount it inside the webview.
 export const MARKETING_URL = "https://trojancli.com";
+
+// Shipped version, surfaced in the sidebar and attached to every feedback
+// report. The sidebar hardcoded "v0.1" through five releases, which would have
+// made tester reports point at the wrong build.
+// Keep in step with package.json and src-tauri/tauri.conf.json.
+export const APP_VERSION = "0.3.0";
