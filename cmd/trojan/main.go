@@ -114,7 +114,12 @@ func scanCmd() *cobra.Command {
 					os.Exit(0)
 				}
 
-				findings := scanners.RunAll(path, relevant, nil)
+				findings, scanResults := scanners.RunAll(path, relevant, nil)
+				for _, r := range scanResults {
+					if r.Err != nil {
+						fmt.Fprintf(os.Stderr, "trojan: warning: %s scanner did not run: %s\n", r.Scanner, r.Err)
+					}
+				}
 				findings, _ = normalizer.Reduce(findings)
 
 				var blocking []normalizer.Finding
@@ -192,11 +197,12 @@ func scanCmd() *cobra.Command {
 				progress := ui.NewScanProgress(names)
 				progress.Start()
 
-				findings := scanners.RunAll(path, relevant, func(name string, done bool, count int, err error) {
+				findings, scanResults := scanners.RunAll(path, relevant, func(name string, done bool, count int, err error) {
 					if done {
 						progress.Update(name, count, err)
 					}
 				})
+				scannerErrs := scannerErrorsFrom(scanResults)
 
 				// Deterministic noise reduction (A1 dedup + A3 path filter) —
 				// the free floor beneath AI triage: drop non-shipping code and
@@ -328,10 +334,12 @@ func scanCmd() *cobra.Command {
 						r := normalizer.NewScanResult(path, findings)
 						r.Packages = pkgs
 						r.Privacy = scanners.RunPrivacyScan(path)
+						r.ScannerErrors = scannerErrs
 						return r, findings
 					}
 					scanResult.Packages = pkgs
 					scanResult.Privacy = scanners.RunPrivacyScan(path)
+					scanResult.ScannerErrors = scannerErrs
 					return scanResult, findings
 				}
 
@@ -344,6 +352,7 @@ func scanCmd() *cobra.Command {
 				r := normalizer.NewScanResult(path, findings)
 				r.Packages = pkgs
 				r.Privacy = scanners.RunPrivacyScan(path)
+				r.ScannerErrors = scannerErrs
 				return r, findings
 			}
 
@@ -2117,7 +2126,12 @@ Exits 1 if findings at or above --severity threshold are detected.`,
 			fmt.Fprintf(os.Stderr, "Scanning %s with %d scanner(s)...\n", path, len(relevant))
 
 			// Run all scanners in parallel — no spinners, no UI.
-			findings := scanners.RunAll(path, relevant, nil)
+			findings, scanResults := scanners.RunAll(path, relevant, nil)
+			for _, r := range scanResults {
+				if r.Err != nil {
+					fmt.Fprintf(os.Stderr, "trojan: warning: %s scanner did not run: %s\n", r.Scanner, r.Err)
+				}
+			}
 			findings, reduceStats := normalizer.Reduce(findings)
 			if reduceStats.Any() {
 				fmt.Fprintf(os.Stderr,
@@ -2194,6 +2208,20 @@ Exits 1 if findings at or above --severity threshold are detected.`,
 	cmd.Flags().StringVar(&severityThreshold, "severity", "high", "Minimum severity that triggers a non-zero exit (critical, high, medium, low, info)")
 
 	return cmd
+}
+
+// scannerErrorsFrom converts scanner.RunAll's per-scanner results into the
+// ScannerError list persisted on normalizer.ScanResult, so a failed scanner
+// (e.g. Trivy hitting a fatal DB-download error) is distinguishable from a
+// scanner that ran clean and found nothing.
+func scannerErrorsFrom(results []scanners.ScannerResult) []normalizer.ScannerError {
+	var errs []normalizer.ScannerError
+	for _, r := range results {
+		if r.Err != nil {
+			errs = append(errs, normalizer.ScannerError{Scanner: r.Scanner, Error: r.Err.Error()})
+		}
+	}
+	return errs
 }
 
 // severityAtOrAbove returns true if s is at or above the given threshold in

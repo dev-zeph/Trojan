@@ -1,5 +1,6 @@
 import { SeverityBadge } from './SeverityBadge'
 import { VerdictBadge } from './VerdictBadge'
+import { ExternalLink } from './ExternalLink'
 import { reviewFinding, suppressFinding } from '@/api'
 import type { Finding } from '@/types'
 
@@ -94,7 +95,7 @@ export function FindingDetail({ finding, onBack, onAction }: Props) {
         <div className="flex items-center justify-between">
           <p className="text-xs uppercase tracking-widest text-muted-foreground">Simply</p>
           {!finding.Simply && (
-            <span className="text-xs text-muted-foreground border border-border rounded-full px-2 py-0.5">Pro</span>
+            <span className="text-xs text-muted-foreground border border-border rounded-full px-2 py-0.5">Tokens</span>
           )}
         </div>
         {finding.Simply ? (
@@ -102,14 +103,14 @@ export function FindingDetail({ finding, onBack, onAction }: Props) {
         ) : (
           <div className="rounded bg-muted/50 border border-border border-dashed p-6 space-y-2 text-center">
             <p className="text-sm text-muted-foreground leading-relaxed">
-              A plain-English explanation of this vulnerability — what it means for your app, why it matters, and how an attacker could exploit it.
+              A plain-English explanation of this vulnerability: what it means for your app, why it matters, and how an attacker could exploit it.
             </p>
-            <a
+            <ExternalLink
               href="https://trojancli.com/pricing"
               className="text-xs underline underline-offset-4 text-muted-foreground hover:text-foreground transition-colors"
             >
-              Upgrade to Pro →
-            </a>
+              Get Trojan Tokens →
+            </ExternalLink>
           </div>
         )}
       </div>
@@ -119,7 +120,7 @@ export function FindingDetail({ finding, onBack, onAction }: Props) {
         <div className="flex items-center justify-between">
           <p className="text-xs uppercase tracking-widest text-muted-foreground">Actions</p>
           {!finding.Actions?.length && (
-            <span className="text-xs text-muted-foreground border border-border rounded-full px-2 py-0.5">Pro</span>
+            <span className="text-xs text-muted-foreground border border-border rounded-full px-2 py-0.5">Tokens</span>
           )}
         </div>
         {finding.Actions?.length ? (
@@ -136,12 +137,12 @@ export function FindingDetail({ finding, onBack, onAction }: Props) {
             <p className="text-sm text-muted-foreground leading-relaxed">
               Step-by-step actions to fix this vulnerability in your server configuration or application code.
             </p>
-            <a
+            <ExternalLink
               href="https://trojancli.com/pricing"
               className="text-xs underline underline-offset-4 text-muted-foreground hover:text-foreground transition-colors"
             >
-              Upgrade to Pro →
-            </a>
+              Get Trojan Tokens →
+            </ExternalLink>
           </div>
         )}
       </div>

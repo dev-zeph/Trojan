@@ -15,6 +15,17 @@ type ScanResult struct {
 	Findings    []Finding      `json:"findings"`
 	Packages    []Package      `json:"packages,omitempty"`
 	Privacy     *PrivacyReport `json:"privacy,omitempty"`
+	// ScannerErrors lists scanners that failed to run (as opposed to running
+	// and finding nothing). Populated by the caller from scanners.RunAll's
+	// per-scanner results so a dashboard/report can distinguish "clean" from
+	// "this scanner didn't run" — e.g. Trivy hitting a fatal DB-download error.
+	ScannerErrors []ScannerError `json:"scanner_errors,omitempty"`
+}
+
+// ScannerError records that a scanner failed to run, and why.
+type ScannerError struct {
+	Scanner string `json:"scanner"`
+	Error   string `json:"error"`
 }
 
 // NewScanResult creates an in-memory ScanResult without writing anything to disk.
