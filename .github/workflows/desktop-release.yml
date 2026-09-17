@@ -85,6 +85,30 @@ jobs:
         with:
           workspaces: desktop/src-tauri -> target
 
+      # Entitlements are parsed by AMFI, which is much stricter than plutil --
+      # plutil -lint happily accepts XML comments that AMFI rejects, and the
+      # failure only surfaces at the codesign step AFTER a four-minute Rust
+      # build. desktop-v0.3.0 was lost to exactly that.
+      #
+      # Ad-hoc signing a throwaway binary runs the same parser in about a
+      # second. Note codesign EXITS 0 here even when the parse fails, so the
+      # stderr message is the only reliable signal -- do not "simplify" this
+      # into a bare codesign call and trust its exit code.
+      - name: Check entitlements parse
+        if: matrix.os == 'macos-14'
+        working-directory: desktop/src-tauri
+        run: |
+          set -euo pipefail
+          probe=$(mktemp)
+          cp /bin/echo "$probe"
+          codesign --force --sign - --entitlements Entitlements.plist "$probe" 2>&1 | tee /tmp/ents.log
+          if grep -q 'Failed to parse entitlements' /tmp/ents.log; then
+            echo "::error file=desktop/src-tauri/Entitlements.plist::AMFI cannot parse Entitlements.plist. Remove XML comments -- see Entitlements.md."
+            exit 1
+          fi
+          echo "Entitlements parse cleanly:"
+          codesign -d --entitlements - "$probe"
+
       - name: Build Tauri app
         working-directory: desktop
         # Use "npm run tauri" (not "npm run build:tauri") to skip the
