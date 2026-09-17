@@ -14,6 +14,8 @@ import { McpConnect } from "./McpConnect";
 import { gradeColor, licenseRiskColor } from "./lib/reportColors";
 import { MARKETING_URL, STORE_KEY, SUPABASE_URL, TERMINAL_KEY, APP_VERSION } from "./constants";
 import { supabase, decodeJWT, encodeBody, syncAuthToGoConfig } from "./lib/supabase";
+import { completeSignIn, onOnboardingDone } from "./lib/auth";
+import { createExternalLinkListener, isIframeOffOrigin, restoreReport } from "./lib/reportBridge";
 import {
   getStore,
   loadProfile,
@@ -92,6 +94,10 @@ export default function App() {
   const [scanPath, setScanPath]           = useState("");
   const [scanType, setScanType]           = useState<ScanType>("sast");
   const [reportUrl, setReportUrl]         = useState("");
+  // True once the report iframe has navigated outside its own origin (e.g. a
+  // stray link the postMessage bridge below didn't catch). Drives the
+  // defensive "Back to report" bar.
+  const [iframeOffOrigin, setIframeOffOrigin] = useState(false);
   const [isDragOver, setIsDragOver]       = useState(false);
   const [recent, setRecent]               = useState<RecentProject[]>([]);
   const [dastUrl, setDastUrl]             = useState("");
@@ -253,6 +259,16 @@ export default function App() {
     }
   }, [getFreshToken]);
 
+  // Single entry point for "we have a valid token, make the whole app know
+  // the user is signed in". EVERY sign-in completion path (OAuth deep link,
+  // in-app auth modal, onboarding, boot-time session restore) must call this
+  // -- authStatus, not profile, is what every gate reads (e.g. the
+  // Penetration Testing tab's `authStatus?.loggedIn`). Skipping it anywhere
+  // is exactly how the "sign in twice" bug happened.
+  const applyAuthFromToken = useCallback((token: string, email: string) => {
+    completeSignIn(token, email, { decodeJWT, setAuthStatus, refreshTokenBalance });
+  }, [refreshTokenBalance]);
+
   // Boot: restore profile, recents, terminal prefs and any live session.
   // Placed AFTER getFreshToken/refreshTokenBalance because it depends on them;
   // a dependency declared later in the component body would be in the temporal
@@ -311,22 +327,16 @@ export default function App() {
       }
       if (activeProfile?.token && activeProfile.email) {
         syncAuthToGoConfig(activeProfile.token, activeProfile.email, activeProfile.refreshToken ?? "");
-        // Restore Pro status from JWT so Pro gates work before any scan runs.
-        try {
-          const claims = decodeJWT(activeProfile.token);
-          if (claims) {
-            const sub = (claims.subscription_status as string | undefined) ?? "";
-            setAuthStatus({ loggedIn: true, isPro: sub === "pro" || sub === "team", plan: sub || "free", email: activeProfile.email });
-            void refreshTokenBalance();
-          }
-        } catch {}
+        // Restore authStatus from the JWT so gates (e.g. Penetration Testing)
+        // work before any scan server is running.
+        applyAuthFromToken(activeProfile.token, activeProfile.email);
       }
     }
     init();
 
     // Load MCP editor status on mount
     invoke("check_mcp_status").then((s) => setMcpStatus(s as Record<string, { installed: boolean; configured: boolean }>)).catch(() => {});
-  }, [refreshTokenBalance]);
+  }, [applyAuthFromToken]);
 
   // Warm the Attack Market catalog in the background once the user is a logged-in
   // Pro, so the first open of the tab is instant (and it never reload-flashes).
@@ -378,19 +388,11 @@ export default function App() {
     setShowAuthForm(false); // close the in-app sign-in modal if it was open
     setSessionExpired(false);
     await syncAuthToGoConfig(token, p.email, refreshToken);
-    // Set auth status immediately from the JWT so Pro gates work
-    // even before a scan server is running.
-    try {
-      const claims = decodeJWT(token);
-      if (claims) {
-        const sub = (claims.subscription_status as string | undefined) ?? "";
-        setAuthStatus({ loggedIn: true, isPro: sub === "pro" || sub === "team", plan: sub || "free", email: p.email });
-            void refreshTokenBalance();
-      }
-    } catch {}
+    // Set auth status immediately from the JWT so gates work even before a
+    // scan server is running.
+    applyAuthFromToken(token, p.email);
     if (currentServerUrl) fetchAndCachePackages(currentServerUrl);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentServerUrl]);
+  }, [currentServerUrl, applyAuthFromToken]);
 
   // Primary path: local HTTP callback server (works in dev and production).
   useEffect(() => {
@@ -420,6 +422,34 @@ export default function App() {
     }).then((fn) => { unlisten = fn; });
     return () => unlisten?.();
   }, [handleAuthPayload]);
+
+  // Bridge for external links clicked inside the report iframe (ui/ and
+  // dast-ui/ are standalone-buildable with zero Tauri imports, so they can't
+  // call openUrl() themselves -- they postMessage this window instead). A
+  // plain <a> with no target would navigate the iframe itself, and
+  // target="_blank" silently no-ops because the webview has no new-window
+  // handler; this is the fix for both.
+  useEffect(() => {
+    const listener = createExternalLinkListener(
+      () => iframeRef.current?.contentWindow ?? null,
+      (url) => { openUrl(url).catch(() => {}); },
+    );
+    window.addEventListener("message", listener);
+    return () => window.removeEventListener("message", listener);
+  }, []);
+
+  // A brand-new report load always starts on-origin.
+  useEffect(() => { setIframeOffOrigin(false); }, [reportUrl]);
+
+  // Defensive backstop for the bridge above: fires on every real iframe
+  // navigation (not on the report's own internal SPA routing, which never
+  // triggers a load event). If it ever lands off the report's origin --
+  // something the bridge didn't catch -- show the "Back to report" bar.
+  function handleReportFrameLoad() {
+    const frame = iframeRef.current;
+    if (!frame) return;
+    setIframeOffOrigin(isIframeOffOrigin(reportUrl, () => frame.contentWindow?.location.href ?? null));
+  }
 
   // Dismiss all scanning toasts when the user cancels mid-scan.
   useEffect(() => {
@@ -918,14 +948,16 @@ export default function App() {
 
   if (!profile) return (
     <Onboarding
-      onDone={async (p) => {
-        setProfile(p);
+      onDone={(p) => onOnboardingDone(p, {
+        setProfile,
         // Sync auth to ~/.trojan/config.json immediately so the Go sidecar
-        // and the embedded report UI recognise the session on the first scan.
-        if (p.token && p.email) {
-          await syncAuthToGoConfig(p.token, p.email, p.refreshToken ?? "");
-        }
-      }}
+        // and the embedded report UI recognise the session on the first scan,
+        // AND set in-memory authStatus -- every gate in the app (e.g. the
+        // Penetration Testing tab) reads authStatus, not profile, so without
+        // this the user would need to sign in a second time.
+        syncAuthToGoConfig,
+        applyAuthFromToken,
+      })}
     />
   );
 
@@ -2973,6 +3005,23 @@ export default function App() {
             );
           })()}
 
+          {/* ── Off-origin backstop ── */}
+          {/* Should never show in practice now that external links route through
+              the postMessage bridge, but if the report iframe ever ends up
+              somewhere other than the report itself, this is the way back. */}
+          {reportUrl && view === "report" && iframeOffOrigin && (
+            <div className="report-offsite-banner">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+              <span>This report navigated outside the app.</span>
+              <button
+                className="report-offsite-btn"
+                onClick={() => { restoreReport(iframeRef.current, reportUrl); setIframeOffOrigin(false); }}
+              >
+                ← Back to report
+              </button>
+            </div>
+          )}
+
           {/* ── Scan report iframe ── */}
           {/* Always mounted when reportUrl is set so switching tabs doesn't trigger a reload */}
           {reportUrl && (
@@ -2982,6 +3031,7 @@ export default function App() {
               style={view !== "report" ? { display: "none" } : undefined}
               src={reportUrl}
               title="Trojan Security Report"
+              onLoad={handleReportFrameLoad}
             />
           )}
 

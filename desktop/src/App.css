@@ -293,6 +293,34 @@ html, body, #root { height: 100%; overflow: hidden; background: var(--bg); color
 }
 .session-expired-dismiss:hover { opacity: 1; }
 
+/* ── Report off-origin backstop ──────────────────────────────────────────── */
+.report-offsite-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 16px;
+  background: #fffbeb;
+  border-bottom: 1px solid #fde68a;
+  color: #92400e;
+  font-size: 12.5px;
+  flex-shrink: 0;
+}
+.report-offsite-banner svg { flex-shrink: 0; color: #d97706; }
+.report-offsite-banner span { flex: 1; }
+.report-offsite-btn {
+  background: none;
+  border: 1px solid #d97706;
+  border-radius: 4px;
+  color: #92400e;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 3px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+.report-offsite-btn:hover { background: #fde68a; }
+
 /* ── Onboarding ──────────────────────────────────────────────────────────── */
 .screen-onboarding {
   height: 100%; display: flex; align-items: center; justify-content: center;

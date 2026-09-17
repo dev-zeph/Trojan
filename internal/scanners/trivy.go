@@ -3,7 +3,9 @@ package scanners
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -30,19 +32,18 @@ func (t *Trivy) Run(projectPath string) ([]normalizer.Finding, error) {
 		return nil, fmt.Errorf("trivy not found: run 'trojan init' to install it")
 	}
 
-	cmd := exec.Command(ManagedBinary("trivy"), "fs", "--format", "json", "--quiet", projectPath)
+	// --exit-code 1 makes trivy's exit code an unambiguous contract: 0 means
+	// "ran clean, nothing found", 1 means "vulnerabilities were found" (this
+	// flag is opt-in and defaults to 0, so without it exit 1 instead meant a
+	// FATAL error, which the old code below wrongly treated as "findings
+	// found" and silently swallowed).
+	cmd := exec.Command(ManagedBinary("trivy"), "fs", "--format", "json", "--quiet", "--exit-code", "1", projectPath)
+	cmd.Env = trivyEnv()
 	output, err := cmd.Output()
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-			// exit code 1 just means findings were found — not a real error
-		} else {
-			return nil, fmt.Errorf("trivy failed: %w", err)
-		}
-	}
 
-	var result trivyOutput
-	if err := json.Unmarshal(output, &result); err != nil {
-		return nil, fmt.Errorf("failed to parse trivy output: %w", err)
+	result, err := parseTrivyOutput(output, err)
+	if err != nil {
+		return nil, err
 	}
 
 	// Build findings (CVE list)
@@ -73,6 +74,75 @@ func (t *Trivy) Run(projectPath string) ([]normalizer.Finding, error) {
 	t.mu.Unlock()
 
 	return findings, nil
+}
+
+// parseTrivyOutput validates a trivy invocation's raw stdout/error and returns
+// the parsed JSON report, translating exec/parse failures into diagnostic
+// errors a developer can act on. Split out from Run so this contract — exit
+// code semantics, stderr propagation, and the empty-stdout guard — can be
+// unit tested without shelling out to a real trivy binary.
+func parseTrivyOutput(output []byte, runErr error) (trivyOutput, error) {
+	if runErr != nil {
+		exitErr, isExitErr := runErr.(*exec.ExitError)
+		if isExitErr && exitErr.ExitCode() == 1 {
+			// With --exit-code 1 set, exit 1 unambiguously means "vulnerabilities
+			// were found" — trivy still wrote a full JSON report to stdout.
+		} else {
+			// Any other non-zero exit is a real failure (e.g. the DB download
+			// hitting a docker-credential-helper error). Surface trivy's own
+			// stderr — cmd.Output() populates ExitError.Stderr — instead of
+			// swallowing it, since a silently-empty dependency tab is worse
+			// than a loud failure for a security tool.
+			if isExitErr {
+				if stderr := strings.TrimSpace(string(exitErr.Stderr)); stderr != "" {
+					return trivyOutput{}, fmt.Errorf("trivy failed: %s", stderr)
+				}
+			}
+			return trivyOutput{}, fmt.Errorf("trivy failed: %w", runErr)
+		}
+	}
+
+	if len(strings.TrimSpace(string(output))) == 0 {
+		return trivyOutput{}, fmt.Errorf("trivy produced no output: the scan likely failed before it could write a report. Run 'trivy fs <path>' directly to see the underlying error")
+	}
+
+	var result trivyOutput
+	if err := json.Unmarshal(output, &result); err != nil {
+		return trivyOutput{}, fmt.Errorf("failed to parse trivy output: %w", err)
+	}
+	return result, nil
+}
+
+// trivyEnv returns the environment for the trivy subprocess. It scopes
+// DOCKER_CONFIG to an isolated, credential-free directory so trivy's
+// vulnerability-DB download (an OCI artifact pull) never invokes a docker
+// credential helper. Without this, any machine whose ~/.docker/config.json
+// sets "credsStore" to a helper that isn't on PATH (e.g. Docker Desktop's
+// docker-credential-desktop, commonly missing from PATH for GUI-launched
+// apps) causes trivy to exit fatally before it scans anything. This only
+// affects trivy's own subprocess env — the user's real docker config on
+// disk is never touched.
+func trivyEnv() []string {
+	env := os.Environ()
+	if dir, err := isolatedDockerConfigDir(); err == nil {
+		env = append(env, "DOCKER_CONFIG="+dir)
+	}
+	return env
+}
+
+// isolatedDockerConfigDir returns (creating if needed) ~/.trojan/trivy-dockerconfig,
+// an empty directory with no config.json — i.e. no credsStore, no auths — so
+// registry/OCI pulls made under it fall back to anonymous access.
+func isolatedDockerConfigDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(home, ".trojan", "trivy-dockerconfig")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", err
+	}
+	return dir, nil
 }
 
 // Packages returns the full dependency list extracted during the last Run() call.

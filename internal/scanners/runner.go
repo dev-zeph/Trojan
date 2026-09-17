@@ -13,10 +13,17 @@ type ScannerResult struct {
 	Err      error
 }
 
-// RunAll executes the given scanners in parallel and returns all findings.
+// RunAll executes the given scanners in parallel and returns all findings,
+// plus the per-scanner ScannerResult for every scanner (success or failure).
 // The onProgress callback is called when each scanner starts (done=false, count=0)
 // and finishes (done=true, count=number of findings from that scanner).
-func RunAll(projectPath string, scanners []Scanner, onProgress func(name string, done bool, count int, err error)) []normalizer.Finding {
+//
+// Callers that only need findings can discard the second return value with
+// `_`; callers that need to distinguish "clean" from "this scanner didn't
+// run" (e.g. because Trivy hit a fatal DB error) should inspect ScannerResult.Err
+// for each entry — RunAll itself still drops findings from failed scanners out
+// of the aggregated slice, since a failed scanner produced no reliable findings.
+func RunAll(projectPath string, scanners []Scanner, onProgress func(name string, done bool, count int, err error)) ([]normalizer.Finding, []ScannerResult) {
 	results := make(chan ScannerResult, len(scanners))
 	var wg sync.WaitGroup
 
@@ -49,15 +56,18 @@ func RunAll(projectPath string, scanners []Scanner, onProgress func(name string,
 		close(results)
 	}()
 
-	// Collect all findings
+	// Collect all findings, plus every scanner's result (success or failure)
+	// so callers can tell a clean run apart from one where a scanner didn't run.
 	all := []normalizer.Finding{}
+	perScanner := make([]ScannerResult, 0, len(scanners))
 	for result := range results {
 		if result.Err == nil {
 			all = append(all, result.Findings...)
 		}
+		perScanner = append(perScanner, result)
 	}
 
-	return all
+	return all, perScanner
 }
 
 // DefaultScanners returns all available scanners that are installed on the system.
