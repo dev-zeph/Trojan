@@ -1,6 +1,9 @@
 import { validateToken, isPro, corsHeaders } from '../_shared/auth.ts'
 import { supabase } from '../_shared/supabase.ts'
 import { parseBody } from '../_shared/body.ts'
+import { recordUsage } from '../_shared/usage.ts'
+import { getBalance, spendTokens, tokensForAction, InsufficientTokens } from '../_shared/tokens.ts'
+import { costMicros, modelInfo, normalizeUsage } from '../_shared/pricing.ts'
 
 // ── Input types ──────────────────────────────────────────────────────────
 
@@ -63,7 +66,8 @@ async function handleRequest(req: Request): Promise<Response> {
 
   const user = await validateToken(token)
   if (!user) return json({ error: 'Unauthorized' }, 401)
-  if (!isPro(user)) return json({ error: 'Pro subscription required' }, 403)
+  if (!await isPro(user)) return json({ error: 'Pro subscription required' }, 403)
+
 
   // Rate limiting
   const today = new Date().toISOString().slice(0, 10)
@@ -95,7 +99,27 @@ async function handleRequest(req: Request): Promise<Response> {
   const cached = await getFromCache(user.id, inputHash)
   if (cached) {
     console.log('compliance-lab: cache hit')
+    // Recorded with cost 0 rather than skipped: cache hit rate moves gross
+    // margin directly, so it has to be measurable from the ledger alone.
+    await recordUsage({ userId: user.id, feature: 'compliance-lab', model: 'claude-sonnet-5', cacheHit: true })
     return json(cached)
+  }
+
+  // Pre-flight balance gate. Deliberately placed AFTER the cache check: a cache
+  // hit costs us nothing, so serving one at zero balance is free money for the
+  // customer and zero cost to us. Gating it would deny someone an answer we had
+  // already computed and already been paid for.
+  //
+  // Checked before the paid API call, because the debit below happens once real
+  // cost is known -- by which point the spend is already incurred. This cheap
+  // read is what stops an empty account spending our money.
+  const balance = await getBalance(user.id)
+  if (balance <= 0) {
+    return json({
+      error: 'insufficient_tokens',
+      message: 'You are out of Trojan Tokens. Top up to continue.',
+      balance,
+    }, 402)
   }
 
   const anthropicKey = Deno.env.get('ANTHROPIC_API_KEY')
@@ -144,7 +168,13 @@ Respond with a single JSON object matching the ComplianceLabResult schema — no
       },
       signal: controller.signal,
       body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
+        // Sonnet 5 at $2/$10 per MTok, down from Sonnet 4.6's $3/$15 -- a ~33%
+        // cost cut on a better model. Thinking is explicitly DISABLED: on Sonnet 5
+        // omitting it runs adaptive thinking, whose tokens bill as output and eat
+        // into max_tokens, which would both raise cost and risk truncating the
+        // JSON this function has to parse.
+        model: 'claude-sonnet-5',
+        thinking: { type: 'disabled' },
         max_tokens: 2048,
         system: systemPrompt,
         messages: [{ role: 'user', content: prompt }],
@@ -164,13 +194,13 @@ Respond with a single JSON object matching the ComplianceLabResult schema — no
     return json({ error: `AI service error (${resp.status})` }, 500)
   }
 
-  let completion: { content?: { text?: string }[] }
+  let completion: { content?: { type?: string; text?: string }[]; usage?: Record<string, number> }
   try {
     completion = await resp.json()
   } catch {
     return json({ error: 'AI service returned an unexpected response' }, 500)
   }
-  const raw: string = completion.content?.[0]?.text ?? ''
+  const raw: string = completion.content?.find((b: { type?: string }) => b.type === 'text')?.text ?? ''
   const text = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim()
 
   let result: ComplianceLabResult
@@ -197,6 +227,37 @@ Respond with a single JSON object matching the ComplianceLabResult schema — no
   }, { onConflict: 'user_id,date' })
 
   console.log(`compliance-lab: done grade=${result.grade} score=${result.score}`)
+  await recordUsage({
+    userId:  user.id,
+    feature: 'compliance-lab',
+    model:   'claude-sonnet-5',
+    usage:   completion.usage,
+  })
+
+  // Debit the real cost of this call.
+  try {
+    const info = modelInfo('claude-sonnet-5')
+    const norm = normalizeUsage(info?.provider ?? 'anthropic', completion.usage)
+    const cost = costMicros('claude-sonnet-5', norm)
+    await spendTokens({
+      userId:     user.id,
+      tokens:     tokensForAction('compliance-lab', cost),
+      feature:    'compliance-lab',
+      model:      'claude-sonnet-5',
+      costMicros: cost,
+      idempotencyKey: `compliance-lab:${user.id}:${inputHash}`,
+    })
+  } catch (e) {
+    // The work is already done and already cost us money, so the result is
+    // returned regardless. A zero balance simply stops the NEXT call at the
+    // pre-flight gate above.
+    if (e instanceof InsufficientTokens) {
+      console.warn('compliance-lab: balance exhausted after work was performed', { userId: user.id })
+    } else {
+      throw e
+    }
+  }
+
   return json(result)
 }
 

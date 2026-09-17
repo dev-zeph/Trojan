@@ -3,9 +3,9 @@ package mcpserver
 // MCP tools for Trojan Errors (crash analytics) — the AI-fix flow for
 // production crashes, mirroring the security-finding tools in server.go
 // exactly: pull-based (the editor calls these when the human asks it to),
-// same Pro gate (enforced once at Serve() startup, not per-tool), and the
-// same plain-text-detail / JSON-batch / plain-text-confirm shape as
-// get_finding_detail / get_fixable_findings / mark_fixed.
+// no tier gate (same as the finding tools — no network AI call, nothing to
+// meter), and the same plain-text-detail / JSON-batch / plain-text-confirm
+// shape as get_finding_detail / get_fixable_findings / mark_fixed.
 //
 // Unlike the finding tools, these never touch the local filesystem or
 // .trojan/scans — they talk to the Trojan Errors shim over HTTP, the same

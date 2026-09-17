@@ -2,46 +2,49 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { load } from "@tauri-apps/plugin-store";
-import { createClient } from "@supabase/supabase-js";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { TerminalPanel } from "./TerminalPanel";
 import { PrintCertificate } from "./PrintCertificate";
 import { PrintComplianceReport } from "./PrintComplianceReport";
 import { PrintPenTestReport } from "./PrintPenTestReport";
 import type { PentestReport } from "./PrintPenTestReport";
+import { AttackMarket, prefetchAttackMarket } from "./AttackMarket";
+import type { AttackTemplate } from "./AttackMarket";
+import { McpConnect } from "./McpConnect";
+import { gradeColor, licenseRiskColor } from "./lib/reportColors";
+import { MARKETING_URL, STORE_KEY, SUPABASE_URL, TERMINAL_KEY, APP_VERSION } from "./constants";
+import { supabase, decodeJWT, encodeBody, syncAuthToGoConfig } from "./lib/supabase";
+import {
+  getStore,
+  loadProfile,
+  saveProfile,
+  loadRecent,
+  saveRecent,
+  updateRecentUrl,
+  updateRecentCachePath,
+  deleteRecentEntry,
+} from "./lib/store";
+import { friendlyError, timeAgo, parseAuthCallback, greet, initials } from "./lib/format";
+import { AuthForm } from "./components/AuthForm";
+import { Onboarding } from "./components/Onboarding";
+import { CM } from "./components/CornerMarks";
+import { FeedbackForm } from "./components/FeedbackForm";
+import { TokenBalance, RunCostHint } from "./components/TokenBalance";
+import type {
+  NavView,
+  ScanType,
+  PkgInfo,
+  PrivacyReport,
+  ComplianceLabResult,
+  Finding,
+  ScanSummary,
+  ThreatLabResult,
+  AuthStatus,
+  RecentProject,
+  UserProfile,
+  Toast,
+} from "./types";
 import "./App.css";
-
-type NavView  = "overview" | "sast" | "dast" | "dependencies" | "threatlab" | "licenses" | "privacy" | "compliancelab" | "errors" | "history" | "autofix" | "profile" | "report";
-type ScanType = "sast" | "dast";
-
-interface PackageAdvisory { id: string; severity: string; summary: string; fix_version?: string; }
-interface PkgInfo { name: string; version: string; ecosystem: string; direct: boolean; cve_count: number; highest_severity?: string; fix_version?: string; advisories?: PackageAdvisory[]; license?: string; license_risk?: string; }
-interface PrivacyDataType { name: string; category: string; category_groups: string[]; detection_count: number; locations: { file: string; line: number; column_start: number; column_end: number }[]; }
-interface PrivacyThirdParty { name: string; data_types: string[]; risk_count: number; }
-interface PrivacyReport { data_types: PrivacyDataType[]; third_party: PrivacyThirdParty[]; }
-interface ComplianceLabResult {
-  grade: "A" | "B" | "C" | "D" | "F";
-  score: number;
-  executive_summary: string;
-  license_verdict: string;
-  privacy_verdict: string;
-  recommendations: string[];
-}
-interface Finding { id: string; title: string; severity: string; scanner: string; file?: string; line?: number; description?: string; }
-interface ScanSummary { critical: number; high: number; medium: number; low: number; info: number; total: number; scannedAt: string; }
-
-interface AttackVector { title: string; severity: string; description: string; findings_involved: string[]; exploitability: "easy" | "moderate" | "hard"; }
-interface PriorityFix  { rank: number; type: "code" | "package" | "config"; title: string; description: string; command?: string; file?: string; line?: number; finding_id?: string; }
-interface ThreatLabResult {
-  threat_index: number;
-  grade: "A" | "B" | "C" | "D" | "F";
-  verdict: string;
-  attack_vectors: AttackVector[];
-  priority_fixes: PriorityFix[];
-  compliance_summary: string;
-  key_risks: string[];
-}
-interface AuthStatus { loggedIn: boolean; isPro: boolean; plan: string; email?: string; }
 
 // ── Errors (crash analytics) — shapes mirror crash-analytics/CONTRACT.md ──
 type ErrSource = "production" | "dast_run";
@@ -71,415 +74,6 @@ interface ErrEvent {
 interface ErrCounts { production: number; dast: number; total: number; }
 interface ErrConfig { dsn: string; ingestUrl: string; projectId: string; projectSlug: string; projectName: string; suggestedRelease: string; suggestedEnvironment: string; backend: string; }
 
-interface RecentProject { path: string; name: string; type: ScanType; scannedAt: string; reportUrl?: string; cachePath?: string; }
-interface UserProfile   { name: string; email: string; token?: string; refreshToken?: string; familiarity?: number; aboutYou?: string; avatarDataUrl?: string; }
-interface Toast {
-  id: string;
-  label: string;
-  type: ScanType;
-  path: string;
-  status: "scanning" | "done" | "error";
-  reportUrl?: string;
-  cachePath?: string;
-  error?: string;
-}
-
-const STORE_KEY      = "recent-projects";
-const PROFILE_KEY    = "user-profile";
-const TERMINAL_KEY   = "terminal-prefs";
-const SUPABASE_URL   = "https://dtmocojzvgsswjdsrmqr.supabase.co";
-const SUPABASE_ANON_KEY = "sb_publishable_U1qvJb7QebxgH5_0HCMYJQ_jKBybATQ";
-// Trojan Errors shim. Separate process from the Go sidecar's serverUrl — never
-// route Errors calls through that one. Change this single line to repoint.
-const ERRORS_API     = "http://127.0.0.1:3002";
-const ERRORS_POLL_MS = 5000;
-
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-
-// Decode a JWT payload without verifying the signature (verification happens
-// server-side on every API call). Returns null on any parse error.
-function decodeJWT(token: string): Record<string, unknown> | null {
-  try {
-    const b64 = token.split(".")[1]?.replace(/-/g, "+").replace(/_/g, "/");
-    if (!b64) return null;
-    return JSON.parse(atob(b64));
-  } catch { return null; }
-}
-
-// Base64-encode a value's JSON. Edge-function request bodies are wrapped as
-// { encoded } so Cloudflare's WAF (in front of Supabase) doesn't false-positive
-// on attack signatures inside SAST findings ("<script>", "' OR 1=1", path
-// traversal, ...) and reject the request with a 403. The functions unwrap it
-// transparently via _shared/body.ts. UTF-8 safe (btoa alone is not).
-function encodeBody(value: unknown): string {
-  const bytes = new TextEncoder().encode(JSON.stringify(value));
-  let bin = "";
-  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-  return btoa(bin);
-}
-
-// Write the access token to ~/.trojan/config.json so the Go sidecar and its
-// embedded report UI treat the desktop session as authenticated.
-async function syncAuthToGoConfig(token: string, email: string, refreshToken = ""): Promise<void> {
-  try {
-    const claims = decodeJWT(token);
-    if (!claims) return;
-    const exp = (claims.exp as number) * 1000;
-    const expiresAt = new Date(exp).toISOString();
-    const sub = (claims.subscription_status as string | undefined) ?? "";
-    const isPro = sub === "pro" || sub === "team";
-    await invoke("sync_auth", { token, email, expiresAt, isPro, refreshToken });
-  } catch {}
-}
-
-async function getStore() { return load("trojan-store.json", { autoSave: true }); }
-async function loadProfile(): Promise<UserProfile | null> {
-  try { const s = await getStore(); return (await s.get<UserProfile>(PROFILE_KEY)) ?? null; }
-  catch { return null; }
-}
-async function saveProfile(p: UserProfile) {
-  try { const s = await getStore(); await s.set(PROFILE_KEY, p); } catch {}
-}
-async function loadRecent(): Promise<RecentProject[]> {
-  try {
-    const s = await getStore();
-    const raw = (await s.get<RecentProject[]>(STORE_KEY)) ?? [];
-    return raw.filter((r) => r && r.path && r.type);
-  } catch { return []; }
-}
-async function saveRecent(path: string, type: ScanType) {
-  try {
-    const s = await getStore();
-    const existing = (await s.get<RecentProject[]>(STORE_KEY)) ?? [];
-    const name = path.split("/").pop() ?? path;
-    const prev = existing.find((r) => r.path === path);
-    const entry: RecentProject = { path, name, type, scannedAt: new Date().toISOString(), reportUrl: prev?.reportUrl };
-    await s.set(STORE_KEY, [entry, ...existing.filter((r) => r.path !== path)].slice(0, 10));
-  } catch {}
-}
-async function updateRecentUrl(path: string, reportUrl: string) {
-  try {
-    const s = await getStore();
-    const existing = (await s.get<RecentProject[]>(STORE_KEY)) ?? [];
-    await s.set(STORE_KEY, existing.map((r) => r.path === path ? { ...r, reportUrl } : r));
-  } catch {}
-}
-async function updateRecentCachePath(path: string, cachePath: string) {
-  try {
-    const s = await getStore();
-    const existing = (await s.get<RecentProject[]>(STORE_KEY)) ?? [];
-    await s.set(STORE_KEY, existing.map((r) => r.path === path ? { ...r, cachePath } : r));
-  } catch {}
-}
-
-async function deleteRecentEntry(path: string): Promise<RecentProject[]> {
-  try {
-    const s = await getStore();
-    const existing = (await s.get<RecentProject[]>(STORE_KEY)) ?? [];
-    const updated = existing.filter((r) => r.path !== path);
-    await s.set(STORE_KEY, updated);
-    await s.save();
-    return updated;
-  } catch { return []; }
-}
-
-// Maps raw internal error strings (from Rust/Go/network) to user-friendly messages.
-// Applied at every error surface so neither persona sees developer-facing text.
-function friendlyError(raw: string): string {
-  const s = raw.toLowerCase();
-
-  // ── Sidecar / spawn ──────────────────────────────────────────────────────
-  if (s.includes("sidecar not found") || s.includes("sidecar"))
-    return "Could not start the scanner. Try reinstalling Trojan.";
-  if (s.includes("spawn failed") || s.includes("spawn"))
-    return "The scanner couldn't launch. Restart the app and try again.";
-
-  // ── Scan process exits ───────────────────────────────────────────────────
-  if (s.includes("no scanners installed") || s.includes("trojan init"))
-    return "Scanners aren't set up yet. Open a terminal and run: trojan init";
-  if (s.includes("process exited") || s.includes("scan failed"))
-    return "The scan stopped unexpectedly. Try running it again.";
-  if (s.includes("server failed to start") || s.includes("could not start"))
-    return "The scan report server failed to start. Restart the app and try again.";
-
-  // ── Network ──────────────────────────────────────────────────────────────
-  if (s.includes("failed to fetch") || s.includes("networkerror") || s.includes("network error"))
-    return "Network error. Check your internet connection and try again.";
-  if (s.includes("could not fetch scan data"))
-    return "Couldn't load the scan results. Try rescanning.";
-
-  // ── Auth / session ───────────────────────────────────────────────────────
-  if (s.includes("sign in to use") || s.includes("unauthorized"))
-    return "You need to sign in to use this feature.";
-  if (s.includes("pro subscription") || s.includes("403"))
-    return "This feature requires a Pro subscription.";
-
-  // ── AI service ───────────────────────────────────────────────────────────
-  if (s.includes("rate_limit_exceeded") || (s.includes("daily") && s.includes("limit")))
-    return "Daily analysis limit reached. Resets at midnight UTC.";
-  if (s.includes("ai service error") || s.includes("anthropic"))
-    return "The AI analysis service had a problem. Try again in a moment.";
-  if (s.includes("failed to parse ai") || s.includes("unexpected response"))
-    return "The AI returned an unexpected response. Try running the analysis again.";
-  if (s.includes("service misconfigured"))
-    return "The analysis service isn't configured correctly. Contact support.";
-  if (s.includes("timed out") || s.includes("timeout") || s.includes("aborted"))
-    return "The request timed out. Try again — large codebases can take longer.";
-
-  // ── Fallback — strip developer prefixes, keep the human part ────────────
-  return raw.replace(/^Error:\s*/i, "").replace(/^Scan failed:\s*/i, "").trim() || "Something went wrong. Try again.";
-}
-
-function timeAgo(iso: string) {
-  const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
-  if (mins < 2) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  return `${Math.floor(hrs / 24)}d ago`;
-}
-
-function parseAuthCallback(url: string): Partial<UserProfile> | null {
-  try {
-    const u = new URL(url);
-    if (u.protocol !== "trojan:" || u.hostname !== "auth") return null;
-    return {
-      token:        u.searchParams.get("token")         ?? undefined,
-      name:         u.searchParams.get("name")          ?? undefined,
-      email:        u.searchParams.get("email")         ?? undefined,
-      refreshToken: u.searchParams.get("refresh_token") ?? undefined,
-    };
-  } catch { return null; }
-}
-
-function greet(name: string) {
-  const h = new Date().getHours();
-  const p = h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
-  return `${p}, ${name.split(" ")[0]}`;
-}
-function initials(name: string) {
-  return name.split(" ").filter(Boolean).map((w) => w[0]).join("").toUpperCase().slice(0, 2);
-}
-
-// ── Auth form (email/password + GitHub — runs entirely inside the desktop app) ─
-type AuthMode = "signin" | "signup";
-
-function AuthForm({
-  onAuth,
-  onSkip,
-}: {
-  onAuth: (token: string, name: string, email: string, refreshToken: string) => void;
-  onSkip?: () => void;
-}) {
-  const [mode, setMode]               = useState<AuthMode>("signin");
-  const [email, setEmail]             = useState("");
-  const [password, setPassword]       = useState("");
-  const [loading, setLoading]         = useState(false);
-  const [showPassword, setShowPassword] = useState(false);
-  const [error, setError]             = useState<string | null>(null);
-  const [success, setSuccess]         = useState<string | null>(null);
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setLoading(true);
-    setError(null);
-    setSuccess(null);
-    try {
-      if (mode === "signup") {
-        const { data, error } = await supabase.auth.signUp({ email, password });
-        if (error) throw error;
-        if (data.session) {
-          const meta = data.session.user.user_metadata;
-          onAuth(data.session.access_token, meta?.full_name ?? meta?.name ?? "", email, data.session.refresh_token ?? "");
-        } else {
-          setSuccess("Check your email to confirm your account.");
-        }
-      } else {
-        const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-        if (error) throw error;
-        const meta = data.session.user.user_metadata;
-        onAuth(data.session.access_token, meta?.full_name ?? meta?.name ?? "", email, data.session.refresh_token ?? "");
-      }
-    } catch (err: unknown) {
-      setError((err as { message?: string }).message ?? "Authentication failed");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  return (
-    <>
-      {error   && <p className="auth-msg auth-error">{error}</p>}
-      {success && <p className="auth-msg auth-success">{success}</p>}
-
-      <form onSubmit={handleSubmit} className="ob-form">
-        <div className="ob-field">
-          <label className="ob-label ob-label-mono">EMAIL</label>
-          <input
-            type="email" required value={email} autoFocus
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder="you@example.com" className="ob-input"
-          />
-        </div>
-        <div className="ob-field">
-          <label className="ob-label ob-label-mono">PASSWORD</label>
-          <div style={{ position: "relative" }}>
-            <input
-              type={showPassword ? "text" : "password"} required value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="••••••••" className="ob-input" style={{ paddingRight: 36 }}
-            />
-            <button
-              type="button"
-              onClick={() => setShowPassword(!showPassword)}
-              style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", padding: 4, color: "inherit", opacity: 0.5 }}
-              title={showPassword ? "Hide password" : "Show password"}
-            >
-              {showPassword ? (
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/></svg>
-              ) : (
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
-              )}
-            </button>
-          </div>
-        </div>
-        <button type="submit" disabled={loading} className="ob-btn auth-submit-btn">
-          {loading && <span className="auth-spinner" />}
-          {loading ? "Please wait…" : mode === "signin" ? "Sign in" : "Create account"}
-        </button>
-      </form>
-
-      <p className="auth-toggle">
-        {mode === "signin" ? (
-          <>Don&apos;t have an account?{" "}
-            <button type="button" onClick={() => { setMode("signup"); setError(null); setSuccess(null); }}>Sign up</button>
-          </>
-        ) : (
-          <>Already have an account?{" "}
-            <button type="button" onClick={() => { setMode("signin"); setError(null); setSuccess(null); }}>Sign in</button>
-          </>
-        )}
-      </p>
-
-      {onSkip && (
-        <button type="button" onClick={onSkip} className="ob-footer-skip">
-          Continue without an account →
-        </button>
-      )}
-    </>
-  );
-}
-
-// ── Onboarding ────────────────────────────────────────────────────────────
-function Onboarding({ onDone }: { onDone: (p: UserProfile) => void }) {
-  const [showLocal, setShowLocal] = useState(false);
-  const [name, setName]           = useState("");
-  const [busy, setBusy]           = useState(false);
-
-  function handleAuth(token: string, authName: string, email: string, refreshToken: string) {
-    const p: UserProfile = {
-      name:  authName || email.split("@")[0] || "User",
-      email,
-      token,
-      refreshToken,
-    };
-    saveProfile(p).then(() => onDone(p));
-  }
-
-  async function handleLocalSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!name.trim()) return;
-    setBusy(true);
-    const p: UserProfile = { name: name.trim(), email: "" };
-    await saveProfile(p);
-    onDone(p);
-  }
-
-  return (
-    <div className="ob-split">
-
-      {/* ── Left dark brand panel ── */}
-      <div className="ob-left">
-        {/* Centered brand block */}
-        <div className="ob-left-center">
-          <img src="/logo.png" alt="Trojan" className="ob-left-logo" />
-          <span className="ob-left-wordmark">TROJAN</span>
-          <p className="ob-left-tagline">
-            Industry-standard vulnerability scanners in one tool.
-          </p>
-        </div>
-
-        {/* Bottom metadata */}
-        <div className="ob-left-bottom">
-          <div className="ob-left-features">SAST · DAST · SECRETS · DEPENDENCIES · AI THREAT ANALYSIS</div>
-          <div className="ob-left-ver">v0.1.0</div>
-        </div>
-      </div>
-
-      {/* ── Right auth panel ── */}
-      <div className="ob-right">
-        <div className="ob-right-card">
-
-          {/* Corner + marks */}
-          <i className="corner-mark cm-tl">+</i>
-          <i className="corner-mark cm-tr">+</i>
-          <i className="corner-mark cm-bl">+</i>
-          <i className="corner-mark cm-br">+</i>
-
-          {!showLocal ? (
-            <>
-              <span className="ob-right-title">Sign in</span>
-
-              <AuthForm onAuth={handleAuth} onSkip={undefined} />
-
-              <div className="ob-footer-sep">
-                <button type="button" className="ob-footer-skip" onClick={() => setShowLocal(true)}>
-                  Continue without an account →
-                </button>
-              </div>
-            </>
-          ) : (
-            <>
-              <span className="ob-right-title">Set up your workspace</span>
-
-              <form className="ob-form" onSubmit={handleLocalSubmit}>
-                <div className="ob-field">
-                  <label className="ob-label">NAME</label>
-                  <input
-                    className="ob-input" placeholder="Your name" autoFocus
-                    value={name} onChange={(e) => setName(e.target.value)}
-                  />
-                </div>
-                <button className="ob-btn" type="submit" disabled={!name.trim() || busy}>
-                  {busy ? "Setting up…" : "Continue →"}
-                </button>
-              </form>
-
-              <div className="ob-footer-sep">
-                <button type="button" className="ob-footer-skip" onClick={() => setShowLocal(false)}>
-                  ← Back to sign in
-                </button>
-                <span className="ob-footer-note">Sign in at any time from the sidebar.</span>
-              </div>
-            </>
-          )}
-        </div>
-      </div>
-
-    </div>
-  );
-}
-
-// ── Corner marks helper ───────────────────────────────────────────────────
-const CM = () => (
-  <div className="corner-marks">
-    <i className="corner-mark cm-tl">+</i>
-    <i className="corner-mark cm-tr">+</i>
-    <i className="corner-mark cm-bl">+</i>
-    <i className="corner-mark cm-br">+</i>
-  </div>
-);
-
 // ── Nav icons — exact paths from design file ───────────────────────────
 const NAV: { view: NavView; label: string; icon: React.ReactNode; pro?: boolean; section?: string }[] = [
   // ── Security ──
@@ -489,14 +83,14 @@ const NAV: { view: NavView; label: string; icon: React.ReactNode; pro?: boolean;
   { view: "sast", label: "Static Analysis",
     icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M16 18l6-6-6-6 M8 6l-6 6 6 6"/></svg>,
   },
-  { view: "dast", label: "Penetration Testing", pro: true,
+  { view: "dast", label: "Penetration Testing",
     icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20 M2 12h20 M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10"/></svg>,
+  },
+  { view: "market", label: "Attack Market",
+    icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.3 2.3c-.6.6-.2 1.7.7 1.7H17 M9 20a1 1 0 1 0 0-2 1 1 0 0 0 0 2z M16 20a1 1 0 1 0 0-2 1 1 0 0 0 0 2z"/></svg>,
   },
   { view: "dependencies", label: "Dependencies",
     icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z M3.3 7l8.7 5 8.7-5 M12 22V12"/></svg>,
-  },
-  { view: "threatlab", label: "Threat Lab", pro: true,
-    icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M10 2v7.53a2 2 0 0 1-.21.9L4.72 20.55a1 1 0 0 0 .9 1.45h12.76a1 1 0 0 0 .9-1.45l-5.07-10.12a2 2 0 0 1-.21-.9V2 M8.5 2h7 M7 16h10"/></svg>,
   },
   // ── Compliance & Privacy ──
   { view: "licenses", label: "Licenses", section: "COMPLIANCE",
@@ -504,9 +98,6 @@ const NAV: { view: NavView; label: string; icon: React.ReactNode; pro?: boolean;
   },
   { view: "privacy", label: "Privacy",
     icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>,
-  },
-  { view: "compliancelab", label: "Compliance Lab", pro: true,
-    icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9 5H2v7l6.29 6.29c.94.94 2.48.94 3.42 0l3.58-3.58c.94-.94.94-2.48 0-3.42L9 5Z M6 9.01V9 M15 5s2-2 4-2 4 2 4 2v7l-4 4"/></svg>,
   },
   // ── Monitoring — standalone surface, deliberately not under Security ──
   { view: "errors", label: "Errors", section: "MONITORING",
@@ -524,6 +115,11 @@ const NAV: { view: NavView; label: string; icon: React.ReactNode; pro?: boolean;
   },
 ];
 
+// Trojan Errors shim. Separate process from the Go sidecar's serverUrl — never
+// route Errors calls through that one. Change this single line to repoint.
+const ERRORS_API     = "http://127.0.0.1:3002";
+const ERRORS_POLL_MS = 5000;
+
 // ── App ───────────────────────────────────────────────────────────────────
 export default function App() {
   const [profileLoaded, setProfileLoaded] = useState(false);
@@ -539,6 +135,16 @@ export default function App() {
   const [agTier, setAgTier]               = useState<"passive" | "safe-active" | "aggressive">("passive");
   const [agEnv, setAgEnv]                 = useState<"production" | "staging">("production");
   const [agAck, setAgAck]                 = useState(false);
+  const [agGreyBox, setAgGreyBox]         = useState(false);
+  const [agFocus, setAgFocus]             = useState<"" | "api" | "web" | "llm">("");
+  const [agIdentities, setAgIdentities]   = useState<{ name: string; header: string }[]>([]);
+  const [agApiSpec, setAgApiSpec]         = useState("");
+  const [agRequireApproval, setAgRequireApproval] = useState(false);
+  const [agAllowEndpoints, setAgAllowEndpoints]   = useState("");
+  const [agDenyEndpoints, setAgDenyEndpoints]     = useState("");
+  const [agLimitToAllowlist, setAgLimitToAllowlist] = useState(false);
+  const [agAllowDangerous, setAgAllowDangerous]   = useState(false);
+  const [agTemplate, setAgTemplate]               = useState<AttackTemplate | null>(null);
   const [dastFindings, setDastFindings]   = useState<any[]>([]);
   const [pentestReport, setPentestReport] = useState<PentestReport | null>(null);
   const [pentestReportRunning, setPentestReportRunning] = useState(false);
@@ -558,11 +164,15 @@ export default function App() {
   const [depDragOver, setDepDragOver]     = useState(false);
   const [currentServerUrl, setCurrentServerUrl] = useState<string | null>(null);
   const [authStatus, setAuthStatus]       = useState<AuthStatus | null>(null);
+  // Trojan Token balance -- the BILLING unit, not LLM tokens. null = not yet
+  // loaded, which renders as "—" rather than 0 (0 would read as "you are out").
+  const [tokenBalance, setTokenBalance]   = useState<number | null>(null);
   const [scanSummary, setScanSummary]         = useState<ScanSummary | null>(null);
   const [threatLabResult, setThreatLabResult] = useState<ThreatLabResult | null>(null);
   const [isLabRunning, setIsLabRunning]   = useState(false);
   const [labError, setLabError]           = useState<string | null>(null);
   const [showAuthForm, setShowAuthForm]   = useState(false);
+  const [showFeedback, setShowFeedback]   = useState(false);
   const [historyFilter, setHistoryFilter] = useState<"all" | "sast" | "dast">("all");
   const [errFilter, setErrFilter]         = useState<ErrFilter>("production");
   const [errIssues, setErrIssues]         = useState<ErrIssue[]>([]);
@@ -625,6 +235,77 @@ export default function App() {
     });
   }, [recent]);
 
+
+  // ── Token refresh ─────────────────────────────────────────────────
+  // Single source of truth for getting a valid access token before any
+  // Supabase API call. Always calls getSession() so the client can rotate
+  // the token silently. Falls back to explicit refreshSession() if needed.
+  // On success, syncs the refreshed token back to profile state + Go config.
+  // On failure, sets sessionExpired so the banner appears.
+  const getFreshToken = useCallback(async (): Promise<string | null> => {
+    const p = profileRef.current;
+    if (!p?.email) return null;
+
+    try {
+      const { data: s } = await supabase.auth.getSession();
+      if (s.session?.access_token) {
+        const tok = s.session.access_token;
+        const ref = s.session.refresh_token ?? p.refreshToken ?? "";
+        // Sync back if the token rotated
+        if (tok !== p.token) {
+          const updated = { ...p, token: tok, refreshToken: ref } as UserProfile;
+          setProfile(updated);
+          saveProfile(updated);
+          syncAuthToGoConfig(tok, p.email, ref);
+        }
+        setSessionExpired(false);
+        return tok;
+      }
+
+      // No live session — try explicit refresh with stored refresh token
+      if (p.refreshToken) {
+        const { data: r } = await supabase.auth.refreshSession({ refresh_token: p.refreshToken });
+        if (r.session?.access_token) {
+          const tok = r.session.access_token;
+          const ref = r.session.refresh_token ?? p.refreshToken;
+          const updated = { ...p, token: tok, refreshToken: ref } as UserProfile;
+          setProfile(updated);
+          saveProfile(updated);
+          syncAuthToGoConfig(tok, p.email, ref);
+          setSessionExpired(false);
+          return tok;
+        }
+      }
+    } catch {}
+
+    // Both paths failed — session is truly expired
+    setSessionExpired(true);
+    return null;
+  }, []);
+
+  // Balance rides along on the license endpoint, which the app already polls,
+  // rather than adding a second round trip. Failures leave the last known value
+  // in place: a transient network error should not make the chip read "0" and
+  // tell the user they are out of tokens when they are not.
+  const refreshTokenBalance = useCallback(async () => {
+    try {
+      const token = await getFreshToken();
+      if (!token) { setTokenBalance(null); return; }
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/license`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (typeof data.tokenBalance === "number") setTokenBalance(data.tokenBalance);
+    } catch {
+      // keep the previous value
+    }
+  }, [getFreshToken]);
+
+  // Boot: restore profile, recents, terminal prefs and any live session.
+  // Placed AFTER getFreshToken/refreshTokenBalance because it depends on them;
+  // a dependency declared later in the component body would be in the temporal
+  // dead zone when the dep array is evaluated during render.
   useEffect(() => {
     async function init() {
       const [p, r] = await Promise.all([loadProfile(), loadRecent()]);
@@ -685,6 +366,7 @@ export default function App() {
           if (claims) {
             const sub = (claims.subscription_status as string | undefined) ?? "";
             setAuthStatus({ loggedIn: true, isPro: sub === "pro" || sub === "team", plan: sub || "free", email: activeProfile.email });
+            void refreshTokenBalance();
           }
         } catch {}
       }
@@ -693,54 +375,16 @@ export default function App() {
 
     // Load MCP editor status on mount
     invoke("check_mcp_status").then((s) => setMcpStatus((s as Record<string, { installed: boolean; configured: boolean }> | null) ?? {})).catch(() => {});
-  }, []);
+  }, [refreshTokenBalance]);
 
-  // ── Token refresh ─────────────────────────────────────────────────
-  // Single source of truth for getting a valid access token before any
-  // Supabase API call. Always calls getSession() so the client can rotate
-  // the token silently. Falls back to explicit refreshSession() if needed.
-  // On success, syncs the refreshed token back to profile state + Go config.
-  // On failure, sets sessionExpired so the banner appears.
-  const getFreshToken = useCallback(async (): Promise<string | null> => {
-    const p = profileRef.current;
-    if (!p?.email) return null;
+  // Warm the Attack Market catalog in the background once the user is a logged-in
+  // Pro, so the first open of the tab is instant (and it never reload-flashes).
+  useEffect(() => {
+    if (authStatus?.loggedIn) {
+      prefetchAttackMarket(async () => (await getFreshToken()) ?? "");
+    }
+  }, [authStatus?.loggedIn, getFreshToken]);
 
-    try {
-      const { data: s } = await supabase.auth.getSession();
-      if (s.session?.access_token) {
-        const tok = s.session.access_token;
-        const ref = s.session.refresh_token ?? p.refreshToken ?? "";
-        // Sync back if the token rotated
-        if (tok !== p.token) {
-          const updated = { ...p, token: tok, refreshToken: ref } as UserProfile;
-          setProfile(updated);
-          saveProfile(updated);
-          syncAuthToGoConfig(tok, p.email, ref);
-        }
-        setSessionExpired(false);
-        return tok;
-      }
-
-      // No live session — try explicit refresh with stored refresh token
-      if (p.refreshToken) {
-        const { data: r } = await supabase.auth.refreshSession({ refresh_token: p.refreshToken });
-        if (r.session?.access_token) {
-          const tok = r.session.access_token;
-          const ref = r.session.refresh_token ?? p.refreshToken;
-          const updated = { ...p, token: tok, refreshToken: ref } as UserProfile;
-          setProfile(updated);
-          saveProfile(updated);
-          syncAuthToGoConfig(tok, p.email, ref);
-          setSessionExpired(false);
-          return tok;
-        }
-      }
-    } catch {}
-
-    // Both paths failed — session is truly expired
-    setSessionExpired(true);
-    return null;
-  }, []);
 
   // Listen for Supabase-managed token rotation (happens automatically every
   // ~50 min). Keeps profile state and Go config in sync without any polling.
@@ -790,6 +434,7 @@ export default function App() {
       if (claims) {
         const sub = (claims.subscription_status as string | undefined) ?? "";
         setAuthStatus({ loggedIn: true, isPro: sub === "pro" || sub === "team", plan: sub || "free", email: p.email });
+            void refreshTokenBalance();
       }
     } catch {}
     if (currentServerUrl) fetchAndCachePackages(currentServerUrl);
@@ -834,6 +479,17 @@ export default function App() {
     return () => unlisten?.();
   }, []);
 
+  // Balance can also change from outside this window entirely -- a top-up on
+  // the web dashboard, a teammate's run on a shared org. Refreshing on every
+  // token-spending action in this app (above) keeps it accurate for what we
+  // did; this catches everything else without polling while the window sits
+  // idle in the background.
+  useEffect(() => {
+    function onFocus() { void refreshTokenBalance(); }
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [refreshTokenBalance]);
+
   useEffect(() => {
     const appWindow = getCurrentWebviewWindow();
     let unlisten: (() => void) | undefined;
@@ -859,6 +515,9 @@ export default function App() {
     setToasts((prev) => [...prev, { id, label, type, path, status: "scanning" }]);
   }
   function updateToastDone(id: string, reportUrl: string, cachePath?: string): void {
+    // A finished run has almost certainly moved the balance. Refresh rather
+    // than leave a stale number sitting in the sidebar.
+    void refreshTokenBalance();
     setToasts((prev) => prev.map((t) => t.id === id ? { ...t, status: "done", reportUrl, cachePath } : t));
   }
   function updateToastError(id: string, error: string): void {
@@ -943,7 +602,7 @@ export default function App() {
       const pkgs: PkgInfo[] = scanData.packages ?? [];
 
       const token = await getFreshToken();
-      if (!token) throw new Error("Sign in to use Threat Lab");
+      if (!token) throw new Error("Sign in to generate a security report");
 
       const res = await fetch(`${SUPABASE_URL}/functions/v1/threat-lab`, {
         method: "POST",
@@ -961,8 +620,8 @@ export default function App() {
         }),
       });
 
-      if (res.status === 403) throw new Error("Threat Lab requires a Pro subscription.");
-      if (res.status === 429) throw new Error("Daily Threat Lab limit reached. Try again tomorrow.");
+      if (res.status === 403) throw new Error("Sign in to generate a security report. Costs 100 tokens.");
+      if (res.status === 429) throw new Error("Daily security report limit reached. Try again tomorrow.");
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error((err as { error?: string }).error ?? `Request failed (${res.status})`);
@@ -970,6 +629,9 @@ export default function App() {
 
       const result = await res.json() as ThreatLabResult;
       setThreatLabResult(result);
+      // This run just spent tokens (or confirmed a cache hit spent none) --
+      // refresh rather than leave the sidebar showing the pre-run balance.
+      void refreshTokenBalance();
     } catch (e) {
       setLabError(friendlyError(String(e)));
     } finally {
@@ -981,10 +643,10 @@ export default function App() {
     if (!threatLabResult) return;
     const r = threatLabResult;
     const lines = [
-      "TROJAN THREAT LAB REPORT",
-      "========================",
+      "TROJAN SECURITY REPORT",
+      "======================",
       "",
-      `Threat Index: ${r.threat_index}/100  |  Grade: ${r.grade}`,
+      `Security Score: ${100 - r.threat_index}/100  |  Grade: ${r.grade}`,
       "",
       "VERDICT",
       r.verdict,
@@ -1013,7 +675,7 @@ export default function App() {
     const blob = new Blob([lines.join("\n")], { type: "text/plain" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = "trojan-threat-lab.txt";
+    a.download = "trojan-security-report.txt";
     a.click();
     URL.revokeObjectURL(a.href);
   }
@@ -1079,6 +741,18 @@ export default function App() {
       tier: agTier,
       environment: agEnv,
       acceptSideEffects: agAck,
+      greyBox: agGreyBox,
+      focus: agFocus,
+      identities: agIdentities.filter((i) => i.name.trim() && i.header.trim()),
+      apiSpec: agApiSpec.trim(),
+      requireApproval: agRequireApproval,
+      allowEndpoints: agAllowEndpoints.split("\n").map((s) => s.trim()).filter(Boolean),
+      denyEndpoints: agDenyEndpoints.split("\n").map((s) => s.trim()).filter(Boolean),
+      limitToAllowlist: agLimitToAllowlist,
+      allowDangerous: agAllowDangerous,
+      attackTemplate: agTemplate
+        ? { title: agTemplate.title, technique: agTemplate.technique, body: agTemplate.prompt_body }
+        : null,
     })
       .then(async ({ url: rUrl, cachePath }) => {
         updateToastDone(id, rUrl, cachePath);
@@ -1148,7 +822,7 @@ export default function App() {
           }),
         }),
       });
-      if (res.status === 403) throw new Error("Report generation requires a Pro subscription.");
+      if (res.status === 403) throw new Error("Sign in to generate reports.");
       if (res.status === 429) throw new Error("Daily AI limit reached. Try again tomorrow.");
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -1157,6 +831,9 @@ export default function App() {
 
       const report = await res.json() as PentestReport;
       setPentestReport(report);
+      // This run just spent tokens (or confirmed a cache hit spent none) --
+      // refresh rather than leave the sidebar showing the pre-run balance.
+      void refreshTokenBalance();
       dismissToast(id);
 
       // Let the portal render with the report + findings, then open print → PDF.
@@ -1226,6 +903,29 @@ export default function App() {
     if (view === "report") setView("overview");
   }
 
+  // Upgrade CTA. Previously every one of these buttons called
+  // setShowAuthForm(true), which meant an already-signed-in free user clicked
+  // "Upgrade" and was handed a sign-in form for the account they were already
+  // in -- a dead end on the three highest-intent surfaces in the app.
+  //
+  // Signed out is still the auth modal (that IS the right next step). Signed in
+  // opens the web checkout in the system browser, because the checkout Edge
+  // Function returns an embedded-Stripe clientSecret that requires Stripe.js in
+  // a browser page.
+  // Opens the web pricing page to buy tokens. Signed-out users get the auth
+  // modal first, since a purchase has to attach to an account.
+  function handleTopUp() {
+    if (!authStatus?.loggedIn) {
+      setShowAuthForm(true);
+      return;
+    }
+    const toastId = `topup-${Date.now()}`;
+    openUrl(`${MARKETING_URL}/pricing`).catch((e) => {
+      addToast(toastId, "Buy tokens", "sast", "");
+      updateToastError(toastId, friendlyError(String(e)));
+    });
+  }
+
   async function logout() {
     try {
       const s = await getStore();
@@ -1243,6 +943,7 @@ export default function App() {
     setScanSummary(null);
     setReportUrl("");
     setMcpStatus({});
+    setTokenBalance(null);
   }
 
 
@@ -1411,7 +1112,7 @@ export default function App() {
         <div className="sidebar-logo-wrap">
           <img src="/logo.png" alt="Trojan" className="sidebar-logo" />
           <span className="sidebar-wordmark">TROJAN</span>
-          <span className="sidebar-version">v0.1</span>
+          <span className="sidebar-version">v{APP_VERSION}</span>
         </div>
 
         <nav className="sidebar-nav">
@@ -1425,7 +1126,7 @@ export default function App() {
               <span className="nav-icon">{icon}</span>
               <span style={{ flex: 1 }}>{label}</span>
               {pro && (
-                <span style={{ font: "600 9px Inter,sans-serif", letterSpacing: "1px", color: "#a78bfa", border: "1px solid rgba(167,139,250,0.4)", padding: "2px 5px" }}>PRO</span>
+                <span style={{ fontFamily: "var(--font-sans)", fontWeight: 600, fontSize: 9, letterSpacing: "1px", color: "var(--accent-lift)", border: "1px solid rgba(167,139,250,0.4)", padding: "2px 5px" }}>PRO</span>
               )}
             </button>
             </span>
@@ -1452,6 +1153,13 @@ export default function App() {
           )}
         </nav>
 
+        {/* Token balance — only meaningful once signed in */}
+        {authStatus?.loggedIn && (
+          <div className="sidebar-bottom-actions" style={{ paddingBottom: 0 }}>
+            <TokenBalance balance={tokenBalance} onTopUp={handleTopUp} />
+          </div>
+        )}
+
         {/* Terminal toggle — pinned above user section like VS Code's panel button */}
         <div className="sidebar-bottom-actions">
           <button
@@ -1465,6 +1173,24 @@ export default function App() {
             <span>Terminal</span>
           </button>
         </div>
+
+        {/* Feedback — reuses the terminal button's shape so it reads as another
+            utility action rather than a promotion. Signed-in only: the edge
+            function needs a bearer token to attribute the report. */}
+        {authStatus?.loggedIn && (
+          <div className="sidebar-bottom-actions" style={{ paddingTop: 0 }}>
+            <button
+              className="sidebar-terminal-btn"
+              onClick={() => setShowFeedback(true)}
+              title="Send feedback to the maintainer"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>
+              </svg>
+              <span>Send feedback</span>
+            </button>
+          </div>
+        )}
 
         <div className="sidebar-user">
           <div className="sidebar-avatar">{initials(profile.name)}</div>
@@ -1530,7 +1256,7 @@ export default function App() {
           ) : (
             <>
               <span className="topbar-title">
-                {NAV.find((n) => n.view === view)?.label}
+                {NAV.find((n) => n.view === view)?.label ?? (view === "threatlab" ? "Security Report" : view === "compliancelab" ? "Compliance Report" : "")}
               </span>
               <div className="topbar-right">
                 <button
@@ -1568,14 +1294,13 @@ export default function App() {
 
           {/* ── Overview ── */}
           {view === "overview" && (() => {
-            // Posture ring — use Threat Lab data if available
+            // Posture ring — the security score (higher = better) from the last report.
             const ringR   = 63;
             const ringC   = 2 * Math.PI * ringR;
-            const tIdx    = threatLabResult?.threat_index ?? null;
+            const secScore = threatLabResult ? Math.max(0, Math.min(100, 100 - threatLabResult.threat_index)) : null;
             const tGrade  = threatLabResult?.grade ?? null;
-            const gradeColors: Record<string, string> = { A:"#16a34a", B:"#65a30d", C:"#d97706", D:"#ea580c", F:"#dc2626" };
-            const ringColor  = tGrade ? gradeColors[tGrade] : "#4ade80";
-            const ringDash   = tIdx !== null ? `${(ringC * tIdx / 100).toFixed(1)} ${ringC.toFixed(1)}` : `0 ${ringC.toFixed(1)}`;
+            const ringColor  = gradeColor(tGrade);
+            const ringDash   = secScore !== null ? `${(ringC * secScore / 100).toFixed(1)} ${ringC.toFixed(1)}` : `0 ${ringC.toFixed(1)}`;
 
             // Stats
             const vulnPkgs   = packages.filter(p => p.cve_count > 0).length;
@@ -1634,21 +1359,21 @@ export default function App() {
                             strokeDasharray={ringDash}
                           />
                         </svg>
-                        {tIdx !== null && <div className="posture-pulse" />}
+                        {secScore !== null && <div className="posture-pulse" />}
                         <div className="posture-center">
                           {tGrade ? (
                             <>
                               <span className="posture-grade-text" style={{ color: ringColor }}>{tGrade}</span>
-                              <span className="posture-score-text">{tIdx}/100</span>
+                              <span className="posture-score-text">{secScore}/100</span>
                             </>
                           ) : (
                             <span className="posture-empty-text">
-                              {recent.length > 0 ? "Run\nThreat Lab" : "No scans\nyet"}
+                              {recent.length > 0 ? "Generate\na report" : "No scans\nyet"}
                             </span>
                           )}
                         </div>
                       </div>
-                      {tGrade && <span className="posture-card-sub">Grade {tGrade} — {tIdx} / 100</span>}
+                      {tGrade && <span className="posture-card-sub">Grade {tGrade} — {secScore} / 100</span>}
                     </div>
 
                     {/* 2×2 stat cards */}
@@ -1672,7 +1397,7 @@ export default function App() {
                       </div>
                       <div className="stat-card">
                         <span className="stat-label">CVEs</span>
-                        <span className="stat-value" style={{ color: vulnPkgs > 0 ? "#ea580c" : undefined }}>
+                        <span className="stat-value" style={{ color: vulnPkgs > 0 ? "var(--warning)" : undefined }}>
                           {packages.length ? vulnPkgs : "—"}
                         </span>
                         <span className="stat-sub">vulnerable pkgs</span>
@@ -1686,7 +1411,7 @@ export default function App() {
                     <div className={`scan-tip-wrap ${isScanning ? "scanning-active" : ""}`}>
                       <div className={`station-card ${isDragOver && !isScanning ? "drag-over" : ""} ${isScanning ? "scan-locked" : ""}`}>
                         <CM />
-                        <div className="station-icon-wrap" style={{ color: "#2563eb" }}>
+                        <div className="station-icon-wrap" style={{ color: "var(--blue)" }}>
                           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                             <polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>
                           </svg>
@@ -1714,9 +1439,9 @@ export default function App() {
 
                     {/* DAST station */}
                     <div className={`scan-tip-wrap ${isScanning ? "scanning-active" : ""}`}>
-                      <div className={`station-card ${isScanning ? "scan-locked" : ""}`} style={{ borderColor: "#7c3aed20" }}>
+                      <div className={`station-card ${isScanning ? "scan-locked" : ""}`} style={{ borderColor: "color-mix(in srgb, var(--primary) 12%, transparent)" }}>
                         <CM />
-                        <div className="station-icon-wrap" style={{ color: "#7c3aed" }}>
+                        <div className="station-icon-wrap" style={{ color: "var(--primary)" }}>
                           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
                             <circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/>
                             <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
@@ -1780,9 +1505,18 @@ export default function App() {
           {/* ── SAST ── */}
           {view === "sast" && (
             <div className="content-inner">
-              <div className="view-header">
-                <h2 className="view-title">Static Analysis</h2>
-                <p className="view-desc">Scan a local project for vulnerabilities, secrets, and misconfigurations.</p>
+              <div className="page-header">
+                {recent.some(r => r.type === "sast" && r.cachePath) && (
+                  <div className="page-header-row">
+                    <button className="report-cta" onClick={() => setView("threatlab")} title="Generate an AI security report from your findings">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M9 15l2 2 4-4"/></svg>
+                      Generate Security Report
+                    </button>
+                  </div>
+                )}
+                <span className="page-header-eyebrow">SECURITY</span>
+                <h1 className="page-header-title">Static Analysis</h1>
+                <p className="page-header-desc">Scan a local project for vulnerabilities, secrets, and misconfigurations.</p>
               </div>
 
               <div className={`scan-tip-wrap ${isScanning ? "scanning-active" : ""}`}>
@@ -1816,11 +1550,11 @@ export default function App() {
                 <p className="scanner-grid-label">SCANNERS — 5 INSTALLED</p>
                 <div className="scanner-grid">
                   {[
-                    { name: "Semgrep",  desc: "Pattern-based code analysis across 30+ languages.", icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#2563eb" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M10 4a6 6 0 1 0 0 12 6 6 0 0 0 0-12 M21 21l-6.65-6.65"/></svg> },
-                    { name: "Trivy",    desc: "Known CVEs and misconfigurations in dependencies and images.", icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#2563eb" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></svg> },
-                    { name: "Gitleaks", desc: "Hard-coded secrets, tokens and credentials in code and git history.", icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#2563eb" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12.4 2.7a2.5 2.5 0 0 1 3.4 0l5.5 5.5a2.5 2.5 0 0 1 0 3.4l-3.7 3.7a2.5 2.5 0 0 1-3.4 0L8.7 9.8a2.5 2.5 0 0 1 0-3.4z M14 7l3 3 M9.4 10.6 2 18v4h4l7.4-7.4"/></svg> },
-                    { name: "Checkov",  desc: "IaC policy checks — Terraform, CloudFormation, Kubernetes.", icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#2563eb" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2 2 7l10 5 10-5-10-5 M2 17l10 5 10-5 M2 12l10 5 10-5"/></svg> },
-                    { name: "Syft",     desc: "SBOM generation and license inventory for every artifact.", icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#2563eb" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z M3.3 7l8.7 5 8.7-5 M12 22V12"/></svg> },
+                    { name: "Semgrep",  desc: "Pattern-based code analysis across 30+ languages.", icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--blue)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M10 4a6 6 0 1 0 0 12 6 6 0 0 0 0-12 M21 21l-6.65-6.65"/></svg> },
+                    { name: "Trivy",    desc: "Known CVEs and misconfigurations in dependencies and images.", icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--blue)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></svg> },
+                    { name: "Gitleaks", desc: "Hard-coded secrets, tokens and credentials in code and git history.", icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--blue)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12.4 2.7a2.5 2.5 0 0 1 3.4 0l5.5 5.5a2.5 2.5 0 0 1 0 3.4l-3.7 3.7a2.5 2.5 0 0 1-3.4 0L8.7 9.8a2.5 2.5 0 0 1 0-3.4z M14 7l3 3 M9.4 10.6 2 18v4h4l7.4-7.4"/></svg> },
+                    { name: "Checkov",  desc: "IaC policy checks — Terraform, CloudFormation, Kubernetes.", icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--blue)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2 2 7l10 5 10-5-10-5 M2 17l10 5 10-5 M2 12l10 5 10-5"/></svg> },
+                    { name: "Syft",     desc: "SBOM generation and license inventory for every artifact.", icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--blue)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z M3.3 7l8.7 5 8.7-5 M12 22V12"/></svg> },
                   ].map((f) => (
                     <div key={f.name} className="scanner-chip">
                       <div className="scanner-chip-head">
@@ -1855,29 +1589,49 @@ export default function App() {
           )}
 
           {/* ── DAST ── */}
+          {view === "market" && (
+            <div className="content-inner">
+              <AttackMarket
+                getToken={async () => (await getFreshToken()) ?? ""}
+                selectedSlug={agTemplate?.slug}
+                onUseTemplate={(t) => { setAgTemplate(t); setView("dast"); }}
+              />
+            </div>
+          )}
+
           {view === "dast" && (() => {
-            const isPro = authStatus?.isPro ?? false;
+            // Signing in is the only requirement: a run is billed to an account. Whether
+            // it can be AFFORDED is decided server-side against the token balance,
+            // which returns 402 and pauses the run resumably rather than pre-blocking.
+            const signedIn = authStatus?.loggedIn ?? false;
             return (
             <div className="content-inner">
-              <div className="view-header">
-                <h2 className="view-title">Penetration Testing <span className="lab-pro-tag">PRO</span></h2>
-                <p className="view-desc">Scan a running server for runtime vulnerabilities using Nuclei's 6,000+ templates plus AI-generated attack patterns.</p>
+              <div className="page-header">
+                <span className="page-header-eyebrow">SECURITY</span>
+                <h1 className="page-header-title">Penetration Testing <span className="lab-pro-tag">365 TOKENS</span></h1>
+                <p className="page-header-desc">Scan a running server for runtime vulnerabilities using Nuclei's 6,000+ templates plus AI-generated attack patterns.</p>
               </div>
 
-              {!isPro && (
+              {!signedIn && (
                 <div className="lab-state-card lab-pro-gate">
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-                  Penetration Testing requires a Pro subscription.
-                  <button className="lab-upgrade-btn" onClick={() => setShowAuthForm(true)}>Upgrade →</button>
+                  Sign in to run a penetration test. Every account gets 500 free tokens a month.
+                  <button className="lab-upgrade-btn" onClick={() => setShowAuthForm(true)}>Sign in →</button>
                 </div>
               )}
 
-              {isPro && (
+              {signedIn && (
               <>
-              <div className={`scan-tip-wrap ${isScanning ? "scanning-active" : ""}`}>
-              <div className={`dast-panel ${isScanning ? "scan-locked" : ""}`}>
-                <CM />
-                <span className="scanner-grid-label">TARGET URL</span>
+              <div className={`pt-setup ${isScanning ? "scan-locked" : ""}`}>
+                {/* Mode */}
+                <span className="scanner-grid-label">MODE</span>
+                <div className="pt-seg">
+                  <button type="button" className={!agenticMode ? "on" : ""} onClick={() => setAgenticMode(false)} disabled={isScanning}>One-shot scan</button>
+                  <button type="button" className={agenticMode ? "on" : ""} onClick={() => setAgenticMode(true)} disabled={isScanning}>AI Agent <span className="pt-seg-sub">adaptive</span></button>
+                </div>
+
+                {/* Target */}
+                <span className="scanner-grid-label" style={{ marginTop: 16 }}>TARGET</span>
                 <form className="dast-row-form" onSubmit={(e) => { e.preventDefault(); (agenticMode ? triggerAgenticDast : triggerDast)(dastUrl); }}>
                   <input
                     className="dast-input dast-input-lg"
@@ -1887,109 +1641,209 @@ export default function App() {
                     onChange={(e) => setDastUrl(e.target.value)}
                     disabled={isScanning}
                     autoFocus
-                    style={{ fontFamily: "'Fira Code', monospace" }}
+                    style={{ fontFamily: "var(--font-mono)" }}
                   />
-                  <button type="submit" className="station-btn" disabled={isScanning || !dastUrl.trim()} style={{ whiteSpace: "nowrap", padding: "0 20px" }}>
-                    {isScanning ? "Scan in progress…" : agenticMode ? "Start Agent" : "Start Penetration Test"}
+                  <button type="submit" className="station-btn" disabled={isScanning || !dastUrl.trim()} style={{ whiteSpace: "nowrap", padding: "0 22px" }}>
+                    {isScanning ? "Scan in progress…" : "Launch pen test"}
                   </button>
                 </form>
-
-                {/* Agentic (AI agent) mode — adaptive pen-test that streams live */}
-                <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 14, marginTop: 12 }}>
-                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
-                    <input type="checkbox" checked={agenticMode} onChange={(e) => setAgenticMode(e.target.checked)} disabled={isScanning} />
-                    AI agent pen-test <span style={{ opacity: 0.55, fontSize: 11, textTransform: "uppercase", letterSpacing: "0.08em" }}>adaptive</span>
-                  </label>
-                  {agenticMode && (
-                    <>
-                      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
-                        Environment
-                        <select
-                          value={agEnv}
-                          onChange={(e) => {
-                            const next = e.target.value as typeof agEnv;
-                            setAgEnv(next);
-                            // Aggressive is staging-only — the CLI rejects it on prod.
-                            if (next === "production" && agTier === "aggressive") setAgTier("passive");
-                          }}
-                          disabled={isScanning}
-                        >
-                          <option value="production">production</option>
-                          <option value="staging">staging</option>
-                        </select>
-                      </label>
-                      <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
-                        Intensity
-                        <select
-                          value={agTier}
-                          onChange={(e) => setAgTier(e.target.value as typeof agTier)}
-                          disabled={isScanning}
-                        >
-                          <option value="passive">passive</option>
-                          <option value="safe-active">safe-active</option>
-                          <option value="aggressive" disabled={agEnv === "production"}>aggressive (staging)</option>
-                        </select>
-                      </label>
-                      {agTier === "safe-active" && agEnv === "production" && (
-                        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#d97706" }}>
-                          <input type="checkbox" checked={agAck} onChange={(e) => setAgAck(e.target.checked)} disabled={isScanning} />
-                          Accept possible side effects
-                        </label>
-                      )}
-                    </>
-                  )}
-                </div>
-
-                <div className="dast-warning">
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#d97706" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                <div className="pt-authnote">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
                     <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3 M12 9v4 M12 17h.01"/>
                   </svg>
-                  Only scan systems you own or are authorized to test.
+                  Only test systems you own or are authorized to test.
                 </div>
-              </div>
-              </div>{/* /scan-tip-wrap */}
 
-              <div>
-                <p className="scanner-grid-label">CHECKS</p>
-                <div className="feature-grid">
-                  {([
-                    {
-                      name: "Nuclei", extra: "6,618 templates", pro: false,
-                      desc: "Baseline sweep run up front for breadth — CVE probes, exposures, takeovers.",
-                      icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></svg>,
-                    },
-                    {
-                      name: "CORS", extra: undefined, pro: false,
-                      desc: "Cross-origin policy misconfigurations and wildcard origins.",
-                      icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20 M2 12h20"/></svg>,
-                    },
-                    {
-                      name: "Security headers", extra: undefined, pro: false,
-                      desc: "CSP, HSTS, frame and referrer policies graded per response.",
-                      icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z M9 12l2 2 4-4"/></svg>,
-                    },
-                    {
-                      name: "Endpoint discovery", extra: undefined, pro: false,
-                      desc: "Crawl plus common-path probing to map the live surface.",
-                      icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M10 4a6 6 0 1 0 0 12 6 6 0 0 0 0-12 M21 21l-6.65-6.65"/></svg>,
-                    },
-                    {
-                      name: "Agentic brain", extra: "Claude", pro: true,
-                      desc: "An AI agent that reasons over responses and probes adaptively — chaining steps to find auth-bypass, IDOR and business-logic flaws no template can express.",
-                      icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M9.94 3.94 12 2l2.06 1.94L16 2l1 4 4 1-1.94 2.06L21 12l-1.94 2.06L21 16l-4 1-1 4-2.06-1.94L12 22l-2.06-1.94L8 22l-1-4-4-1 1.94-2.06L3 12l1.94-2.06L3 8l4-1 1-4z"/></svg>,
-                    },
-                  ] as { name: string; extra?: string; pro: boolean; desc: string; icon: React.ReactNode }[]).map((f) => (
-                    <div key={f.name} className={`feature-chip ${f.pro ? "chip-pro" : ""}`}>
-                      <div className="chip-head">
-                        {f.icon}
-                        <span className="chip-name">{f.name}</span>
-                        {f.extra && <span className="chip-extra">{f.extra}</span>}
-                        {f.pro && <span style={{ font: "600 9px Inter,sans-serif", letterSpacing: "1px", color: "#a78bfa", border: "1px solid rgba(167,139,250,0.4)", padding: "2px 5px" }}>PRO</span>}
+                {/* Engagement — AI agent only */}
+                {agenticMode && (
+                  <>
+                    {/* Cost guidance. A RANGE, not a point estimate: run cost
+                        depends on how many steps the agent takes and how large
+                        the crawled surface is, so one number would read as a
+                        promise and be wrong most of the time. */}
+                    <span className="scanner-grid-label" style={{ marginTop: 18 }}>COST</span>
+                    <RunCostHint balance={tokenBalance} model="sonnet" />
+
+                    {agTemplate && (
+                      <div className="pt-template-banner">
+                        <div className="pt-template-meta">
+                          <span className="pt-template-tag">ATTACK TEMPLATE</span>
+                          <span className="pt-template-name">{agTemplate.title}</span>
+                        </div>
+                        <button type="button" className="pt-template-clear" onClick={() => setAgTemplate(null)} disabled={isScanning}>Clear</button>
                       </div>
-                      <span className="chip-desc">{f.desc}</span>
+                    )}
+                    <span className="scanner-grid-label" style={{ marginTop: 18 }}>ENGAGEMENT</span>
+                    <div className="pt-eng-grid">
+                      {/* Intensity ladder */}
+                      <div className="pt-card">
+                        <div className="pt-card-h">Intensity
+                          <span className="pt-info" data-tip="How hard the agent pushes. Every level is non-destructive: single-proof, same-host only, no data dumped.">i</span>
+                        </div>
+                        {([
+                          ["passive", "Passive", "Observe and fingerprint. GET probes only, zero side effects."],
+                          ["safe-active", "Safe-active", "Adds state-changing probes, single-proof only. Never enumerates or dumps data."],
+                          ["aggressive", "Aggressive", "Fuller payload coverage. Blocked on production targets."],
+                        ] as const).map(([v, label, tip]) => {
+                          const blocked = v === "aggressive" && agEnv === "production";
+                          return (
+                            <button
+                              key={v}
+                              type="button"
+                              className={`pt-rung ${agTier === v ? "on" : ""}`}
+                              onClick={() => setAgTier(v)}
+                              disabled={isScanning || blocked}
+                            >
+                              <span className="pt-pip" />
+                              <span className="pt-rung-t">
+                                {label}
+                                {v === "aggressive" && <span className="pt-tag-staging">staging only</span>}
+                              </span>
+                              <span className="pt-info" data-tip={tip}>i</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      {/* Right column: environment, grey-box, focus */}
+                      <div className="pt-col">
+                        <div className="pt-card">
+                          <div className="pt-card-h">Environment
+                            <span className="pt-info" data-tip="Production caps intensity to safe-active. Staging unlocks aggressive.">i</span>
+                          </div>
+                          <div className="pt-seg pt-seg-full">
+                            <button type="button" className={agEnv === "production" ? "on" : ""} disabled={isScanning}
+                              onClick={() => { setAgEnv("production"); if (agTier === "aggressive") setAgTier("passive"); }}>Production</button>
+                            <button type="button" className={agEnv === "staging" ? "on" : ""} disabled={isScanning}
+                              onClick={() => setAgEnv("staging")}>Staging</button>
+                          </div>
+                          {agTier === "safe-active" && agEnv === "production" && (
+                            <label className="pt-ack">
+                              <input type="checkbox" checked={agAck} onChange={(e) => setAgAck(e.target.checked)} disabled={isScanning} />
+                              Accept possible side effects
+                            </label>
+                          )}
+                        </div>
+
+                        <div className="pt-card">
+                          <div className="pt-row">
+                            <span className="pt-card-h" style={{ margin: 0 }}>Grey-box
+                              <span className="pt-info" data-tip="Reads this project's source to find the missing check (IDOR, SQLi, authz gaps) instead of guessing. Index, vectors and source stay on your machine; only the handler snippets the agent reads are sent to the AI, never stored.">i</span>
+                            </span>
+                            <button
+                              type="button"
+                              className={`pt-switch ${agGreyBox ? "" : "off"}`}
+                              aria-pressed={agGreyBox}
+                              aria-label="Toggle grey-box"
+                              onClick={() => setAgGreyBox((v) => !v)}
+                              disabled={isScanning}
+                            />
+                          </div>
+                        </div>
+
+                        <div className="pt-card">
+                          <div className="pt-card-h">Focus
+                            <span className="pt-info" data-tip="Narrows the agent to a technique set for fewer wasted probes. Optional.">i</span>
+                          </div>
+                          <div className="pt-chips">
+                            {([["api", "API"], ["web", "Consumer web"], ["llm", "AI / LLM"]] as const).map(([v, label]) => (
+                              <button
+                                key={v}
+                                type="button"
+                                className={`pt-chip ${agFocus === v ? "on" : ""}`}
+                                onClick={() => setAgFocus((f) => (f === v ? "" : v))}
+                                disabled={isScanning}
+                              >{label}</button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
                     </div>
-                  ))}
-                </div>
+
+                    {/* Identities — for authorization (IDOR/BOLA) testing */}
+                    <div className="pt-idhead">
+                      <span className="scanner-grid-label" style={{ margin: 0 }}>IDENTITIES</span>
+                      <span className="pt-info" data-tip="Supply two or more logged-in sessions (name + an auth header like 'Authorization: Bearer ...'). The agent requests the same resource as each and compares, to catch broken object-level authorization.">i</span>
+                    </div>
+                    <div className="pt-card">
+                      {agIdentities.length === 0 && (
+                        <p className="pt-idhint">Add two or more sessions to test whether one user can reach another's data.</p>
+                      )}
+                      {agIdentities.map((id, i) => (
+                        <div className="pt-id-row" key={i}>
+                          <input
+                            className="pt-id-name" placeholder="name" value={id.name} disabled={isScanning}
+                            onChange={(e) => setAgIdentities((rows) => rows.map((r, j) => j === i ? { ...r, name: e.target.value } : r))}
+                          />
+                          <input
+                            className="pt-id-header" placeholder="Authorization: Bearer ..." value={id.header} disabled={isScanning}
+                            onChange={(e) => setAgIdentities((rows) => rows.map((r, j) => j === i ? { ...r, header: e.target.value } : r))}
+                          />
+                          <button type="button" className="pt-id-rm" aria-label="Remove identity" disabled={isScanning}
+                            onClick={() => setAgIdentities((rows) => rows.filter((_, j) => j !== i))}>×</button>
+                        </div>
+                      ))}
+                      <button type="button" className="pt-add" disabled={isScanning}
+                        onClick={() => setAgIdentities((rows) => [...rows, { name: "", header: "" }])}>+ Add identity</button>
+                    </div>
+
+                    {/* API spec — expand the surface beyond what the crawler links (§6.5 #4) */}
+                    <div className="pt-idhead">
+                      <span className="scanner-grid-label" style={{ margin: 0 }}>API SPEC</span>
+                      <span className="pt-info" data-tip="Point to an OpenAPI/Swagger file (path) or URL to test endpoints the crawler can't reach by following links — including unlinked admin/versioned routes and the params each takes. Leave blank to auto-probe common spec URLs on the target.">i</span>
+                    </div>
+                    <div className="pt-card">
+                      <input
+                        className="pt-id-header" style={{ width: "100%" }}
+                        placeholder="path/to/openapi.yaml or https://target/openapi.json (optional)"
+                        value={agApiSpec} disabled={isScanning}
+                        onChange={(e) => setAgApiSpec(e.target.value)}
+                      />
+                      <p className="pt-idhint">Optional. Blank = auto-probe /openapi.json, /swagger.json, /v3/api-docs on the target.</p>
+                    </div>
+
+                    {/* Rules of engagement + human-in-the-loop (§8) */}
+                    <div className="pt-idhead">
+                      <span className="scanner-grid-label" style={{ margin: 0 }}>RULES OF ENGAGEMENT</span>
+                      <span className="pt-info" data-tip="Require approval pauses the agent before every state-changing request so you approve or deny it in the run view. Allow/deny lists scope which endpoints it may touch (one path per line; trailing * = prefix). Read-only probes always run automatically.">i</span>
+                    </div>
+                    <div className="pt-card" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                      <label className="pt-roe-check">
+                        <input type="checkbox" checked={agRequireApproval} disabled={isScanning}
+                          onChange={(e) => setAgRequireApproval(e.target.checked)} />
+                        <span>Require my approval before state-changing actions</span>
+                      </label>
+                      <div>
+                        <p className="pt-idhint" style={{ marginTop: 0 }}>Allowed endpoints (one per line, trailing * = prefix; blank = all in scope)</p>
+                        <textarea
+                          className="pt-id-header" style={{ width: "100%", minHeight: 46, resize: "vertical", fontFamily: "var(--font-mono)" }}
+                          placeholder={"/api/*\n/orders/*"}
+                          value={agAllowEndpoints} disabled={isScanning}
+                          onChange={(e) => setAgAllowEndpoints(e.target.value)}
+                        />
+                      </div>
+                      <div>
+                        <p className="pt-idhint" style={{ marginTop: 0 }}>Denied endpoints (never touched)</p>
+                        <textarea
+                          className="pt-id-header" style={{ width: "100%", minHeight: 46, resize: "vertical", fontFamily: "var(--font-mono)" }}
+                          placeholder={"/admin/*\n/internal/*"}
+                          value={agDenyEndpoints} disabled={isScanning}
+                          onChange={(e) => setAgDenyEndpoints(e.target.value)}
+                        />
+                      </div>
+                      <label className="pt-roe-check">
+                        <input type="checkbox" checked={agLimitToAllowlist} disabled={isScanning || !agAllowEndpoints.trim()}
+                          onChange={(e) => setAgLimitToAllowlist(e.target.checked)} />
+                        <span>Hard-limit to the allowed list (block everything else)</span>
+                      </label>
+                      <label className="pt-roe-check">
+                        <input type="checkbox" checked={agAllowDangerous} disabled={isScanning}
+                          onChange={(e) => setAgAllowDangerous(e.target.checked)} />
+                        <span>Allow dangerous patterns (account deletion, password/credential, payment)</span>
+                      </label>
+                    </div>
+                  </>
+                )}
               </div>
 
               {recent.filter(r => r.type === "dast").length > 0 && (
@@ -2014,20 +1868,21 @@ export default function App() {
           {/* ── Licenses ── */}
           {view === "licenses" && (
             <div className="content-inner">
-              <div className="view-header">
-                <h2 className="view-title">License Compliance</h2>
-                <p className="view-desc">Open-source license risk across your dependency tree. Copyleft licenses may require you to open-source your code.</p>
+              <div className="page-header">
+                <span className="page-header-eyebrow">COMPLIANCE</span>
+                <h1 className="page-header-title">License Compliance</h1>
+                <p className="page-header-desc">Open-source license risk across your dependency tree. Copyleft licenses may require you to open-source your code.</p>
               </div>
               {packages.length === 0 ? (
                 <div className="lab-state-card">
                   <p className="lab-no-data" style={{ marginBottom: recent.filter(r => r.cachePath).length > 0 ? 10 : 0 }}>No license data loaded.</p>
                   {recent.filter(r => r.cachePath && r.type === "sast").length > 0 && (
                     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                      <span style={{ fontSize: 11, color: "oklch(0.45 0 0)", fontWeight: 500 }}>LOAD FROM PREVIOUS SCAN</span>
+                      <span style={{ fontSize: 11, color: "var(--muted-fg)", fontWeight: 500 }}>LOAD FROM PREVIOUS SCAN</span>
                       {recent.filter(r => r.cachePath && r.type === "sast").slice(0, 5).map(r => (
-                        <button key={r.path} onClick={() => loadScanData(r)} style={{ background: "none", border: "1px solid oklch(0.88 0 0)", padding: "6px 10px", cursor: "pointer", fontSize: 12, color: "oklch(0.30 0 0)", textAlign: "left", display: "flex", justifyContent: "space-between" }}>
+                        <button key={r.path} onClick={() => loadScanData(r)} style={{ background: "none", border: "1px solid var(--border)", padding: "6px 10px", cursor: "pointer", fontSize: 12, color: "var(--fg)", textAlign: "left", display: "flex", justifyContent: "space-between" }}>
                           <span>{r.name}</span>
-                          <span style={{ color: "oklch(0.55 0 0)", fontSize: 11 }}>{timeAgo(r.scannedAt)}</span>
+                          <span style={{ color: "var(--muted-fg)", fontSize: 11 }}>{timeAgo(r.scannedAt)}</span>
                         </button>
                       ))}
                     </div>
@@ -2041,30 +1896,30 @@ export default function App() {
                 const unknown = packages.filter(p => p.license_risk === "unknown" || !p.license_risk);
                 const permissive = packages.filter(p => p.license_risk === "permissive");
                 const sections = [
-                  { key: "copyleft", label: "COPYLEFT — may require open-sourcing", items: copyleft, color: "#dc2626" },
-                  { key: "weak", label: "WEAK COPYLEFT — review modification terms", items: weakCopyleft, color: "#d97706" },
-                  { key: "unknown", label: "UNKNOWN — no license declared", items: unknown, color: "#6b7280" },
-                  { key: "permissive", label: "PERMISSIVE — safe to use", items: permissive, color: "#16a34a" },
+                  { key: "copyleft", label: "COPYLEFT — may require open-sourcing", items: copyleft, color: licenseRiskColor("copyleft") },
+                  { key: "weak", label: "WEAK COPYLEFT — review modification terms", items: weakCopyleft, color: licenseRiskColor("weak-copyleft") },
+                  { key: "unknown", label: "UNKNOWN — no license declared", items: unknown, color: licenseRiskColor("unknown") },
+                  { key: "permissive", label: "PERMISSIVE — safe to use", items: permissive, color: licenseRiskColor("permissive") },
                 ];
                 return (
                   <>
                     {/* Loaded codebase bar */}
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 14px", background: "white", border: "1px solid oklch(0.88 0 0)", marginBottom: 16 }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 14px", background: "white", border: "1px solid var(--border)", marginBottom: 16 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <span style={{ fontSize: 12, color: "oklch(0.50 0 0)" }}>Analysing</span>
-                        <span style={{ fontSize: 13, fontWeight: 600, color: "oklch(0.15 0 0)" }}>{codebase}</span>
-                        <span style={{ fontSize: 11, color: "oklch(0.55 0 0)" }}>{packages.length} package{packages.length !== 1 ? "s" : ""}</span>
+                        <span style={{ fontSize: 12, color: "var(--muted-fg)" }}>Analysing</span>
+                        <span style={{ fontSize: 13, fontWeight: 600, color: "var(--fg)" }}>{codebase}</span>
+                        <span style={{ fontSize: 11, color: "var(--muted-fg)" }}>{packages.length} package{packages.length !== 1 ? "s" : ""}</span>
                       </div>
-                      <button onClick={() => { setPackages([]); setLicPages({}); }} style={{ background: "none", border: "1px solid oklch(0.88 0 0)", padding: "4px 10px", cursor: "pointer", fontSize: 11, color: "oklch(0.40 0 0)" }}>
+                      <button onClick={() => { setPackages([]); setLicPages({}); }} style={{ background: "none", border: "1px solid var(--border)", padding: "4px 10px", cursor: "pointer", fontSize: 11, color: "var(--muted-fg)" }}>
                         Scan another project
                       </button>
                     </div>
                     <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 16 }}>
                       {[
-                        { label: "Copyleft", count: copyleft.length, color: "#dc2626" },
-                        { label: "Weak Copyleft", count: weakCopyleft.length, color: "#d97706" },
-                        { label: "Unknown", count: unknown.length, color: "#6b7280" },
-                        { label: "Permissive", count: permissive.length, color: "#16a34a" },
+                        { label: "Copyleft", count: copyleft.length, color: licenseRiskColor("copyleft") },
+                        { label: "Weak Copyleft", count: weakCopyleft.length, color: licenseRiskColor("weak-copyleft") },
+                        { label: "Unknown", count: unknown.length, color: licenseRiskColor("unknown") },
+                        { label: "Permissive", count: permissive.length, color: licenseRiskColor("permissive") },
                       ].map(s => (
                         <div key={s.label} className="lab-card" style={{ textAlign: "center", padding: 14 }}>
                           <div style={{ fontSize: 24, fontWeight: 700, color: s.color }}>{s.count}</div>
@@ -2081,19 +1936,19 @@ export default function App() {
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
                             <div className="lab-card-label" style={{ color: s.color }}>{s.label}</div>
                             {totalPages > 1 && (
-                              <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "oklch(0.50 0 0)" }}>
-                                <button disabled={page === 0} onClick={() => setLicPages(p => ({ ...p, [s.key]: page - 1 }))} style={{ background: "none", border: "1px solid oklch(0.88 0 0)", padding: "2px 8px", cursor: page === 0 ? "default" : "pointer", opacity: page === 0 ? 0.4 : 1, fontSize: 11 }}>←</button>
+                              <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--muted-fg)" }}>
+                                <button disabled={page === 0} onClick={() => setLicPages(p => ({ ...p, [s.key]: page - 1 }))} style={{ background: "none", border: "1px solid var(--border)", padding: "2px 8px", cursor: page === 0 ? "default" : "pointer", opacity: page === 0 ? 0.4 : 1, fontSize: 11 }}>←</button>
                                 <span>{page + 1} / {totalPages}</span>
-                                <button disabled={page >= totalPages - 1} onClick={() => setLicPages(p => ({ ...p, [s.key]: page + 1 }))} style={{ background: "none", border: "1px solid oklch(0.88 0 0)", padding: "2px 8px", cursor: page >= totalPages - 1 ? "default" : "pointer", opacity: page >= totalPages - 1 ? 0.4 : 1, fontSize: 11 }}>→</button>
+                                <button disabled={page >= totalPages - 1} onClick={() => setLicPages(p => ({ ...p, [s.key]: page + 1 }))} style={{ background: "none", border: "1px solid var(--border)", padding: "2px 8px", cursor: page >= totalPages - 1 ? "default" : "pointer", opacity: page >= totalPages - 1 ? 0.4 : 1, fontSize: 11 }}>→</button>
                               </div>
                             )}
                           </div>
                           <div className="lab-card" style={{ padding: 0 }}>
                             {pageItems.map((p, i) => (
-                              <div key={`${p.name}-${p.version}-${i}`} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 14px", borderBottom: i < pageItems.length - 1 ? "1px solid oklch(0.94 0 0)" : "none", fontSize: 13 }}>
-                                <span style={{ fontWeight: 500, color: "oklch(0.18 0 0)", flex: 1 }}>{p.name}</span>
-                                <span style={{ fontFamily: "'Fira Code', monospace", fontSize: 11, color: "oklch(0.50 0 0)" }}>{p.version}</span>
-                                <span style={{ fontFamily: "'Fira Code', monospace", fontSize: 10, color: s.color, border: `1px solid ${s.color}33`, padding: "2px 6px" }}>{p.license || "NONE"}</span>
+                              <div key={`${p.name}-${p.version}-${i}`} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 14px", borderBottom: i < pageItems.length - 1 ? "1px solid var(--border)" : "none", fontSize: 13 }}>
+                                <span style={{ fontWeight: 500, color: "var(--fg)", flex: 1 }}>{p.name}</span>
+                                <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--muted-fg)" }}>{p.version}</span>
+                                <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: s.color, border: `1px solid ${s.color}33`, padding: "2px 6px" }}>{p.license || "NONE"}</span>
                               </div>
                             ))}
                           </div>
@@ -2115,9 +1970,10 @@ export default function App() {
 
             return (
             <div className="content-inner">
-              <div className="view-header">
-                <h2 className="view-title">Privacy Data Flows</h2>
-                <p className="view-desc">Where personal data is processed in your code and which third-party services receive it.</p>
+              <div className="page-header">
+                <span className="page-header-eyebrow">COMPLIANCE</span>
+                <h1 className="page-header-title">Privacy Data Flows</h1>
+                <p className="page-header-desc">Where personal data is processed in your code and which third-party services receive it.</p>
               </div>
 
               {!privacyReport ? (
@@ -2125,11 +1981,11 @@ export default function App() {
                   <p className="lab-no-data" style={{ marginBottom: recent.filter(r => r.cachePath && r.type === "sast").length > 0 ? 10 : 0 }}>No privacy data loaded.</p>
                   {recent.filter(r => r.cachePath && r.type === "sast").length > 0 && (
                     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                      <span style={{ fontSize: 11, color: "oklch(0.45 0 0)", fontWeight: 500 }}>LOAD FROM PREVIOUS SCAN</span>
+                      <span style={{ fontSize: 11, color: "var(--muted-fg)", fontWeight: 500 }}>LOAD FROM PREVIOUS SCAN</span>
                       {recent.filter(r => r.cachePath && r.type === "sast").slice(0, 5).map(r => (
-                        <button key={r.path} onClick={() => loadScanData(r)} style={{ background: "none", border: "1px solid oklch(0.88 0 0)", padding: "6px 10px", cursor: "pointer", fontSize: 12, color: "oklch(0.30 0 0)", textAlign: "left", display: "flex", justifyContent: "space-between" }}>
+                        <button key={r.path} onClick={() => loadScanData(r)} style={{ background: "none", border: "1px solid var(--border)", padding: "6px 10px", cursor: "pointer", fontSize: 12, color: "var(--fg)", textAlign: "left", display: "flex", justifyContent: "space-between" }}>
                           <span>{r.name}</span>
-                          <span style={{ color: "oklch(0.55 0 0)", fontSize: 11 }}>{timeAgo(r.scannedAt)}</span>
+                          <span style={{ color: "var(--muted-fg)", fontSize: 11 }}>{timeAgo(r.scannedAt)}</span>
                         </button>
                       ))}
                     </div>
@@ -2138,13 +1994,13 @@ export default function App() {
               ) : (
                 <>
                   {/* Loaded codebase bar */}
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 14px", background: "white", border: "1px solid oklch(0.88 0 0)", marginBottom: 16 }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 14px", background: "white", border: "1px solid var(--border)", marginBottom: 16 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <span style={{ fontSize: 12, color: "oklch(0.50 0 0)" }}>Analysing</span>
-                      <span style={{ fontSize: 13, fontWeight: 600, color: "oklch(0.15 0 0)" }}>{codebase || "project"}</span>
-                      <span style={{ fontSize: 11, color: "oklch(0.55 0 0)" }}>{dataTypes.length} data type{dataTypes.length !== 1 ? "s" : ""}, {thirdParty.length} third part{thirdParty.length !== 1 ? "ies" : "y"}</span>
+                      <span style={{ fontSize: 12, color: "var(--muted-fg)" }}>Analysing</span>
+                      <span style={{ fontSize: 13, fontWeight: 600, color: "var(--fg)" }}>{codebase || "project"}</span>
+                      <span style={{ fontSize: 11, color: "var(--muted-fg)" }}>{dataTypes.length} data type{dataTypes.length !== 1 ? "s" : ""}, {thirdParty.length} third part{thirdParty.length !== 1 ? "ies" : "y"}</span>
                     </div>
-                    <button onClick={() => { setPrivacyReport(null); setExpandedPrivacy(new Set()); }} style={{ background: "none", border: "1px solid oklch(0.88 0 0)", padding: "4px 10px", cursor: "pointer", fontSize: 11, color: "oklch(0.40 0 0)" }}>
+                    <button onClick={() => { setPrivacyReport(null); setExpandedPrivacy(new Set()); }} style={{ background: "none", border: "1px solid var(--border)", padding: "4px 10px", cursor: "pointer", fontSize: 11, color: "var(--muted-fg)" }}>
                       Scan another project
                     </button>
                   </div>
@@ -2152,15 +2008,15 @@ export default function App() {
                   {/* Summary cards */}
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 16 }}>
                     <div className="lab-card" style={{ textAlign: "center", padding: 14 }}>
-                      <div style={{ fontSize: 24, fontWeight: 700, color: "#7c3aed" }}>{dataTypes.length}</div>
+                      <div style={{ fontSize: 24, fontWeight: 700, color: "var(--primary)" }}>{dataTypes.length}</div>
                       <div className="lab-card-label" style={{ marginTop: 4 }}>PII TYPES DETECTED</div>
                     </div>
                     <div className="lab-card" style={{ textAlign: "center", padding: 14 }}>
-                      <div style={{ fontSize: 24, fontWeight: 700, color: "#d97706" }}>{thirdParty.length}</div>
+                      <div style={{ fontSize: 24, fontWeight: 700, color: "var(--warning)" }}>{thirdParty.length}</div>
                       <div className="lab-card-label" style={{ marginTop: 4 }}>THIRD-PARTY RECIPIENTS</div>
                     </div>
                     <div className="lab-card" style={{ textAlign: "center", padding: 14 }}>
-                      <div style={{ fontSize: 24, fontWeight: 700, color: "#dc2626" }}>{dataTypes.reduce((s, d) => s + d.detection_count, 0)}</div>
+                      <div style={{ fontSize: 24, fontWeight: 700, color: "var(--destructive)" }}>{dataTypes.reduce((s, d) => s + d.detection_count, 0)}</div>
                       <div className="lab-card-label" style={{ marginTop: 4 }}>TOTAL DETECTIONS</div>
                     </div>
                   </div>
@@ -2169,33 +2025,33 @@ export default function App() {
                   <div style={{ marginBottom: 16 }}>
                     <div className="lab-card-label" style={{ marginBottom: 8 }}>PERSONAL DATA DETECTED</div>
                     {dataTypes.length === 0 ? (
-                      <div className="lab-card" style={{ padding: 14, fontSize: 13, color: "oklch(0.50 0 0)" }}>No personal data flows detected in this codebase.</div>
+                      <div className="lab-card" style={{ padding: 14, fontSize: 13, color: "var(--muted-fg)" }}>No personal data flows detected in this codebase.</div>
                     ) : (
                       <div className="lab-card" style={{ padding: 0 }}>
                         {dataTypes.map((dt, i) => {
                           const key = `dt-${dt.name}-${i}`;
                           const isOpen = expandedPrivacy.has(key);
                           return (
-                            <div key={key} style={{ borderBottom: i < dataTypes.length - 1 ? "1px solid oklch(0.94 0 0)" : "none" }}>
+                            <div key={key} style={{ borderBottom: i < dataTypes.length - 1 ? "1px solid var(--border)" : "none" }}>
                               <div
                                 onClick={() => toggle(key)}
                                 style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", cursor: "pointer" }}
                               >
                                 <svg width="10" height="10" viewBox="0 0 10 10" style={{ transform: isOpen ? "rotate(90deg)" : "none", transition: "transform 0.15s", flexShrink: 0 }}>
-                                  <path d="M3 1l4 4-4 4" fill="none" stroke="oklch(0.50 0 0)" strokeWidth="1.5" />
+                                  <path d="M3 1l4 4-4 4" fill="none" stroke="var(--muted-fg)" strokeWidth="1.5" />
                                 </svg>
-                                <span style={{ fontWeight: 500, fontSize: 13, color: "oklch(0.18 0 0)", flex: 1 }}>{dt.name}</span>
-                                <span style={{ fontSize: 10, fontFamily: "'Fira Code', monospace", color: "#7c3aed", border: "1px solid rgba(124,58,237,0.3)", padding: "2px 5px" }}>{dt.category}</span>
+                                <span style={{ fontWeight: 500, fontSize: 13, color: "var(--fg)", flex: 1 }}>{dt.name}</span>
+                                <span style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: "var(--primary)", border: "1px solid rgba(124,58,237,0.3)", padding: "2px 5px" }}>{dt.category}</span>
                                 {dt.category_groups?.map(g => (
-                                  <span key={g} style={{ fontSize: 9, fontFamily: "'Fira Code', monospace", color: "oklch(0.50 0 0)", border: "1px solid oklch(0.88 0 0)", padding: "1px 4px" }}>{g}</span>
+                                  <span key={g} style={{ fontSize: 9, fontFamily: "var(--font-mono)", color: "var(--muted-fg)", border: "1px solid var(--border)", padding: "1px 4px" }}>{g}</span>
                                 ))}
-                                <span style={{ fontSize: 11, color: "oklch(0.50 0 0)" }}>{dt.detection_count} detection{dt.detection_count !== 1 ? "s" : ""}</span>
+                                <span style={{ fontSize: 11, color: "var(--muted-fg)" }}>{dt.detection_count} detection{dt.detection_count !== 1 ? "s" : ""}</span>
                               </div>
                               {isOpen && dt.locations?.length > 0 && (
                                 <div style={{ padding: "0 14px 10px 32px", display: "flex", flexDirection: "column", gap: 3 }}>
-                                  <div style={{ fontSize: 10, fontWeight: 500, color: "oklch(0.45 0 0)", letterSpacing: "0.05em", marginBottom: 2 }}>FILE LOCATIONS</div>
+                                  <div style={{ fontSize: 10, fontWeight: 500, color: "var(--muted-fg)", letterSpacing: "0.05em", marginBottom: 2 }}>FILE LOCATIONS</div>
                                   {dt.locations.map((loc, j) => (
-                                    <span key={j} style={{ fontSize: 11, fontFamily: "'Fira Code', monospace", color: "oklch(0.35 0 0)" }}>
+                                    <span key={j} style={{ fontSize: 11, fontFamily: "var(--font-mono)", color: "var(--fg)" }}>
                                       {loc.file}:{loc.line}
                                     </span>
                                   ))}
@@ -2218,23 +2074,23 @@ export default function App() {
                           const isOpen = expandedPrivacy.has(key);
                           const dtList = (tp.data_types ?? []).filter(d => d !== "Unknown");
                           return (
-                            <div key={key} style={{ borderBottom: i < thirdParty.length - 1 ? "1px solid oklch(0.94 0 0)" : "none" }}>
+                            <div key={key} style={{ borderBottom: i < thirdParty.length - 1 ? "1px solid var(--border)" : "none" }}>
                               <div
                                 onClick={() => toggle(key)}
                                 style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", cursor: "pointer" }}
                               >
                                 <svg width="10" height="10" viewBox="0 0 10 10" style={{ transform: isOpen ? "rotate(90deg)" : "none", transition: "transform 0.15s", flexShrink: 0 }}>
-                                  <path d="M3 1l4 4-4 4" fill="none" stroke="oklch(0.50 0 0)" strokeWidth="1.5" />
+                                  <path d="M3 1l4 4-4 4" fill="none" stroke="var(--muted-fg)" strokeWidth="1.5" />
                                 </svg>
-                                <span style={{ fontWeight: 500, fontSize: 13, color: "oklch(0.18 0 0)" }}>{tp.name}</span>
-                                <span style={{ fontSize: 11, color: "oklch(0.50 0 0)", flex: 1 }}>{dtList.length > 0 ? dtList.join(", ") : "Data types not identified"}</span>
+                                <span style={{ fontWeight: 500, fontSize: 13, color: "var(--fg)" }}>{tp.name}</span>
+                                <span style={{ fontSize: 11, color: "var(--muted-fg)", flex: 1 }}>{dtList.length > 0 ? dtList.join(", ") : "Data types not identified"}</span>
                                 {tp.risk_count > 0 && <span className="dep-sev-badge dep-sev-medium" style={{ fontSize: 10 }}>{tp.risk_count} risk{tp.risk_count !== 1 ? "s" : ""}</span>}
                               </div>
                               {isOpen && (
-                                <div style={{ padding: "0 14px 10px 32px", fontSize: 12, color: "oklch(0.40 0 0)", lineHeight: 1.6 }}>
-                                  <div style={{ fontSize: 10, fontWeight: 500, color: "oklch(0.45 0 0)", letterSpacing: "0.05em", marginBottom: 4 }}>DATA SHARED</div>
+                                <div style={{ padding: "0 14px 10px 32px", fontSize: 12, color: "var(--muted-fg)", lineHeight: 1.6 }}>
+                                  <div style={{ fontSize: 10, fontWeight: 500, color: "var(--muted-fg)", letterSpacing: "0.05em", marginBottom: 4 }}>DATA SHARED</div>
                                   {dtList.length > 0 ? dtList.map(d => <div key={d}>- {d}</div>) : <div>Could not determine specific data types shared with this service.</div>}
-                                  {tp.risk_count > 0 && <div style={{ marginTop: 6, color: "#d97706" }}>{tp.risk_count} privacy rule{tp.risk_count !== 1 ? "s" : ""} flagged for this integration.</div>}
+                                  {tp.risk_count > 0 && <div style={{ marginTop: 6, color: "var(--warning)" }}>{tp.risk_count} privacy rule{tp.risk_count !== 1 ? "s" : ""} flagged for this integration.</div>}
                                 </div>
                               )}
                             </div>
@@ -2252,12 +2108,14 @@ export default function App() {
 
           {/* ── Compliance Lab ── */}
           {view === "compliancelab" && (() => {
-            const isPro = authStatus?.isPro ?? false;
+            // Signing in is the only requirement: a run is billed to an account. Whether
+            // it can be AFFORDED is decided server-side against the token balance,
+            // which returns 402 and pauses the run resumably rather than pre-blocking.
+            const signedIn = authStatus?.loggedIn ?? false;
             const hasData = packages.length > 0;
             const codebaseName = scanPath?.split("/").pop() ?? "Unknown";
             const r = complianceLabResult;
-            const gradeColors: Record<string, string> = { A: "#16a34a", B: "#65a30d", C: "#ca8a04", D: "#ea580c", F: "#dc2626" };
-            const gradeColor = r ? (gradeColors[r.grade] ?? "#6b7280") : "#6b7280";
+            const gradeColorVal = gradeColor(r?.grade);
             const ringC = 2 * Math.PI * 50;
 
             async function runComplianceLab() {
@@ -2265,7 +2123,7 @@ export default function App() {
               setComplianceLabError(null);
               try {
                 const token = await getFreshToken();
-                if (!token) throw new Error("Sign in to use Compliance Lab");
+                if (!token) throw new Error("Sign in to generate a compliance report");
 
                 const copyleft = packages.filter(p => p.license_risk === "copyleft").map(p => ({ name: p.name, version: p.version, license: p.license || "" }));
                 const weakCopyleft = packages.filter(p => p.license_risk === "weak-copyleft").map(p => ({ name: p.name, license: p.license || "" }));
@@ -2285,11 +2143,14 @@ export default function App() {
                   }),
                 });
 
-                if (res.status === 403) throw new Error("Compliance Lab requires a Pro subscription.");
+                if (res.status === 403) throw new Error("Sign in to generate a compliance report. Costs 50 tokens.");
                 if (res.status === 429) throw new Error("Daily limit reached. Try again tomorrow.");
                 if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error((err as { error?: string }).error ?? `Request failed (${res.status})`); }
 
                 setComplianceLabResult(await res.json() as ComplianceLabResult);
+                // This run just spent tokens (or confirmed a cache hit spent none) --
+                // refresh rather than leave the sidebar showing the pre-run balance.
+                void refreshTokenBalance();
               } catch (e) {
                 setComplianceLabError(friendlyError(String(e)));
               } finally {
@@ -2298,17 +2159,18 @@ export default function App() {
             }
 
             return (
-              <div className="content-inner lab-content" style={{ background: "oklch(0.965 0 0)" }}>
+              <div className="content-inner lab-content" style={{ background: "var(--content-bg)" }}>
                 <div className="lab-header-row">
                   <div>
+                    <button className="lab-back" onClick={() => setView("dependencies")}>← Dependencies</button>
                     <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 3 }}>
-                      <span className="lab-title-text">Compliance Lab</span>
-                      <span className="lab-pro-tag">PRO</span>
+                      <span className="lab-title-text">Compliance Report</span>
+                      <span className="lab-pro-tag">50 TOKENS</span>
                     </div>
                     <p className="lab-subtitle">
                       {r && scanPath
-                        ? `Compliance report for ${codebaseName} — licensing, privacy, and data handling assessment.`
-                        : "AI-powered compliance assessment combining license analysis and privacy data flows."}
+                        ? `Compliance assessment for ${codebaseName}: licensing, privacy, and data handling.`
+                        : "AI compliance assessment from your license analysis and privacy data flows."}
                     </p>
                   </div>
                   <div className="lab-header-actions">
@@ -2318,32 +2180,32 @@ export default function App() {
                         Export Report
                       </button>
                     )}
-                    {hasData && isPro && (
+                    {hasData && signedIn && (
                       <button className={`lab-run-primary ${complianceLabRunning ? "lab-btn-loading" : ""}`} onClick={runComplianceLab} disabled={complianceLabRunning}>
-                        {complianceLabRunning ? <><span className="lab-spinner" /> Analysing...</> : r ? "Re-run Analysis" : "Run Compliance Lab"}
+                        {complianceLabRunning ? <><span className="lab-spinner" /> Analysing...</> : r ? "Re-generate" : "Generate report"}
                       </button>
                     )}
                   </div>
                 </div>
 
-                {!isPro && (
+                {!signedIn && (
                   <div className="lab-state-card lab-pro-gate">
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-                    Compliance Lab requires a Pro subscription.
-                    <button className="lab-upgrade-btn" onClick={() => setShowAuthForm(true)}>Upgrade →</button>
+                    Sign in to generate a compliance report. Costs 50 tokens.
+                    <button className="lab-upgrade-btn" onClick={() => setShowAuthForm(true)}>Sign in →</button>
                   </div>
                 )}
 
-                {isPro && !hasData && (
+                {signedIn && !hasData && (
                   <div className="lab-state-card">
                     <p className="lab-no-data" style={{ marginBottom: recent.filter(r => r.cachePath).length > 0 ? 10 : 0 }}>Load scan data to generate a compliance report.</p>
                     {recent.filter(r => r.cachePath && r.type === "sast").length > 0 && (
                       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                        <span style={{ fontSize: 11, color: "oklch(0.45 0 0)", fontWeight: 500 }}>LOAD FROM PREVIOUS SCAN</span>
+                        <span style={{ fontSize: 11, color: "var(--muted-fg)", fontWeight: 500 }}>LOAD FROM PREVIOUS SCAN</span>
                         {recent.filter(r => r.cachePath && r.type === "sast").slice(0, 5).map(r => (
-                          <button key={r.path} onClick={() => loadScanData(r)} style={{ background: "none", border: "1px solid oklch(0.88 0 0)", padding: "6px 10px", cursor: "pointer", fontSize: 12, color: "oklch(0.30 0 0)", textAlign: "left", display: "flex", justifyContent: "space-between" }}>
+                          <button key={r.path} onClick={() => loadScanData(r)} style={{ background: "none", border: "1px solid var(--border)", padding: "6px 10px", cursor: "pointer", fontSize: 12, color: "var(--fg)", textAlign: "left", display: "flex", justifyContent: "space-between" }}>
                             <span>{r.name}</span>
-                            <span style={{ color: "oklch(0.55 0 0)", fontSize: 11 }}>{timeAgo(r.scannedAt)}</span>
+                            <span style={{ color: "var(--muted-fg)", fontSize: 11 }}>{timeAgo(r.scannedAt)}</span>
                           </button>
                         ))}
                       </div>
@@ -2351,9 +2213,9 @@ export default function App() {
                   </div>
                 )}
 
-                {isPro && hasData && !r && !complianceLabRunning && (
+                {signedIn && hasData && !r && !complianceLabRunning && (
                   <div className="lab-state-card">
-                    <p className="lab-no-data">Scan data loaded for <strong>{codebaseName}</strong> ({packages.length} packages). Click "Run Compliance Lab" to generate your AI-powered compliance assessment.</p>
+                    <p className="lab-no-data">Scan data loaded for <strong>{codebaseName}</strong> ({packages.length} packages). Click "Generate report" for your AI compliance assessment.</p>
                   </div>
                 )}
 
@@ -2368,8 +2230,8 @@ export default function App() {
                         <div className="lab-index-card-label">COMPLIANCE SCORE</div>
                         <div className="lab-index-ring-wrap">
                           <svg width="120" height="120" viewBox="0 0 120 120" style={{ transform: "rotate(-90deg)" }}>
-                            <circle cx="60" cy="60" r="50" fill="none" stroke="oklch(0.92 0 0)" strokeWidth="8" />
-                            <circle cx="60" cy="60" r="50" fill="none" stroke={gradeColor} strokeWidth="8" strokeDasharray={`${(ringC * r.score / 100).toFixed(1)} ${ringC.toFixed(1)}`} />
+                            <circle cx="60" cy="60" r="50" fill="none" stroke="var(--border)" strokeWidth="8" />
+                            <circle cx="60" cy="60" r="50" fill="none" stroke={gradeColorVal} strokeWidth="8" strokeDasharray={`${(ringC * r.score / 100).toFixed(1)} ${ringC.toFixed(1)}`} />
                           </svg>
                           <div className="lab-ring-center">
                             <span className="lab-index-num">{r.score}</span>
@@ -2382,7 +2244,7 @@ export default function App() {
                       <div className="lab-grade-card">
                         <div className="lab-index-card-label">GRADE</div>
                         <div className="lab-grade-box">
-                          <span className="lab-grade-letter" style={{ borderColor: gradeColor, color: gradeColor }}>{r.grade}</span>
+                          <span className="lab-grade-letter" style={{ borderColor: gradeColorVal, color: gradeColorVal }}>{r.grade}</span>
                         </div>
                         <div className="lab-index-sub2">
                           {r.grade === "A" ? "excellent" : r.grade === "B" ? "good" : r.grade === "C" ? "fair" : r.grade === "D" ? "needs attention" : "critical"}
@@ -2400,13 +2262,13 @@ export default function App() {
                       <div className="lab-body-left">
                         <div className="lab-card">
                           <div className="lab-card-label">LICENSE ASSESSMENT</div>
-                          <p style={{ fontSize: 12.5, color: "oklch(0.25 0 0)", lineHeight: 1.65, margin: 0 }}>{r.license_verdict}</p>
+                          <p style={{ fontSize: 12.5, color: "var(--fg)", lineHeight: 1.65, margin: 0 }}>{r.license_verdict}</p>
                         </div>
                       </div>
                       <div className="lab-body-right">
                         <div className="lab-card">
                           <div className="lab-card-label">PRIVACY & DATA HANDLING</div>
-                          <p style={{ fontSize: 12.5, color: "oklch(0.25 0 0)", lineHeight: 1.65, margin: 0 }}>{r.privacy_verdict}</p>
+                          <p style={{ fontSize: 12.5, color: "var(--fg)", lineHeight: 1.65, margin: 0 }}>{r.privacy_verdict}</p>
                         </div>
                       </div>
                     </div>
@@ -2417,9 +2279,9 @@ export default function App() {
                         <div className="corner-marks"><i className="corner-mark cm-tl">+</i><i className="corner-mark cm-tr">+</i><i className="corner-mark cm-bl">+</i><i className="corner-mark cm-br">+</i></div>
                         <div className="lab-card-label">RECOMMENDATIONS</div>
                         {r.recommendations.map((rec, i) => (
-                          <div key={i} className="lab-fix-v2" style={{ borderBottom: i < r.recommendations.length - 1 ? "1px solid oklch(0.94 0 0)" : "none" }}>
+                          <div key={i} className="lab-fix-v2" style={{ borderBottom: i < r.recommendations.length - 1 ? "1px solid var(--border)" : "none" }}>
                             <span className="lab-fix-rank">{i + 1}</span>
-                            <p style={{ fontSize: 12.5, color: "oklch(0.25 0 0)", lineHeight: 1.55, margin: 0, flex: 1 }}>{rec}</p>
+                            <p style={{ fontSize: 12.5, color: "var(--fg)", lineHeight: 1.55, margin: 0, flex: 1 }}>{rec}</p>
                           </div>
                         ))}
                       </div>
@@ -2844,21 +2706,8 @@ export default function App() {
           {/* ── History ── */}
           {view === "history" && (
             <div className="content-inner">
-              <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between" }}>
-                <div className="view-header">
-                  <h2 className="view-title">Scan History</h2>
-                  <p className="view-desc">
-                    {recent.length > 0
-                      ? `${recent.length} scan${recent.length !== 1 ? "s" : ""} — cached results re-open instantly.`
-                      : "No scans yet."}
-                  </p>
-                </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                  {recent.length > 0 && (
-                    <button className="history-clear-all-btn" onClick={clearAllRecent}>
-                      Clear all
-                    </button>
-                  )}
+              <div className="page-header">
+                <div className="page-header-row">
                   <div className="history-filter-tabs">
                     {(["all", "sast", "dast"] as const).map(f => (
                       <button
@@ -2870,7 +2719,19 @@ export default function App() {
                       </button>
                     ))}
                   </div>
+                  {recent.length > 0 && (
+                    <button className="history-clear-all-btn" onClick={clearAllRecent}>
+                      Clear all
+                    </button>
+                  )}
                 </div>
+                <span className="page-header-eyebrow">GENERAL</span>
+                <h1 className="page-header-title">Scan History</h1>
+                <p className="page-header-desc">
+                  {recent.length > 0
+                    ? `${recent.length} scan${recent.length !== 1 ? "s" : ""}, cached results re-open instantly.`
+                    : "Every scan you've run, cached and ready to reopen without rescanning."}
+                </p>
               </div>
 
               {(() => {
@@ -2921,12 +2782,21 @@ export default function App() {
           {/* ── Dependencies ── */}
           {view === "dependencies" && (
             <div className="content-inner">
-              <div className="view-header">
-                <h2 className="view-title">Dependencies</h2>
-                <p className="view-desc">
+              <div className="page-header">
+                {packages.length > 0 && (
+                  <div className="page-header-row">
+                    <button className="report-cta" onClick={() => setView("compliancelab")} title="Generate an AI compliance report from your dependencies">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M9 15l2 2 4-4"/></svg>
+                      Generate Compliance Report
+                    </button>
+                  </div>
+                )}
+                <span className="page-header-eyebrow">SECURITY</span>
+                <h1 className="page-header-title">Dependencies</h1>
+                <p className="page-header-desc">
                   {packages.length > 0
-                    ? `${packages.length} packages · ${packages.filter(p => p.cve_count > 0).length} with known CVEs.`
-                    : "Run a scan first to see your dependency health."}
+                    ? `${packages.length} packages, ${packages.filter(p => p.cve_count > 0).length} with known CVEs.`
+                    : "Every package in your project, its known CVEs, and the safe version to upgrade to."}
                 </p>
               </div>
 
@@ -3116,14 +2986,19 @@ export default function App() {
 
           {/* ── Threat Lab ── */}
           {view === "threatlab" && (() => {
-            const isPro = authStatus?.isPro ?? false;
+            // Signing in is the only requirement: a run is billed to an account. Whether
+            // it can be AFFORDED is decided server-side against the token balance,
+            // which returns 402 and pauses the run resumably rather than pre-blocking.
+            const signedIn = authStatus?.loggedIn ?? false;
             const hasData = currentServerUrl != null;
             const r = threatLabResult;
-            const gradeColors: Record<string, string> = { A:"#16a34a", B:"#65a30d", C:"#d97706", D:"#ea580c", F:"#dc2626" };
-            const gradeColorVal = r ? (gradeColors[r.grade] ?? "#4ade80") : "#4ade80";
-            // Ring: r=50, circumference=314.16
+            const gradeColorVal = gradeColor(r?.grade);
+            // Ring: r=50, circumference=314.16. Score is flipped to "higher = better"
+            // (a Security Score) so it reads intuitively and matches the A-F grade
+            // and the Compliance Report. The edge fn still returns a threat_index.
             const ringC = 2 * Math.PI * 50;
-            const ringDash = r ? `${(ringC * r.threat_index / 100).toFixed(1)} ${ringC.toFixed(1)}` : `0 ${ringC.toFixed(1)}`;
+            const securityScore = r ? Math.max(0, Math.min(100, 100 - r.threat_index)) : 0;
+            const ringDash = r ? `${(ringC * securityScore / 100).toFixed(1)} ${ringC.toFixed(1)}` : `0 ${ringC.toFixed(1)}`;
 
             return (
               <div className="lab-content lab-print-area">
@@ -3131,14 +3006,15 @@ export default function App() {
                 {/* ── Header row ── */}
                 <div className="lab-header-row">
                   <div>
+                    <button className="lab-back" onClick={() => setView("sast")}>← Static Analysis</button>
                     <div className="lab-title-row">
-                      <span className="lab-title-text">Threat Lab</span>
-                      <span className="lab-pro-tag">PRO</span>
+                      <span className="lab-title-text">Security Report</span>
+                      <span className="lab-pro-tag">100 TOKENS</span>
                     </div>
                     <p className="lab-subtitle">
                       {r && scanPath
-                        ? `AI attack-surface analysis of ${scanPath.split("/").pop()} — SAST and dependency data combined.`
-                        : "AI-powered attack surface analysis combining SAST + dependency data."}
+                        ? `AI security assessment of ${scanPath.split("/").pop()}, from your SAST and dependency findings.`
+                        : "AI security assessment from your SAST and dependency findings."}
                     </p>
                   </div>
                   <div className="lab-header-actions">
@@ -3154,13 +3030,13 @@ export default function App() {
                         </button>
                       </>
                     )}
-                    {hasData && isPro && (
+                    {hasData && signedIn && (
                       <button
                         className={`lab-run-primary ${isLabRunning ? "lab-btn-loading" : ""}`}
                         onClick={runThreatLab}
                         disabled={isLabRunning}
                       >
-                        {isLabRunning ? <><span className="lab-spinner" /> Analysing…</> : r ? "Re-run Analysis" : "Run Threat Lab"}
+                        {isLabRunning ? <><span className="lab-spinner" /> Analysing…</> : r ? "Re-generate" : "Generate report"}
                       </button>
                     )}
                   </div>
@@ -3172,14 +3048,14 @@ export default function App() {
                     <p className="lab-no-data">Run a scan first from Static Analysis or Dependencies — then come back here.</p>
                   </div>
                 )}
-                {hasData && !isPro && (
+                {hasData && !signedIn && (
                   <div className="lab-state-card lab-pro-gate">
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-                    Threat Lab requires a Pro subscription.
-                    <button className="lab-upgrade-btn" onClick={() => setShowAuthForm(true)}>Upgrade →</button>
+                    Sign in to generate a security report. Costs 100 tokens.
+                    <button className="lab-upgrade-btn" onClick={() => setShowAuthForm(true)}>Sign in →</button>
                   </div>
                 )}
-                {hasData && isPro && !r && !isLabRunning && (
+                {hasData && signedIn && !r && !isLabRunning && (
                   <div className="lab-state-card">
                     <p className="lab-no-data">Analyzes your last scan — manual trigger only, results cached 6 hours.</p>
                   </div>
@@ -3198,18 +3074,18 @@ export default function App() {
                           <i className="corner-mark cm-tl">+</i><i className="corner-mark cm-tr">+</i>
                           <i className="corner-mark cm-bl">+</i><i className="corner-mark cm-br">+</i>
                         </div>
-                        <div className="lab-index-card-label">THREAT INDEX</div>
+                        <div className="lab-index-card-label">SECURITY SCORE</div>
                         <div className="lab-index-ring-wrap">
                           <svg width="120" height="120" viewBox="0 0 120 120" style={{ transform: "rotate(-90deg)" }}>
-                            <circle cx="60" cy="60" r="50" fill="none" stroke="oklch(0.92 0 0)" strokeWidth="8" />
+                            <circle cx="60" cy="60" r="50" fill="none" stroke="var(--border)" strokeWidth="8" />
                             <circle cx="60" cy="60" r="50" fill="none" stroke={gradeColorVal} strokeWidth="8" strokeDasharray={ringDash} />
                           </svg>
                           <div className="lab-ring-center">
-                            <span className="lab-index-num">{r.threat_index}</span>
+                            <span className="lab-index-num">{securityScore}</span>
                             <span className="lab-ring-denom">/100</span>
                           </div>
                         </div>
-                        <div className="lab-index-sub2">higher = more exposed</div>
+                        <div className="lab-index-sub2">higher = more secure</div>
                       </div>
 
                       {/* Grade */}
@@ -3242,7 +3118,7 @@ export default function App() {
                           {r.key_risks.map((risk, i) => (
                             <div key={i} className="lab-risk-item">
                               <span className="lab-risk-sq" style={{
-                                background: i <= 1 ? "#dc2626" : i === 2 ? "#ea580c" : "#d97706"
+                                background: i <= 1 ? "var(--destructive)" : "var(--warning)"
                               }} />
                               {risk}
                             </div>
@@ -3322,11 +3198,12 @@ export default function App() {
               { key: "codex_cli",   label: "Codex CLI",   logo: "/openai-logo.webp", desc: "OpenAI's terminal agent" },
             ];
             const anyConfigured = editors.some(e => mcpStatus[e.key]?.configured);
-            const detectedEditors = editors.filter(e => mcpStatus[e.key]?.installed);
             const connectedCount = editors.filter(e => mcpStatus[e.key]?.configured).length;
 
-            const sastScans = recent.filter(r => r.type === "sast" && r.cachePath);
-            const selectedScan = sastScans[fixScanIdx] ?? null;
+            // Both SAST and pen-test (DAST) scans are MCP-readable, so the editor
+            // can pull findings from either — list both here.
+            const fixScans = recent.filter(r => r.cachePath);
+            const selectedScan = fixScans[fixScanIdx] ?? null;
 
             return (
               <div className="autofix-page">
@@ -3334,82 +3211,35 @@ export default function App() {
                 <div className="autofix-inner">
 
                   {/* Row 1: header + status badge */}
-                  <div className="overview-header">
-                    <div>
-                      <h2 className="overview-greeting">Fix with AI</h2>
-                      <p className="overview-meta">
-                        Connect your AI editor to auto-fix vulnerabilities via MCP — your code never leaves your machine.
-                      </p>
-                    </div>
-                    <div className="overview-status-badge">
-                      <span className={`status-dot ${anyConfigured ? "status-dot-ok" : "status-dot-warn"}`} />
-                      {anyConfigured ? `${connectedCount} CONNECTED` : "NOT CONFIGURED"}
-                    </div>
-                  </div>
-
-                  {/* Row 2: editor cards (3-col grid like station cards) */}
-                  <div className="autofix-editors-row">
-                    {editors.map(e => {
-                      const s = mcpStatus[e.key];
-                      return (
-                        <div key={e.key} className={`autofix-editor-card ${s?.configured ? "configured" : ""} ${!s?.installed ? "not-installed" : ""}`}>
-                          <CM />
-                          <div className="autofix-editor-logo-wrap">
-                            <img src={e.logo} alt={e.label} className="autofix-editor-logo" />
-                          </div>
-                          <div className="autofix-editor-info">
-                            <span className="autofix-editor-name">{e.label}</span>
-                            <span className="autofix-editor-desc">{e.desc}</span>
-                          </div>
-                          <div className="autofix-editor-status">
-                            {s?.configured && <><span className="autofix-editor-dot dot-ok" /><span className="autofix-badge">Connected</span></>}
-                            {s?.installed && !s?.configured && <><span className="autofix-editor-dot dot-pending" /><span className="autofix-badge pending">Not configured</span></>}
-                            {!s?.installed && <><span className="autofix-editor-dot dot-none" /><span className="autofix-badge none">Not detected</span></>}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  {/* Row 3: connect button + scan selector side by side */}
-                  <div className="autofix-action-row">
-                    {/* Left: connect / configure */}
-                    <div className="autofix-connect-card">
-                      <CM />
-                      <div className="autofix-connect-card-code">MCP INTEGRATION</div>
-                      <div className="autofix-connect-card-title">
-                        {anyConfigured ? "Editors connected" : "Connect your editors"}
+                  <div className="page-header">
+                    <span className="page-header-eyebrow">GENERAL</span>
+                    <h1 className="page-header-title">Fix with AI</h1>
+                    <p className="page-header-desc">
+                      Connect your editor so Trojan can hand off findings as ready-to-run fix prompts, all local via MCP.
+                    </p>
+                    <div className="page-header-actions">
+                      <div className="overview-status-badge">
+                        <span className={`status-dot ${anyConfigured ? "status-dot-ok" : "status-dot-warn"}`} />
+                        {anyConfigured ? `${connectedCount} CONNECTED` : "NOT CONFIGURED"}
                       </div>
-                      <p className="autofix-connect-card-desc">
-                        Trojan uses the Model Context Protocol to give your AI tool direct access to scan findings, code context, and fix suggestions.
-                      </p>
-                      <button
-                        className="autofix-connect-btn"
-                        onClick={handleSetupMcp}
-                        disabled={mcpSetupBusy || detectedEditors.length === 0}
-                      >
-                        {mcpSetupBusy
-                          ? "Configuring…"
-                          : anyConfigured
-                            ? "Reconfigure"
-                            : detectedEditors.length > 0
-                              ? "Connect editors"
-                              : "No editors detected"
-                        }
-                      </button>
                     </div>
+                  </div>
 
-                    {/* Right: scan selector */}
+                  {/* Immersive MCP connection diagram */}
+                  <McpConnect editors={editors} mcpStatus={mcpStatus} onConnect={handleSetupMcp} busy={mcpSetupBusy} />
+
+                  {/* Scan selector */}
+                  <div className="autofix-action-row">
                     <div className="autofix-scan-card">
                       <CM />
                       <div className="autofix-connect-card-code">SELECT SCAN</div>
                       <div className="autofix-connect-card-title">Target project</div>
                       {(() => {
                         const PER_PAGE = 5;
-                        const totalPages = Math.ceil(sastScans.length / PER_PAGE);
-                        const pageScans = sastScans.slice(fixScanPage * PER_PAGE, (fixScanPage + 1) * PER_PAGE);
+                        const totalPages = Math.ceil(fixScans.length / PER_PAGE);
+                        const pageScans = fixScans.slice(fixScanPage * PER_PAGE, (fixScanPage + 1) * PER_PAGE);
 
-                        if (sastScans.length === 0) return (
+                        if (fixScans.length === 0) return (
                           <div className="autofix-empty">
                             <p>No scans yet</p>
                             <button className="autofix-action-btn" onClick={handlePickFolder}>Run a scan</button>
@@ -3427,6 +3257,7 @@ export default function App() {
                                     className={`autofix-scan-item ${globalIdx === fixScanIdx ? "active" : ""}`}
                                     onClick={() => setFixScanIdx(globalIdx)}
                                   >
+                                    <span className={`autofix-scan-typebadge ${s.type === "sast" ? "sast" : "dast"}`}>{s.type === "sast" ? "SAST" : "PEN TEST"}</span>
                                     <span className="autofix-scan-name">{s.name}</span>
                                     <span className="autofix-scan-time">{timeAgo(s.scannedAt)}</span>
                                   </button>
@@ -3506,7 +3337,7 @@ export default function App() {
                         </div>
                       </div>
                       <p className="autofix-prompts-hint">
-                        Open your editor in{selectedScan ? ` ${selectedScan.path}` : " the project directory"} and paste any prompt above.
+                        Open your editor in{selectedScan && selectedScan.type === "sast" ? ` ${selectedScan.path}` : " the project directory"} and paste any prompt above.
                       </p>
                     </div>
                   </div>
@@ -3626,7 +3457,7 @@ export default function App() {
                           setProfileJustSaved(false);
                         }}
                       />
-                      <span className="profile-hint">This context is used across all Trojan AI features — findings explanations, Threat Lab reports, remediation advice, and more.</span>
+                      <span className="profile-hint">This context is used across all Trojan AI features — findings explanations, security reports, remediation advice, and more.</span>
                     </div>
                   </div>
 
@@ -3653,7 +3484,7 @@ export default function App() {
                                 style={{
                                   width:      i === fam ? 16 : 12,
                                   height:     i === fam ? 16 : 12,
-                                  background: i <= fam ? "#7c3aed" : "#c9c9cf",
+                                  background: i <= fam ? "var(--primary)" : "var(--border)",
                                   boxShadow:  i === fam ? "0 0 0 4px rgba(124,58,237,0.16)" : "none",
                                 }}
                               />
@@ -3666,7 +3497,7 @@ export default function App() {
                               key={i}
                               className="profile-fam-label"
                               style={{
-                                color:      i === fam ? "#6d28d9" : "oklch(0.5 0 0)",
+                                color:      i === fam ? "var(--accent-deep)" : "var(--muted-fg)",
                                 fontWeight: i === fam ? 600 : 400,
                                 textAlign:  i === 0 ? "left" : i === 1 ? "center" : "right",
                                 cursor: "pointer",
@@ -3771,6 +3602,29 @@ export default function App() {
               </button>
             </div>
             <AuthForm onAuth={(token, name, email, refreshToken) => handleAuthPayload(token, name, email, refreshToken)} />
+          </div>
+        </div>
+      )}
+
+      {/* ── Feedback modal ── */}
+      {showFeedback && (
+        <div className="auth-overlay" onClick={() => setShowFeedback(false)}>
+          <div className="auth-modal" onClick={(e) => e.stopPropagation()}>
+            <CM />
+            <div className="auth-modal-header">
+              <h2 className="auth-modal-title">Send feedback</h2>
+              <button className="auth-modal-close" onClick={() => setShowFeedback(false)} title="Close">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                  <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                </svg>
+              </button>
+            </div>
+            <FeedbackForm
+              getToken={getFreshToken}
+              appVersion={APP_VERSION}
+              view={view}
+              onSent={() => setShowFeedback(false)}
+            />
           </div>
         </div>
       )}

@@ -9,6 +9,7 @@
 
 import { createPortal } from "react-dom";
 import { QRCodeSVG } from "qrcode.react";
+import { gradeColor } from "./lib/reportColors";
 
 interface ComplianceLabResult {
   grade: "A" | "B" | "C" | "D" | "F";
@@ -32,16 +33,12 @@ interface PrintComplianceReportProps {
   packages: PkgInfo[];
 }
 
-const GRADE_COLOR: Record<string, string> = {
-  A: "#16a34a", B: "#65a30d", C: "#ca8a04", D: "#ea580c", F: "#dc2626",
-};
-
 export function PrintComplianceReport({ projectPath, result, packages }: PrintComplianceReportProps) {
   if (!result) return null;
 
   const projectName = projectPath.split("/").pop() || projectPath || "Unknown Project";
   const scanDate = new Date().toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit" });
-  const gradeColor = GRADE_COLOR[result.grade] ?? "#6b7280";
+  const gradeColorValue = gradeColor(result.grade);
 
   const copyleft = packages.filter(p => p.license_risk === "copyleft");
   const weakCopyleft = packages.filter(p => p.license_risk === "weak-copyleft");
@@ -85,11 +82,11 @@ export function PrintComplianceReport({ projectPath, result, packages }: PrintCo
       {/* Grade + Summary */}
       <div className="cert-grade-row">
         <div className="cert-grade-box">
-          <div className="cert-grade-letter" style={{ color: gradeColor }}>{result.grade}</div>
+          <div className="cert-grade-letter" style={{ color: gradeColorValue }}>{result.grade}</div>
           <div className="cert-grade-label">Compliance Grade</div>
         </div>
         <div className="cert-index-box">
-          <div className="cert-index-num" style={{ color: gradeColor }}>{result.score}</div>
+          <div className="cert-index-num" style={{ color: gradeColorValue }}>{result.score}</div>
           <div className="cert-grade-label">Score (0–100)</div>
         </div>
         <div className="cert-verdict-box">
@@ -111,15 +108,15 @@ export function PrintComplianceReport({ projectPath, result, packages }: PrintCo
             <tbody>
               <tr><td>Permissive (MIT, BSD, Apache)</td><td><strong>{permissive.length}</strong></td></tr>
               <tr><td>Weak Copyleft (LGPL, MPL)</td><td><strong>{weakCopyleft.length}</strong></td></tr>
-              <tr><td style={{ color: copyleft.length > 0 ? "#dc2626" : "inherit" }}>Copyleft (GPL, AGPL)</td><td><strong style={{ color: copyleft.length > 0 ? "#dc2626" : "inherit" }}>{copyleft.length}</strong></td></tr>
-              <tr><td style={{ color: unknown.length > 0 ? "#d97706" : "inherit" }}>Unknown / No License</td><td><strong style={{ color: unknown.length > 0 ? "#d97706" : "inherit" }}>{unknown.length}</strong></td></tr>
+              <tr><td style={{ color: copyleft.length > 0 ? "var(--destructive)" : "inherit" }}>Copyleft (GPL, AGPL)</td><td><strong style={{ color: copyleft.length > 0 ? "var(--destructive)" : "inherit" }}>{copyleft.length}</strong></td></tr>
+              <tr><td style={{ color: unknown.length > 0 ? "var(--warning)" : "inherit" }}>Unknown / No License</td><td><strong style={{ color: unknown.length > 0 ? "var(--warning)" : "inherit" }}>{unknown.length}</strong></td></tr>
               <tr className="cert-table-total"><td>Total Packages</td><td><strong>{packages.length}</strong></td></tr>
             </tbody>
           </table>
         </div>
         {copyleft.length > 0 && (
           <div>
-            <div className="cert-section-title" style={{ color: "#dc2626" }}>Copyleft Packages Requiring Review</div>
+            <div className="cert-section-title" style={{ color: "var(--destructive)" }}>Copyleft Packages Requiring Review</div>
             <ul className="cert-risk-list">
               {copyleft.slice(0, 10).map((p, i) => (
                 <li key={i}><strong>{p.name}</strong> ({p.license})</li>
@@ -162,7 +159,7 @@ export function PrintComplianceReport({ projectPath, result, packages }: PrintCo
           </div>
         </div>
         <div className="cert-footer-qr">
-          <QRCodeSVG value="https://trojancli.com" size={72} fgColor="#0a0a0a" bgColor="#ffffff" level="M" />
+          <QRCodeSVG value="https://trojancli.com" size={72} fgColor="#17171a" bgColor="#ffffff" level="M" />
           <div className="cert-qr-label">trojancli.com</div>
         </div>
       </div>

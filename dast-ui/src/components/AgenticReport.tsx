@@ -41,7 +41,7 @@ export function AgenticReport() {
   return (
     <div className="min-h-screen bg-background text-foreground">
       <header className="border-b border-border">
-        <div className="max-w-3xl mx-auto px-8 py-5 flex items-center gap-2">
+        <div className={`${view === 'run' ? 'max-w-6xl' : 'max-w-3xl'} mx-auto px-8 py-5 flex items-center gap-2`}>
           <img src="/logo.png" alt="Trojan" className="h-14 w-auto" />
           <span className="text-xs font-medium uppercase tracking-widest text-muted-foreground border border-border rounded px-1.5 py-0.5">
             PEN TEST
@@ -49,7 +49,7 @@ export function AgenticReport() {
         </div>
       </header>
 
-      <main className="max-w-3xl mx-auto px-8 py-12">
+      <main className={`${view === 'run' ? 'max-w-6xl' : 'max-w-3xl'} mx-auto px-8 py-12`}>
         {view === 'run' ? (
           <LiveRunView
             targetUrl={targetUrl}

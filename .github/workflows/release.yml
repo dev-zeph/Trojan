@@ -70,7 +70,7 @@ jobs:
           FORMULA=$(cat <<EOF
           class Trojan < Formula
             desc "Developer-first security CLI. Catch vulnerabilities before they ship."
-            homepage "https://trojan.dev"
+            homepage "https://trojancli.com"
             version "${VERSION}"
             license "BUSL-1.1"
 

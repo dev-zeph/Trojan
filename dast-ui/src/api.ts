@@ -37,13 +37,87 @@ export async function getAuthStatus(): Promise<AuthStatus> {
 
 export type RunStatus = 'idle' | 'running' | 'complete' | 'error'
 
+// Attack-graph wire types — mirror internal/dast/agent (§9.3).
+export type NodeStatus = 'untested' | 'testing' | 'safe' | 'vulnerable' | 'chained'
+export type NodeType = 'endpoint' | 'finding' | 'credential' | 'data'
+export type EdgeKind = 'chain' | 'dataflow' | 'trust'
+
+export interface HandlerRef {
+  file: string
+  line: number
+  symbol?: string
+}
+
+export interface GraphNode {
+  id: string
+  type: NodeType
+  label: string
+  method?: string
+  status: NodeStatus
+  severity?: string
+  attack?: string
+  handler?: HandlerRef
+  evidence?: string
+}
+
+export interface GraphEdge {
+  from: string
+  to: string
+  kind: EdgeKind
+  confirmed: boolean
+  rationale?: string
+}
+
+// GreyBoxSummary is the structural read of a handler, rendered as chips (§6.6).
+export interface GreyBoxSummary {
+  has_auth_check: boolean
+  sanitizes_input: boolean
+  raw_query: boolean
+  reflects_input: boolean
+}
+
+// PendingApproval mirrors agent.PendingAction — a state-changing action gated for
+// operator review (§8). Carries everything the approval card needs to show.
+export interface PendingApproval {
+  id: number
+  tool: string
+  method: string
+  url: string
+  body?: string
+  identity?: string
+  reason: string
+  step?: number
+}
+
 // AgentEvent mirrors internal/server.AgentEvent — one streamed run action.
 export interface AgentEvent {
-  type: 'step' | 'text' | 'tool_use' | 'tool_result' | 'finding' | 'stopped' | 'finish' | 'run'
+  type: 'step' | 'text' | 'tool_use' | 'tool_result' | 'finding' | 'graph' | 'stopped' | 'finish' | 'run'
+    | 'approval_request' | 'approval_resolved'
   step?: number
   tool?: string
   detail?: string
   status?: RunStatus
+  // Structured payload for the two-surface UI (§9); set by type.
+  node?: GraphNode
+  edge?: GraphEdge
+  source?: HandlerRef
+  summary?: GreyBoxSummary
+  mode?: string
+  // §8 human-in-the-loop: the gated action (approval_request) / resolved one
+  // (approval_resolved, with `approved` = the decision).
+  approval?: PendingApproval
+  approved?: boolean
+}
+
+// decideApproval sends an operator's §8 decision to the reverse channel. The run
+// loop executes the vetted action (approve) or skips it (deny) and reports back.
+export async function decideApproval(id: number, approve: boolean, note?: string): Promise<void> {
+  const res = await fetch(`${BASE}/dast/approval`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id, approve, note: note ?? '' }),
+  })
+  if (!res.ok) throw new Error((await safeError(res)) ?? 'could not send decision')
 }
 
 export interface AgenticStatus {

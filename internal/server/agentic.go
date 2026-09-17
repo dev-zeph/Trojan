@@ -8,6 +8,7 @@ import (
 
 	"github.com/dev-zeph/trojan/internal/config"
 	"github.com/dev-zeph/trojan/internal/dast"
+	"github.com/dev-zeph/trojan/internal/dast/agent"
 )
 
 // Agentic-DAST server surface (Phase 5 §10). Two concerns live here:
@@ -26,11 +27,24 @@ const agenticBufferCap = 2000 // cap the replay buffer so a long run can't grow 
 // AgentEvent is the wire form of one live run event streamed to the UI. It
 // mirrors agent.Event plus a run-lifecycle Status for "run" events.
 type AgentEvent struct {
-	Type   string `json:"type"`             // step|text|tool_use|tool_result|finding|stopped|finish|run
+	Type   string `json:"type"` // step|text|tool_use|tool_result|finding|graph|stopped|finish|run
 	Step   int    `json:"step,omitempty"`
 	Tool   string `json:"tool,omitempty"`
 	Detail string `json:"detail,omitempty"`
 	Status string `json:"status,omitempty"` // for Type=="run": running|complete|error
+
+	// Structured payload for the two-surface UI (§9): graph deltas, grey-box
+	// handler + chips. Optional; set by type. Reuses the agent wire types.
+	Node    *agent.GraphNode      `json:"node,omitempty"`
+	Edge    *agent.GraphEdge      `json:"edge,omitempty"`
+	Source  *agent.HandlerRef     `json:"source,omitempty"`
+	Summary *agent.GreyBoxSummary `json:"summary,omitempty"`
+	Mode    string                `json:"mode,omitempty"`
+
+	// §8 human-in-the-loop: the gated action (approval_request) or the resolved
+	// decision (approval_resolved). The run view renders the card from Approval.
+	Approval *agent.PendingAction `json:"approval,omitempty"`
+	Approved bool                 `json:"approved,omitempty"`
 }
 
 // ── Live run stream ──────────────────────────────────────────────────────────
@@ -136,6 +150,48 @@ func (s *Server) ResetAgenticRun() {
 	s.agenticMu.Unlock()
 }
 
+// SetApprovalSink installs (or clears, with nil) the callback that delivers an
+// operator's §8 approval decision to the running agent loop. The CLI sets it for
+// the duration of an approval-gated run and clears it when the run ends.
+func (s *Server) SetApprovalSink(decide func(id int, approve bool, note string)) {
+	s.agenticMu.Lock()
+	s.approvalDecider = decide
+	s.agenticMu.Unlock()
+}
+
+// handleApproval is the reverse channel (§8): the run view POSTs an operator's
+// decision here and it is routed to the pending-approvals queue in the loop. The
+// pending list itself is not served separately — the run view derives it by
+// folding the replayed approval_request / approval_resolved events from the SSE
+// stream.
+func (s *Server) handleApproval(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed"})
+		return
+	}
+	if _, ok := requireLogin(w); !ok {
+		return
+	}
+	var body struct {
+		ID      int    `json:"id"`
+		Approve bool   `json:"approve"`
+		Note    string `json:"note"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.ID == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id required"})
+		return
+	}
+	s.agenticMu.Lock()
+	decide := s.approvalDecider
+	s.agenticMu.Unlock()
+	if decide == nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "no active approval run"})
+		return
+	}
+	decide(body.ID, body.Approve, body.Note)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
 // ── Consent gate ─────────────────────────────────────────────────────────────
 
 // currentUser returns the logged-in user's email and Pro status from local
@@ -148,16 +204,18 @@ func currentUser() (email string, isPro, ok bool) {
 	return cfg.UserEmail, cfg.IsPro, true
 }
 
-// requirePro writes a 401/403 and returns ("", false) if the caller isn't a
-// logged-in Pro user; otherwise returns (email, true).
-func requirePro(w http.ResponseWriter) (string, bool) {
-	email, isPro, ok := currentUser()
+// requireLogin writes a 401 and returns ("", false) if the caller isn't signed
+// in; otherwise returns (email, true).
+//
+// Deliberately NOT a paid-tier check. Domain-ownership consent and HITL
+// approval both run locally and spend no tokens, so gating them behind a
+// subscription only blocked people from work that costs us nothing. An account
+// is still required, because a consent record is an attestation tied to an
+// identity. Anything that does spend tokens is metered server-side by balance.
+func requireLogin(w http.ResponseWriter) (string, bool) {
+	email, _, ok := currentUser()
 	if !ok {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "not_logged_in"})
-		return "", false
-	}
-	if !isPro {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "pro_required"})
 		return "", false
 	}
 	return email, true
@@ -168,7 +226,7 @@ func (s *Server) handleConsentStatus(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed"})
 		return
 	}
-	email, ok := requirePro(w)
+	email, ok := requireLogin(w)
 	if !ok {
 		return
 	}
@@ -200,7 +258,7 @@ func (s *Server) handleConsentMint(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed"})
 		return
 	}
-	email, ok := requirePro(w)
+	email, ok := requireLogin(w)
 	if !ok {
 		return
 	}
@@ -232,7 +290,7 @@ func (s *Server) handleConsentVerify(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed"})
 		return
 	}
-	email, ok := requirePro(w)
+	email, ok := requireLogin(w)
 	if !ok {
 		return
 	}

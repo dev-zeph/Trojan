@@ -1,6 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import { agenticEventsURL, getAgenticStatus } from '@/api'
-import type { AgentEvent, RunStatus } from '@/api'
+import type { AgentEvent, GraphEdge, GraphNode, PendingApproval, RunStatus } from '@/api'
+
+// GraphState is the folded attack graph — nodes keyed by id, insertion order
+// preserved for a stable layout, plus edges (§9.3).
+export interface GraphState {
+  nodes: Record<string, GraphNode>
+  order: string[]
+  edges: GraphEdge[]
+}
 
 export interface RunState {
   status: RunStatus
@@ -12,6 +20,8 @@ export interface RunState {
   summary: string   // finish summary
   stopReason: string
   errorDetail: string
+  graph: GraphState
+  pendingApprovals: PendingApproval[] // §8 actions awaiting an operator decision
 }
 
 const initial: RunState = {
@@ -24,6 +34,8 @@ const initial: RunState = {
   summary: '',
   stopReason: '',
   errorDetail: '',
+  graph: { nodes: {}, order: [], edges: [] },
+  pendingApprovals: [],
 }
 
 // useAgenticRun subscribes to the live run SSE stream and folds events into a
@@ -90,12 +102,59 @@ function fold(prev: RunState, evt: AgentEvent): RunState {
     case 'finding':
       next.findings += 1
       break
+    case 'graph':
+      next.graph = foldGraph(prev.graph, evt)
+      break
     case 'stopped':
       next.stopReason = evt.detail ?? ''
       break
     case 'finish':
       if (evt.detail) next.summary = evt.detail
       break
+    case 'approval_request':
+      // Queue the gated action if we haven't already (replayed streams can
+      // repeat it). Resolution removes it below.
+      if (evt.approval && !prev.pendingApprovals.some(a => a.id === evt.approval!.id)) {
+        next.pendingApprovals = [...prev.pendingApprovals, evt.approval]
+      }
+      break
+    case 'approval_resolved':
+      if (evt.approval) {
+        next.pendingApprovals = prev.pendingApprovals.filter(a => a.id !== evt.approval!.id)
+      }
+      break
   }
   return next
+}
+
+// foldGraph applies one graph delta (node upsert or edge add) immutably.
+function foldGraph(prev: GraphState, evt: AgentEvent): GraphState {
+  if (evt.node) {
+    const n = evt.node
+    const known = n.id in prev.nodes
+    return {
+      nodes: { ...prev.nodes, [n.id]: n },
+      order: known ? prev.order : [...prev.order, n.id],
+      edges: prev.edges,
+    }
+  }
+  if (evt.edge) {
+    const e = evt.edge
+    const dup = prev.edges.some(x => x.from === e.from && x.to === e.to && x.kind === e.kind)
+    return dup ? prev : { ...prev, edges: [...prev.edges, e] }
+  }
+  return prev
+}
+
+// graphCounts derives coverage figures from the folded graph.
+export function graphCounts(g: GraphState): { endpoints: number; tested: number; vulnerable: number } {
+  let endpoints = 0, tested = 0, vulnerable = 0
+  for (const id of g.order) {
+    const n = g.nodes[id]
+    if (n.type !== 'endpoint') continue
+    endpoints++
+    if (n.status !== 'untested') tested++
+    if (n.status === 'vulnerable' || n.status === 'chained') vulnerable++
+  }
+  return { endpoints, tested, vulnerable }
 }

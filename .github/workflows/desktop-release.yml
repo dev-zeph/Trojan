@@ -85,15 +85,124 @@ jobs:
         with:
           workspaces: desktop/src-tauri -> target
 
+      # Entitlements are parsed by AMFI, which is much stricter than plutil --
+      # plutil -lint happily accepts XML comments that AMFI rejects, and the
+      # failure only surfaces at the codesign step AFTER a four-minute Rust
+      # build. desktop-v0.3.0 was lost to exactly that.
+      #
+      # Ad-hoc signing a throwaway binary runs the same parser in about a
+      # second. Note codesign EXITS 0 here even when the parse fails, so the
+      # stderr message is the only reliable signal -- do not "simplify" this
+      # into a bare codesign call and trust its exit code.
+      - name: Check entitlements parse
+        if: matrix.os == 'macos-14'
+        working-directory: desktop/src-tauri
+        run: |
+          set -euo pipefail
+          probe=$(mktemp)
+          cp /bin/echo "$probe"
+          codesign --force --sign - --entitlements Entitlements.plist "$probe" 2>&1 | tee /tmp/ents.log
+          if grep -q 'Failed to parse entitlements' /tmp/ents.log; then
+            echo "::error file=desktop/src-tauri/Entitlements.plist::AMFI cannot parse Entitlements.plist. Remove XML comments -- see Entitlements.md."
+            exit 1
+          fi
+          echo "Entitlements parse cleanly:"
+          codesign -d --entitlements - "$probe"
+
       - name: Build Tauri app
         working-directory: desktop
         # Use "npm run tauri" (not "npm run build:tauri") to skip the
         # prebuild:tauri hook — the Go sidecar is already built above.
         run: npm run tauri build -- --target ${{ matrix.target }}
+        env:
+          # Signing + notarization, macOS leg only. Every value below is empty
+          # on the Windows runner, and the Tauri CLI skips signing entirely when
+          # APPLE_CERTIFICATE is unset — so Windows keeps building unsigned
+          # exactly as before (see the matrix comment above).
+          #
+          # Tauri v2 does the whole dance inside `tauri build`: it imports the
+          # .p12 into a temporary keychain, signs the .app AND the nested Go
+          # sidecar from bundle.externalBin, then submits to notarytool and
+          # staples. There is deliberately no separate codesign/notarytool step.
+          #
+          # APPLE_PASSWORD is an app-specific password, NOT the Apple ID
+          # password. It is tied to the Apple ID, so it stops working if that
+          # password is ever changed — if notarization starts failing with an
+          # auth error, regenerate it at appleid.apple.com first. Moving to an
+          # App Store Connect API key (APPLE_API_ISSUER / APPLE_API_KEY /
+          # APPLE_API_KEY_PATH) removes that failure mode.
+          APPLE_CERTIFICATE: ${{ matrix.os == 'macos-14' && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ matrix.os == 'macos-14' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ matrix.os == 'macos-14' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_ID: ${{ matrix.os == 'macos-14' && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ matrix.os == 'macos-14' && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ matrix.os == 'macos-14' && secrets.APPLE_TEAM_ID || '' }}
 
-      # Uploads whatever this OS produced; globs that match nothing are ignored
-      # (fail_on_unmatched_files defaults to false). macOS → .dmg; Windows →
-      # NSIS .exe + .msi. Both matrix jobs write to the same draft release.
+      # Fail the build rather than ship another unsigned release. Seven public
+      # desktop releases went out unsigned because nothing ever checked, and the
+      # website picks up whatever .dmg it finds (lib/releases.ts) without
+      # looking at its signature.
+      #
+      # The .app is what Gatekeeper quarantines and launches, so the app checks
+      # are the hard gate. The .dmg is reported but not enforced: Tauri notarizes
+      # and staples the APP and then builds the disk image around it, so the
+      # image itself is not necessarily stapled and failing on that would be
+      # wrong.
+      - name: Verify signature and notarization
+        if: matrix.os == 'macos-14'
+        working-directory: desktop
+        run: |
+          set -euo pipefail
+          APP="src-tauri/target/${{ matrix.target }}/release/bundle/macos/Trojan.app"
+
+          echo "::group::app signature"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          codesign -dvvv "$APP" 2>&1 | grep -E 'Authority|TeamIdentifier|flags'
+          # 0x10000(runtime) is the hardened runtime bit. Notarization is
+          # refused without it, so its absence means something regressed.
+          codesign -dvvv "$APP" 2>&1 | grep -q 'flags=.*runtime' \
+            || { echo "::error::hardened runtime flag missing"; exit 1; }
+          echo "::endgroup::"
+
+          # Every Mach-O in Contents/MacOS must be signed, including the Go
+          # sidecar from bundle.externalBin. Do NOT hardcode the sidecar name:
+          # Tauri strips the target triple when bundling, so binaries/trojan
+          # lands as "trojan", not "trojan-aarch64-apple-darwin". Hardcoding the
+          # suffixed name cost a full 73-minute notarization cycle on 0.3.0.
+          echo "::group::nested binaries"
+          for bin in "$APP/Contents/MacOS/"*; do
+            [ -f "$bin" ] || continue
+            echo "checking $(basename "$bin")"
+            codesign --verify --strict --verbose=2 "$bin"
+          done
+          echo "::endgroup::"
+
+          # The real test: this is the assessment a downloader's Mac performs.
+          echo "::group::gatekeeper"
+          spctl -a -vvv -t exec "$APP"
+          xcrun stapler validate "$APP"
+          echo "::endgroup::"
+
+          echo "::group::dmg (informational)"
+          DMG=$(ls src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg | head -1)
+          codesign -dvv "$DMG" 2>&1 | head -5 || echo "dmg is not itself signed"
+          xcrun stapler validate "$DMG" || echo "dmg not stapled (expected; the app inside is)"
+          echo "::endgroup::"
+
+      # A notarized build costs over an hour of Apple queue time. If the step
+      # above fails on its own bug rather than a real signing problem, keep the
+      # artifact so the fix can be verified without paying that again. Workflow
+      # artifacts are not the release, so nothing reaches users this way.
+      - name: Preserve bundle on verification failure
+        if: failure() && matrix.os == 'macos-14'
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-bundle-unverified
+          retention-days: 3
+          path: |
+            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app
+
       - name: Upload installers to GitHub Release
         uses: softprops/action-gh-release@v2
         with:

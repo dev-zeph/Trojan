@@ -30,6 +30,12 @@ type EdgeTransport struct {
 	accessToken string
 	url         string
 	client      *http.Client
+
+	// runID is empty until the first turn returns one; from then on it is sent
+	// with every turn so the server can group the run's usage. Not guarded by a
+	// mutex: the agent loop is strictly sequential -- one Turn at a time -- and
+	// a Transport is never shared across runs.
+	runID string
 }
 
 // NewEdgeTransport builds an EdgeTransport for a Pro user's access token.
@@ -44,8 +50,18 @@ func NewEdgeTransport(accessToken string) *EdgeTransport {
 // ErrRateLimited is returned when the daily agentic-run budget is exhausted.
 var ErrRateLimited = fmt.Errorf("rate_limit_exceeded")
 
+// ErrInsufficientTokens is returned when the user's Trojan Token balance cannot
+// cover the next turn. Deliberately distinct from ErrRateLimited: a rate limit
+// clears on its own at midnight UTC, whereas this needs the user to top up, so
+// the UI must say something different and offer a different action.
+var ErrInsufficientTokens = fmt.Errorf("insufficient_tokens")
+
 func (t *EdgeTransport) Turn(ctx context.Context, messages []Message) (*TurnResult, error) {
-	inner, err := json.Marshal(map[string]any{"messages": messages})
+	payload := map[string]any{"messages": messages}
+	if t.runID != "" {
+		payload["runId"] = t.runID
+	}
+	inner, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
 	}
@@ -70,6 +86,9 @@ func (t *EdgeTransport) Turn(ctx context.Context, messages []Message) (*TurnResu
 	if resp.StatusCode == http.StatusTooManyRequests {
 		return nil, ErrRateLimited
 	}
+	if resp.StatusCode == http.StatusPaymentRequired {
+		return nil, ErrInsufficientTokens
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("agentic-dast turn failed (status %d)", resp.StatusCode)
 	}
@@ -78,5 +97,15 @@ func (t *EdgeTransport) Turn(ctx context.Context, messages []Message) (*TurnResu
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("decoding agentic-dast turn: %w", err)
 	}
+	// Latch the run id from the first turn that supplies one. Later turns echo
+	// it back so the ledger can roll a multi-turn run up to one cost figure.
+	if t.runID == "" && result.RunID != "" {
+		t.runID = result.RunID
+	}
 	return &result, nil
 }
+
+// SetRunID re-attaches this transport to an existing server-side run. Used on
+// resume so continued turns aggregate to the same run in the usage ledger
+// rather than opening a second one for what the user sees as one engagement.
+func (t *EdgeTransport) SetRunID(runID string) { t.runID = runID }

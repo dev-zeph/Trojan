@@ -12,11 +12,24 @@ type Message struct {
 }
 
 // TurnResult is what the edge function returns for one Claude turn: the raw
-// content blocks, the stop reason, and token usage.
+// content blocks, the stop reason, token usage, and the run id.
 type TurnResult struct {
 	Content    []json.RawMessage `json:"content"`
 	StopReason string            `json:"stop_reason"`
 	Usage      Usage             `json:"usage"`
+
+	// RunID is minted server-side on the first turn and echoed back by the
+	// transport on every subsequent turn, so all turns of one run aggregate to
+	// a single row set in the usage ledger. A run previously had no stable
+	// identity at all -- it was addressed by a 1-second-granularity filename.
+	// The server ignores any id a client supplies on turn 1, so this cannot be
+	// used to merge usage into somebody else's run.
+	RunID string `json:"runId"`
+
+	// TokenBalance is the user's remaining Trojan Token balance after this turn
+	// was charged. Surfaced so the run view can show a live balance and warn
+	// before it runs out. Billing units, NOT LLM tokens -- see Usage for those.
+	TokenBalance int `json:"tokenBalance"`
 }
 
 // Usage mirrors the Anthropic usage object; the loop accumulates it across turns
@@ -64,12 +77,21 @@ func userTextMessage(text string) Message {
 	return Message{Role: "user", Content: []json.RawMessage{block}}
 }
 
-func toolResultMessage(blocks []toolResultBlock) Message {
-	raw := make([]json.RawMessage, len(blocks))
-	for i, b := range blocks {
+// followupMessage is the user turn sent after an assistant turn: this turn's
+// tool_result blocks plus any §8 approval-outcome text blocks. Combining both in
+// ONE user message keeps user/assistant roles strictly alternating — an approval
+// resolved several turns after it was requested rides back with the current tool
+// results instead of forming an illegal second consecutive user message.
+func followupMessage(toolResults []toolResultBlock, outcomes []string) Message {
+	content := make([]json.RawMessage, 0, len(toolResults)+len(outcomes))
+	for _, b := range toolResults {
 		b.Type = "tool_result"
 		j, _ := json.Marshal(b)
-		raw[i] = j
+		content = append(content, j)
 	}
-	return Message{Role: "user", Content: raw}
+	for _, text := range outcomes {
+		block, _ := json.Marshal(map[string]string{"type": "text", "text": text})
+		content = append(content, block)
+	}
+	return Message{Role: "user", Content: content}
 }

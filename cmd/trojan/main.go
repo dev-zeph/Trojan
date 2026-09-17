@@ -6,11 +6,14 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -22,14 +25,18 @@ import (
 
 	trojan "github.com/dev-zeph/trojan"
 	"github.com/dev-zeph/trojan/internal/ai"
+	"github.com/dev-zeph/trojan/internal/apispec"
 	"github.com/dev-zeph/trojan/internal/ci"
 	"github.com/dev-zeph/trojan/internal/config"
 	"github.com/dev-zeph/trojan/internal/dast"
 	"github.com/dev-zeph/trojan/internal/dast/agent"
 	"github.com/dev-zeph/trojan/internal/errmon"
+	"github.com/dev-zeph/trojan/internal/greybox"
 	"github.com/dev-zeph/trojan/internal/hook"
 	"github.com/dev-zeph/trojan/internal/mcpserver"
 	"github.com/dev-zeph/trojan/internal/normalizer"
+	"github.com/dev-zeph/trojan/internal/rag"
+	"github.com/dev-zeph/trojan/internal/routes"
 	"github.com/dev-zeph/trojan/internal/scanners"
 	"github.com/dev-zeph/trojan/internal/server"
 	"github.com/dev-zeph/trojan/internal/ui"
@@ -59,6 +66,7 @@ func main() {
 	rootCmd.AddCommand(verifyCmd())
 	rootCmd.AddCommand(serveCmd())
 	rootCmd.AddCommand(depsCmd())
+	rootCmd.AddCommand(indexCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -108,6 +116,7 @@ func scanCmd() *cobra.Command {
 				}
 
 				findings := scanners.RunAll(path, relevant, nil)
+				findings, _ = normalizer.Reduce(findings)
 
 				var blocking []normalizer.Finding
 				for _, f := range findings {
@@ -145,16 +154,6 @@ func scanCmd() *cobra.Command {
 			// ----------------------------------------------------------------
 			// Normal interactive scan (with optional --watch)
 			// ----------------------------------------------------------------
-
-			// --watch requires Pro
-			if watch {
-				cfg, err := config.LoadConfig()
-				if err != nil || !cfg.IsPro {
-					color.Red("trojan scan --watch requires a Pro subscription.\n")
-					fmt.Println("Visit https://trojancli.com/pricing to upgrade.")
-					os.Exit(1)
-				}
-			}
 
 			ui.PrintBanner(version)
 
@@ -199,6 +198,15 @@ func scanCmd() *cobra.Command {
 						progress.Update(name, count, err)
 					}
 				})
+
+				// Deterministic noise reduction (A1 dedup + A3 path filter) —
+				// the free floor beneath AI triage: drop non-shipping code and
+				// collapse cross-scanner duplicates before anything else runs.
+				findings, reduceStats := normalizer.Reduce(findings)
+				if reduceStats.Any() {
+					fmt.Printf("  → Filtered %d non-shipping, merged %d duplicate finding(s)\n",
+						reduceStats.DroppedNonShipping, reduceStats.MergedDuplicates)
+				}
 
 				// Extract the dependency package list from Trivy (populated during Run()).
 				var pkgs []normalizer.Package
@@ -248,7 +256,7 @@ func scanCmd() *cobra.Command {
 					projectType := ai.DetectProjectTypeName(path)
 					for i := range findings {
 						findings[i].Language = ai.DetectLanguage(findings[i].FilePath)
-						findings[i].SurroundingCode = ai.ExtractSurroundingCode(findings[i].FilePath, findings[i].LineNumber, 15)
+						findings[i].SurroundingCode = ai.ExtractEnclosingContext(findings[i].FilePath, findings[i].LineNumber)
 						findings[i].Framework = framework
 						findings[i].ProjectType = projectType
 					}
@@ -418,10 +426,18 @@ func dastCmd() *cobra.Command {
 	var tierStr, envStr string
 	var acceptSideEffects bool
 	var maxRunTokens int
+	var greyBox bool
+	var focus string
+	var identityFlags []string
+	var apiSpec string
+	var requireApproval bool
+	var allowEndpoints, denyEndpoints []string
+	var limitToAllowlist, allowDangerous bool
+	var attackTemplateJSON string
 
 	cmd := &cobra.Command{
 		Use:   "dast <url>",
-		Short: "Scan a running web server for runtime vulnerabilities (Pro)",
+		Short: "Scan a running web server for runtime vulnerabilities (uses tokens)",
 		Args:  cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			targetURL := args[0]
@@ -438,13 +454,13 @@ func dastCmd() *cobra.Command {
 				dastFamiliarity = cfg.Familiarity
 				dastAboutYou = cfg.AboutYou
 			}
+			// Sign-in is required because the run is billed to an account. The
+			// BALANCE is not checked here: the edge function returns 402 when
+			// tokens run out, and the loop checkpoints and stops resumably at
+			// that point. Pre-checking on the client would only duplicate that
+			// and would be trivially bypassable anyway.
 			if accessToken == "" {
-				printDastProMessage(targetURL)
-				return
-			}
-			info, err := ai.FetchLicense(accessToken)
-			if err != nil || !info.IsPro {
-				printDastProMessage(targetURL)
+				printDastLoginMessage(targetURL)
 				return
 			}
 
@@ -501,13 +517,37 @@ func dastCmd() *cobra.Command {
 					color.Red("Error: %s\n", eerr)
 					os.Exit(1)
 				}
+				identities, ierr := parseIdentities(identityFlags)
+				if ierr != nil {
+					color.Red("Error: %s\n", ierr)
+					os.Exit(1)
+				}
+				var attackTemplate *agent.AttackTemplate
+				if attackTemplateJSON != "" {
+					var at agent.AttackTemplate
+					if uerr := json.Unmarshal([]byte(attackTemplateJSON), &at); uerr != nil {
+						color.Red("Error: invalid --attack-template: %s\n", uerr)
+						os.Exit(1)
+					}
+					attackTemplate = &at
+				}
 				runAgenticDast(agenticParams{
 					targetURL:         targetURL,
 					accessToken:       accessToken,
 					tier:              tier,
 					env:               envv,
+					identities:        identities,
 					acceptSideEffects: acceptSideEffects,
 					maxRunTokens:      maxRunTokens,
+					greyBox:           greyBox,
+					focus:             focus,
+					apiSpec:           apiSpec,
+					requireApproval:   requireApproval,
+					allowEndpoints:    allowEndpoints,
+					denyEndpoints:     denyEndpoints,
+					limitToAllowlist:  limitToAllowlist,
+					allowDangerous:    allowDangerous,
+					attackTemplate:    attackTemplate,
 					desktop:           desktop,
 					crawlDepth:        crawlDepth,
 					crawlTimeout:      crawlTimeout,
@@ -515,7 +555,7 @@ func dastCmd() *cobra.Command {
 				return
 			}
 
-			fmt.Printf("\n  → Starting Trojan DAST (Pro)\n\n")
+			fmt.Printf("\n  → Starting Trojan DAST\n\n")
 
 			// Cancel (desktop) / Ctrl+C aborts Nuclei immediately instead of
 			// orphaning it against the target.
@@ -647,7 +687,7 @@ func dastCmd() *cobra.Command {
 			// issues are separated from scanner noise (agentic DAST Phase 1).
 			if len(findings) > 0 {
 				fmt.Printf("  → Triaging %d finding(s) for false positives...\n", len(findings))
-				if verdicts, terr := ai.TriageFindings(findings, accessToken); terr != nil {
+				if verdicts, terr := ai.TriageWithContext(findings, accessToken, loadRetriever(".", accessToken)); terr != nil {
 					color.Yellow("  Triage skipped (%s)\n\n", terr)
 				} else {
 					for i := range findings {
@@ -755,11 +795,24 @@ func dastCmd() *cobra.Command {
 	cmd.Flags().IntVar(&crawlTimeout, "timeout", 90, "Crawler timeout in seconds")
 	cmd.Flags().BoolVar(&desktop, "desktop", false, "Desktop app mode: skip browser, emit READY signal to stdout")
 	cmd.Flags().MarkHidden("desktop") //nolint:errcheck
-	cmd.Flags().BoolVar(&agentic, "agentic", false, "Run the adaptive AI agent pen-tester instead of the one-shot scan (Pro)")
+	cmd.Flags().BoolVar(&agentic, "agentic", false, "Run the adaptive AI agent pen-tester instead of the one-shot scan (uses tokens)")
 	cmd.Flags().StringVar(&tierStr, "tier", "passive", "Agentic scan intensity: passive | safe-active | aggressive")
 	cmd.Flags().StringVar(&envStr, "env", "production", "Agentic target environment: production | staging")
 	cmd.Flags().BoolVar(&acceptSideEffects, "accept-side-effects", false, "Acknowledge possible side effects (required for safe-active POST on production)")
-	cmd.Flags().IntVar(&maxRunTokens, "max-run-tokens", 0, "Cumulative token ceiling for the agentic run (0 = rely on step/request/time caps)")
+	cmd.Flags().IntVar(&maxRunTokens, "max-run-tokens", agent.DefaultMaxRunTokens, "Cumulative token ceiling for the agentic run. Default 0 = no ceiling (usage is metered by token-based pricing); the run is still bounded by step/request/time caps. Set a positive value to re-impose a hard cap.")
+	cmd.Flags().BoolVar(&greyBox, "grey-box", false, "Let the agent read this project's source (run from the source dir) to form grounded hypotheses. Handler snippets are sent to the AI. Run `trojan index` first to also enable semantic source search.")
+	cmd.Flags().StringVar(&focus, "focus", "", "Narrow the agent to a technique preset: api | web | llm (optional)")
+	cmd.Flags().StringArrayVar(&identityFlags, "identity", nil, "Auth session for authorization (IDOR/BOLA) testing, as 'name=Header: value'. Repeatable; repeat with the same name for multiple headers. Example: --identity 'alice=Authorization: Bearer <token>'")
+	cmd.Flags().StringVar(&apiSpec, "api-spec", "", "OpenAPI/Swagger spec (file path or URL) to expand the agent's attack surface beyond what the crawler finds. If omitted, common spec URLs on the target are auto-probed.")
+	cmd.Flags().BoolVar(&requireApproval, "require-approval", false, "Human-in-the-loop: pause for operator approval before every state-changing action (§8). Approve/deny in the run view; read-only probes still run automatically.")
+	cmd.Flags().StringArrayVar(&allowEndpoints, "allow-endpoint", nil, "Rules of engagement: an endpoint path the agent may target (repeatable; trailing * = prefix, e.g. /api/*). Outside the list is gated for approval unless --limit-to-allowlist.")
+	cmd.Flags().StringArrayVar(&denyEndpoints, "deny-endpoint", nil, "Rules of engagement: an endpoint path the agent must never touch (repeatable; trailing * = prefix).")
+	cmd.Flags().BoolVar(&limitToAllowlist, "limit-to-allowlist", false, "Make --allow-endpoint a hard boundary: anything outside it is blocked, not just gated.")
+	cmd.Flags().BoolVar(&allowDangerous, "allow-dangerous", false, "Opt in to auto-avoided action patterns (account deletion, password/credential change, payment). Off by default.")
+	// Desktop plumbing: the selected Attack Market playbook as a JSON object
+	// {title, technique, body}. Not a user-facing CLI feature (§9.4 is desktop-only).
+	cmd.Flags().StringVar(&attackTemplateJSON, "attack-template", "", "")
+	cmd.Flags().MarkHidden("attack-template") //nolint:errcheck
 	cmd.AddCommand(dastVerifyCmd())
 	return cmd
 }
@@ -773,7 +826,7 @@ func dastVerifyCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "verify <url>",
-		Short: "Prove you own a domain before pen-testing it (Pro)",
+		Short: "Prove you own a domain before pen-testing it",
 		Long: "Prove you control a domain before Trojan will scan it.\n\n" +
 			"Run without --method to get your verification token and placement\n" +
 			"instructions, then re-run with --method dns|file|meta to confirm.",
@@ -791,11 +844,7 @@ func dastVerifyCmd() *cobra.Command {
 				userEmail = cfg.UserEmail
 			}
 			if accessToken == "" {
-				printDastProMessage(targetURL)
-				return
-			}
-			if info, err := ai.FetchLicense(accessToken); err != nil || !info.IsPro {
-				printDastProMessage(targetURL)
+				printDastLoginMessage(targetURL)
 				return
 			}
 
@@ -895,6 +944,16 @@ type agenticParams struct {
 	env               agent.Environment
 	acceptSideEffects bool
 	maxRunTokens      int
+	greyBox           bool
+	focus             string
+	apiSpec           string
+	identities        []agent.Identity
+	requireApproval   bool
+	allowEndpoints    []string
+	denyEndpoints     []string
+	limitToAllowlist  bool
+	allowDangerous    bool
+	attackTemplate    *agent.AttackTemplate
 	desktop           bool
 	crawlDepth        int
 	crawlTimeout      int
@@ -923,7 +982,7 @@ func installDastCancelHandler() {
 
 func runAgenticDast(p agenticParams) {
 	installDastCancelHandler()
-	fmt.Printf("\n  → Starting Trojan agentic pen-test (Pro)\n\n")
+	fmt.Printf("\n  → Starting Trojan agentic pen-test\n\n")
 
 	// Reachability.
 	httpClient := &http.Client{Timeout: 5 * time.Second}
@@ -945,6 +1004,12 @@ func runAgenticDast(p agenticParams) {
 	// still recorded, just filtered out of the default view. No-op when the
 	// Errors shim isn't running, which is the common case.
 	errRunID := errmon.NotifyRunStart(p.targetURL)
+
+	// Schema ingestion (§6.5 #4): widen the attack surface with the target's own
+	// OpenAPI/Swagger description — routes the crawler can't reach by following
+	// links, plus the parameters each declares. Merged into the crawl surface so
+	// the graph seed, get_crawl_map, and the seed task all pick them up.
+	specHint := ingestAPISpec(p, &crawlResult)
 
 	// Deterministic Nuclei pre-pass for breadth (zero tokens).
 	if err := config.EnsureDastScanners(); err != nil {
@@ -981,6 +1046,59 @@ func runAgenticDast(p agenticParams) {
 		browser.OpenURL(reportURL)
 	}
 
+	// Grey-box (§6.6): if opted in, let the agent read this project's source.
+	// Runs from the current directory — the source repo of the target under test.
+	task := buildAgenticTask(p.targetURL, p.tier, p.env, crawlResult, baseline)
+	if hint := agenticFocusHint(p.focus); hint != "" {
+		task += "\n\n" + hint
+	}
+	if specHint != "" {
+		task += "\n\n" + specHint
+	}
+	if len(p.identities) > 0 {
+		names := make([]string, len(p.identities))
+		for i, id := range p.identities {
+			names[i] = id.Name
+		}
+		fmt.Printf("  → %d identities loaded for authorization testing: %s\n\n", len(names), strings.Join(names, ", "))
+		task += "\n\nIDENTITIES available for http_probe (attach with the \"identity\" field): " + strings.Join(names, ", ") +
+			".\nTest authorization by requesting the same resource as different identities and comparing the responses (IDOR/BOLA)."
+	}
+	var source agent.SourceReader
+	if p.greyBox {
+		if gb := buildGreyBox(".", p.accessToken); gb != nil {
+			source = gb
+			if table := gb.EndpointTable(); len(table) > 0 {
+				fmt.Printf("  → Grey-box: mapped %d endpoint(s) to source handlers\n\n", len(table))
+				task += "\n\nENDPOINT → HANDLER MAP (grey-box; [no-guard] = no auth middleware detected — prioritize these):\n" + strings.Join(table, "\n")
+			}
+		} else {
+			color.Yellow("  Grey-box requested but no recognizable source found in the current directory — running black-box.\n\n")
+		}
+	}
+
+	// §8 human-in-the-loop: when the operator requires approval, gate state-changing
+	// actions through a queue the run view drives via POST /api/dast/approval. The
+	// RoE (allow/denylist, auto-avoid opt-in) applies whether or not approval is on.
+	var approvals *agent.Approvals
+	if p.requireApproval {
+		approvals = agent.NewApprovals(0) // default operator-response timeout
+		srv.SetApprovalSink(func(id int, ok bool, note string) {
+			approvals.Decide(agent.ApprovalDecision{ID: id, Approve: ok, Note: note})
+		})
+		defer srv.SetApprovalSink(nil)
+		fmt.Printf("  → Approval required for state-changing actions — approve or deny them in the run view.\n\n")
+	}
+	roe := agent.RoE{
+		EndpointAllowlist: p.allowEndpoints,
+		LimitToAllowlist:  p.limitToAllowlist,
+		EndpointDenylist:  p.denyEndpoints,
+		AllowDangerous:    p.allowDangerous,
+	}
+	if p.attackTemplate != nil {
+		fmt.Printf("  → Attack template: %s\n\n", p.attackTemplate.Title)
+	}
+
 	// Drive the loop, streaming every action to the UI and the terminal.
 	srv.BroadcastAgentEvent(server.AgentEvent{Type: "run", Status: "running"})
 	res, rerr := agent.RunAgentic(context.Background(), agent.Config{
@@ -991,9 +1109,19 @@ func runAgenticDast(p agenticParams) {
 		Env:               p.env,
 		AcceptSideEffects: p.acceptSideEffects,
 		MaxRunTokens:      p.maxRunTokens,
-		Task:              buildAgenticTask(p.targetURL, p.tier, p.env, crawlResult, baseline),
+		Task:              task,
+		Source:            source,
+		Identities:        p.identities,
+		RoE:               roe,
+		Approvals:         approvals,
+		AttackTemplate:    p.attackTemplate,
 		OnEvent: func(e agent.Event) {
-			srv.BroadcastAgentEvent(server.AgentEvent{Type: string(e.Type), Step: e.Step, Tool: e.Tool, Detail: e.Detail})
+			evt := server.AgentEvent{Type: string(e.Type), Step: e.Step, Tool: e.Tool, Detail: e.Detail}
+			if p := e.Payload; p != nil {
+				evt.Node, evt.Edge, evt.Source, evt.Summary, evt.Mode = p.Node, p.Edge, p.Source, p.Summary, p.Mode
+				evt.Approval, evt.Approved = p.Approval, p.Approved
+			}
+			srv.BroadcastAgentEvent(evt)
 			printAgentEvent(e)
 		},
 	})
@@ -1012,7 +1140,7 @@ func runAgenticDast(p agenticParams) {
 		// then run everything through adversarial triage (Phase 1).
 		all := append(baseline, agenticFindingsFromCandidates(res.Findings)...) //nolint:gocritic
 		if len(all) > 0 {
-			if verdicts, terr := ai.TriageFindings(all, p.accessToken); terr == nil {
+			if verdicts, terr := ai.TriageWithContext(all, p.accessToken, loadRetriever(".", p.accessToken)); terr == nil {
 				for i := range all {
 					if v, ok := verdicts[all[i].ID]; ok {
 						all[i].Verdict = v.Verdict
@@ -1065,6 +1193,180 @@ func buildAgenticTask(url string, tier agent.Tier, env agent.Environment, crawl 
 	return b.String()
 }
 
+// ingestAPISpec loads an OpenAPI/Swagger spec (explicit --api-spec, else
+// auto-discovered on the target), merges its operations into the crawl surface
+// as extra endpoints, and returns a task hint highlighting the spec-derived
+// surface (unsecured endpoints and object-id routes are the agent's IDOR/BOLA
+// leads). Returns "" when no spec is found — schema ingestion is best-effort.
+func ingestAPISpec(p agenticParams, crawl *dast.CrawlResult) string {
+	spec, src := loadAPISpec(p.apiSpec, p.targetURL)
+	if spec == nil || len(spec.Ops) == 0 {
+		if p.apiSpec != "" {
+			color.Yellow("  API spec requested but none could be loaded/parsed from %q — continuing with the crawl surface only.\n\n", p.apiSpec)
+		}
+		return ""
+	}
+	added, notCrawled := mergeSpecEndpoints(crawl, p.targetURL, spec)
+	fmt.Printf("  → API spec %s (%s): +%d endpoint(s), %d not reachable by crawling\n\n", src, spec.Format, added, notCrawled)
+	return specTaskHint(spec)
+}
+
+// loadAPISpec resolves a spec from an explicit path/URL, or auto-discovers one by
+// probing the conventional spec URLs on the target. Returns the parsed spec and a
+// short source label, or (nil, "") if none is found. Discovery uses unauthenticated
+// GETs — an auth-gated spec must be supplied explicitly via --api-spec.
+func loadAPISpec(specArg, targetURL string) (*apispec.Spec, string) {
+	client := &http.Client{Timeout: 8 * time.Second}
+
+	if specArg != "" {
+		var data []byte
+		if strings.HasPrefix(specArg, "http://") || strings.HasPrefix(specArg, "https://") {
+			data = fetchSpec(client, specArg)
+		} else if b, err := os.ReadFile(specArg); err == nil {
+			data = b
+		}
+		if len(data) == 0 {
+			return nil, ""
+		}
+		if spec, err := apispec.Parse(data); err == nil {
+			return spec, specArg
+		}
+		return nil, ""
+	}
+
+	origin := originOf(targetURL)
+	if origin == "" {
+		return nil, ""
+	}
+	for _, path := range apispec.DiscoveryPaths() {
+		data := fetchSpec(client, origin+path)
+		if len(data) == 0 {
+			continue
+		}
+		if spec, err := apispec.Parse(data); err == nil && len(spec.Ops) > 0 {
+			return spec, path
+		}
+	}
+	return nil, ""
+}
+
+// fetchSpec does one bounded GET and returns the body on a 2xx, else nil.
+func fetchSpec(client *http.Client, rawURL string) []byte {
+	resp, err := client.Get(rawURL) //nolint:noctx
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil
+	}
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20)) // cap at 8 MiB
+	return data
+}
+
+// mergeSpecEndpoints adds spec operations to the crawl surface as templated
+// endpoints (e.g. origin + /api/orders/{id}), skipping ones whose method+shape a
+// crawled endpoint already covers so the graph isn't duplicated. Returns how many
+// endpoints were added and how many of those the crawler had not reached.
+func mergeSpecEndpoints(crawl *dast.CrawlResult, targetURL string, spec *apispec.Spec) (added, notCrawled int) {
+	origin := originOf(targetURL)
+	crawledShapes := make(map[string]bool, len(crawl.Endpoints))
+	for _, e := range crawl.Endpoints {
+		crawledShapes[shapeKey(e.Method, apispec.NormalizePath(pathOfURL(e.URL)))] = true
+	}
+	seen := make(map[string]bool)
+	for _, op := range spec.Ops {
+		key := shapeKey(op.Method, apispec.NormalizePath(op.Path))
+		if crawledShapes[key] || seen[key] {
+			continue
+		}
+		seen[key] = true
+		crawl.Endpoints = append(crawl.Endpoints, dast.Endpoint{
+			URL:         origin + op.Path,
+			Method:      op.Method,
+			QueryParams: op.QueryParams,
+			FormFields:  op.BodyFields,
+		})
+		added++
+		notCrawled++ // by construction, every kept op is one the crawl didn't cover
+	}
+	if spec.Format != "" {
+		crawl.TechHints = appendUnique(crawl.TechHints, spec.Format)
+	}
+	return added, notCrawled
+}
+
+// specTaskHint tells the agent which spec-derived endpoints to prioritize. It
+// leads with the unsecured ones and the object-id routes — the highest-value
+// IDOR/BOLA and missing-auth leads — and caps the list so the seed stays small.
+func specTaskHint(spec *apispec.Spec) string {
+	const maxLines = 40
+	var lead, rest []string
+	for _, op := range spec.Ops {
+		flags := ""
+		if !op.Secured {
+			flags += " [no-auth-declared]"
+		}
+		if len(op.PathParams) > 0 {
+			flags += " [id-param: " + strings.Join(op.PathParams, ",") + "]"
+		}
+		line := fmt.Sprintf("- %s %s%s", op.Method, op.Path, flags)
+		if flags != "" {
+			lead = append(lead, line)
+		} else {
+			rest = append(rest, line)
+		}
+	}
+	lines := append(lead, rest...)
+	truncated := 0
+	if len(lines) > maxLines {
+		truncated = len(lines) - maxLines
+		lines = lines[:maxLines]
+	}
+	var b strings.Builder
+	b.WriteString("API SPEC SURFACE (")
+	b.WriteString(spec.Format)
+	b.WriteString("): these endpoints come from the target's own API description — some are NOT linked from any page, so the crawler missed them. Endpoints tagged [no-auth-declared] may be missing authentication; [id-param] endpoints take a client-supplied object id and are prime IDOR/BOLA candidates (fetch one as identity A, then request the same id as identity B and diff_responses). Substitute concrete values for {template} params.\n")
+	b.WriteString(strings.Join(lines, "\n"))
+	if truncated > 0 {
+		fmt.Fprintf(&b, "\n- …and %d more (call get_crawl_map for the full merged surface).", truncated)
+	}
+	return b.String()
+}
+
+// originOf returns scheme://host[:port] for a target URL, or "" if unparseable.
+func originOf(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
+}
+
+// pathOfURL extracts the path component of a URL (falls back to the raw string).
+func pathOfURL(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Path == "" {
+		return rawURL
+	}
+	return u.Path
+}
+
+// shapeKey is a method+normalized-path identity for deduping crawl vs spec.
+func shapeKey(method, path string) string {
+	return strings.ToUpper(method) + " " + path
+}
+
+// appendUnique appends s to list only if not already present.
+func appendUnique(list []string, s string) []string {
+	for _, x := range list {
+		if x == s {
+			return list
+		}
+	}
+	return append(list, s)
+}
+
 // agenticFindingsFromCandidates maps the agent's evidence-anchored candidates
 // into normalized findings so they flow through triage and the report UI.
 func agenticFindingsFromCandidates(cs []agent.Candidate) []normalizer.Finding {
@@ -1088,7 +1390,7 @@ func agenticFindingsFromCandidates(cs []agent.Candidate) []normalizer.Finding {
 }
 
 // synthesizeFindings populates Simply/Actions/etc. on each finding via the AI
-// synthesis edge function (Pro). Mirrors the one-shot scan's Step 9. Familiarity
+// synthesis edge function. Mirrors the one-shot scan's Step 9. Familiarity
 // and profile come from local config so explanations match the user's level.
 func synthesizeFindings(findings []normalizer.Finding, accessToken string) {
 	if len(findings) == 0 {
@@ -1342,15 +1644,38 @@ func depsCmd() *cobra.Command {
 	return cmd
 }
 
-func printDastProMessage(targetURL string) {
-	fmt.Println()
-	fmt.Println("  trojan dast is a Pro feature.")
-	fmt.Println()
-	fmt.Printf("  Pro DAST: smart crawling of %s + custom AI attack templates + synthesis.\n", targetURL)
-	fmt.Println("  Upgrade at trojancli.com/pricing to unlock it.")
-	fmt.Println()
+// printDastLoginMessage is shown when nobody is signed in. It is a LOGIN
+// prompt, not an upsell: a pen test is paid for with Trojan Tokens, and every
+// account gets 500 free every month, so there is no tier to buy first.
+// humanizeInt formats with thousands separators. A balance is read at a
+// glance, and "18000" is measurably harder to parse than "18,000".
+func humanizeInt(n int) string {
+	s := strconv.Itoa(n)
+	neg := strings.HasPrefix(s, "-")
+	if neg {
+		s = s[1:]
+	}
+	var out []byte
+	for i, c := range []byte(s) {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			out = append(out, ',')
+		}
+		out = append(out, c)
+	}
+	if neg {
+		return "-" + string(out)
+	}
+	return string(out)
 }
 
+func printDastLoginMessage(targetURL string) {
+	fmt.Println()
+	fmt.Println("  Sign in to run a penetration test.")
+	fmt.Println()
+	fmt.Printf("  Agentic DAST crawls %s, probes it adaptively, and writes up what it finds.\n", targetURL)
+	fmt.Println("  Run `trojan login` — every account gets 500 free tokens a month.")
+	fmt.Println()
+}
 
 func loginCmd() *cobra.Command {
 	return &cobra.Command{
@@ -1365,12 +1690,14 @@ func loginCmd() *cobra.Command {
 			}
 			cfg, _ := config.LoadConfig()
 			color.Green("Logged in as %s\n", cfg.UserEmail)
-			// ForceRefreshLicense validates pro status server-side (includes org seat membership)
-			info, err := config.ForceRefreshLicense()
-			if err == nil && info.IsPro {
-				color.Green("Plan: Pro\n")
+			// Fetched server-side so org seat membership is reflected. Guarded on
+			// both err AND nil: the previous version dereferenced info in the
+			// else branch, which would panic on any network failure at login.
+			if info, lerr := config.ForceRefreshLicense(); lerr == nil && info != nil {
+				color.Green("%s tokens available.\n", humanizeInt(info.TokenBalance))
+				fmt.Println("Scanning is free and unlimited. Tokens are spent on AI work.")
 			} else {
-				fmt.Println("Plan: Free. Visit https://trojancli.com/pricing to upgrade.")
+				fmt.Println("Could not fetch your token balance just now — run `trojan balance` to retry.")
 			}
 			fmt.Println("Run `trojan scan` to start scanning.")
 		},
@@ -1405,10 +1732,172 @@ func updateCmd() *cobra.Command {
 	}
 }
 
+func indexCmd() *cobra.Command {
+	var yes bool
+	cmd := &cobra.Command{
+		Use:   "index [path]",
+		Short: "Build a local code index for AI-assisted triage (uses tokens)",
+		Long: `Chunk this project's source into a local semantic index that gives AI triage
+richer context — the custom sanitizer, guard, or caller a single finding can't
+see on its own — so false positives are caught and real issues confirmed.
+
+Privacy: building the index sends source-code chunks to Trojan's embedding
+service to be turned into vectors. The vectors and the index are stored locally
+under .trojan/index/ and never leave your machine. Nothing is indexed unless you
+run this command; re-run it after significant changes (only changed files are
+re-embedded).`,
+		Args: cobra.MaximumNArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			path := "."
+			if len(args) > 0 {
+				path = args[0]
+			}
+
+			cfg, err := config.LoadConfig()
+			if err != nil || cfg.AccessToken == "" {
+				color.Yellow("Log in first: `trojan login`\n")
+				os.Exit(1)
+			}
+			// No tier check: the embed function meters this against the user's
+			// token balance and returns 402 when it runs out, which surfaces as a
+			// clear error below.
+
+			files, err := rag.WalkSource(path)
+			if err != nil {
+				color.Red("Could not enumerate source files: %s\n", err)
+				os.Exit(1)
+			}
+			if len(files) == 0 {
+				fmt.Println("No source files found to index.")
+				return
+			}
+
+			// Disclosure + explicit opt-in (docs §4 privacy boundary).
+			fmt.Printf("About to index %d source file(s) under %s.\n", len(files), path)
+			color.Yellow("Code chunks will be sent to Trojan's embedding service; the resulting vectors are stored locally in .trojan/index/.\n")
+			if !yes {
+				fmt.Print("Proceed? [y/N] ")
+				line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+				if strings.ToLower(strings.TrimSpace(line)) != "y" {
+					fmt.Println("Aborted — nothing was indexed.")
+					return
+				}
+			}
+
+			ix := &rag.Indexer{Embedder: ai.NewEmbedder(cfg.AccessToken)}
+			fmt.Printf("Indexing %d file(s)...\n", len(files))
+			stats, err := ix.IndexProject(path, files)
+			if err != nil {
+				color.Red("Index failed: %s\n", err)
+				os.Exit(1)
+			}
+			color.Green("✓ Indexed %d file(s), %d chunk(s) — %d unchanged, %d pruned.\n",
+				stats.FilesIndexed, stats.ChunksAdded, stats.FilesSkipped, stats.FilesPruned)
+		},
+	}
+	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "Skip the confirmation prompt")
+	return cmd
+}
+
+// ragRetriever adapts *rag.Retriever to ai.ContextRetriever so the ai package
+// (which owns triage) needs no import of rag. main is the composition root.
+type ragRetriever struct{ r *rag.Retriever }
+
+func (a ragRetriever) Retrieve(query string, k int) ([]ai.RetrievedChunk, error) {
+	res, err := a.r.Retrieve(query, k)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ai.RetrievedChunk, len(res))
+	for i, c := range res {
+		out[i] = ai.RetrievedChunk{
+			FilePath:  c.Chunk.FilePath,
+			StartLine: c.Chunk.StartLine,
+			EndLine:   c.Chunk.EndLine,
+			Text:      c.Chunk.Text,
+		}
+	}
+	return out, nil
+}
+
+// loadRetriever returns a context retriever backed by the project's code index,
+// or nil when no index exists — triage then degrades gracefully to a plain pass.
+func loadRetriever(projectPath, accessToken string) ai.ContextRetriever {
+	if !rag.ProjectHasIndex(projectPath) {
+		return nil
+	}
+	r, err := rag.NewRetriever(projectPath, ai.NewEmbedder(accessToken))
+	if err != nil {
+		return nil
+	}
+	return ragRetriever{r}
+}
+
+// parseIdentities turns repeatable --identity 'name=Header: value' specs into
+// agent identities. Repeating a name accumulates headers onto that identity.
+// Insertion order is preserved so the agent sees a stable identity list.
+func parseIdentities(specs []string) ([]agent.Identity, error) {
+	var order []string
+	byName := map[string]map[string]string{}
+	for _, s := range specs {
+		name, headerLine, ok := strings.Cut(s, "=")
+		name = strings.TrimSpace(name)
+		if !ok || name == "" {
+			return nil, fmt.Errorf("invalid --identity %q: expected 'name=Header: value'", s)
+		}
+		hk, hv, ok := strings.Cut(headerLine, ":")
+		hk, hv = strings.TrimSpace(hk), strings.TrimSpace(hv)
+		if !ok || hk == "" || hv == "" {
+			return nil, fmt.Errorf("invalid --identity %q: header must be 'Header: value'", s)
+		}
+		if _, seen := byName[name]; !seen {
+			byName[name] = map[string]string{}
+			order = append(order, name)
+		}
+		byName[name][hk] = hv
+	}
+	out := make([]agent.Identity, 0, len(order))
+	for _, n := range order {
+		out = append(out, agent.Identity{Name: n, Headers: byName[n]})
+	}
+	return out, nil
+}
+
+// agenticFocusHint maps a technique preset (§10 attack-type selection) to a
+// prompt hint that steers the agent toward that class. Empty preset = no hint,
+// so the agent tests broadly. Kept minimal until §10 grows a full preset library.
+func agenticFocusHint(focus string) string {
+	switch focus {
+	case "api":
+		return "FOCUS: prioritize API security — BOLA/IDOR, broken authorization, injection, mass-assignment, and rate-limiting."
+	case "web":
+		return "FOCUS: prioritize consumer-web flaws — XSS, CSRF, session handling, and IDOR."
+	case "llm":
+		return "FOCUS: prioritize AI/LLM-integrated flaws — prompt injection, insecure output handling, and tool/SSRF abuse."
+	default:
+		return ""
+	}
+}
+
+// buildGreyBox assembles the §6.6 grey-box source reader for a project: the route
+// resolver (endpoint/symbol modes, local) plus the code-index retriever (query
+// mode, needs `trojan index`). Returns nil when neither is available, so the
+// agent stays black-box. Returns the concrete type (not the interface) so the
+// caller can also read its endpoint↔handler table for the push context.
+func buildGreyBox(projectPath, accessToken string) *greybox.Source {
+	resolver := routes.NewResolver(projectPath)
+	retriever := loadRetriever(projectPath, accessToken)
+	if len(resolver.Routes()) == 0 && retriever == nil {
+		return nil // nothing to offer — no recognized routes, no index
+	}
+	return greybox.New(projectPath, resolver, retriever)
+}
+
 func proCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "pro",
-		Short: "Check your Pro subscription status",
+		Use:     "balance",
+		Aliases: []string{"pro", "tokens"},
+		Short:   "Show your Trojan Token balance",
 		Run: func(cmd *cobra.Command, args []string) {
 			if !config.IsLoggedIn() {
 				color.Yellow("Not logged in. Run `trojan login` first.\n")
@@ -1419,13 +1908,28 @@ func proCmd() *cobra.Command {
 				color.Red("Error: %s\n", err)
 				os.Exit(1)
 			}
-			status := config.SubscriptionStatusFromToken(cfg.AccessToken)
-			if status == "pro" || status == "team" {
-				color.Green("✓ You're the pro. (%s)\n", status)
-				fmt.Println("AI explanations are active. Run `trojan scan` to use them.")
-			} else {
-				color.Yellow("Free plan. Visit https://trojancli.com/pricing to upgrade.\n")
-				fmt.Println("After upgrading, log out and back in: `trojan login`")
+
+			// Fetched live rather than read from the JWT: the balance changes
+			// with every run, whereas a cached claim would go stale immediately.
+			info, lerr := ai.FetchLicense(cfg.AccessToken)
+			if lerr != nil {
+				color.Red("Could not reach the licence service: %s\n", lerr)
+				os.Exit(1)
+			}
+
+			plan := info.SubscriptionStatus
+			if plan == "" {
+				plan = "free"
+			}
+			color.Green("%s tokens\n", humanizeInt(info.TokenBalance))
+			fmt.Printf("Plan: %s\n", plan)
+			fmt.Println()
+			fmt.Println("Scanning is always free and unlimited — every scanner, every severity.")
+			fmt.Println("Tokens are spent only on AI work: pen tests, explanations, reports.")
+			if info.TokenBalance < 365 {
+				fmt.Println()
+				color.Yellow("That is below the cost of one agentic pen test (365 tokens).\n")
+				fmt.Println("Top up at https://trojancli.com/pricing")
 			}
 		},
 	}
@@ -1633,6 +2137,12 @@ Exits 1 if findings at or above --severity threshold are detected.`,
 
 			// Run all scanners in parallel — no spinners, no UI.
 			findings := scanners.RunAll(path, relevant, nil)
+			findings, reduceStats := normalizer.Reduce(findings)
+			if reduceStats.Any() {
+				fmt.Fprintf(os.Stderr,
+					"Filtered %d non-shipping finding(s), merged %d cross-scanner duplicate(s)\n",
+					reduceStats.DroppedNonShipping, reduceStats.MergedDuplicates)
+			}
 
 			// Tally by severity.
 			counts := map[normalizer.Severity]int{}

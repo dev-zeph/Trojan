@@ -60,12 +60,16 @@ export default function App() {
   return (
     <div className="min-h-screen bg-background text-foreground">
 
-      {/* Login / upgrade banner */}
+      {/* Account banner.
+          There is no "upgrade to unlock" state any more: every finding at every
+          severity is already visible to everyone, because scanning runs locally
+          and costs us nothing. Signing in is about AI work, which is paid for
+          with tokens. */}
       {auth && !auth.loggedIn && (
         <div className="border-b border-border bg-muted/40">
           <div className="max-w-5xl mx-auto px-8 py-2.5 flex items-center justify-between">
             <p className="text-xs text-muted-foreground">
-              Unlock AI explanations and fix suggestions with Trojan Pro.
+              Sign in for AI explanations and fix steps — 500 free tokens a month.
             </p>
             <a
               href="https://trojancli.com/login"
@@ -78,33 +82,21 @@ export default function App() {
           </div>
         </div>
       )}
-      {auth?.loggedIn && !auth.isPro && (
-        <div className="border-b border-border bg-muted/40">
-          <div className="max-w-5xl mx-auto px-8 py-2.5 flex items-center justify-between">
-            <p className="text-xs text-muted-foreground">
-              You're on the free plan. Upgrade to Pro to unlock AI explanations.
-            </p>
-            <a
-              href="https://trojancli.com/pricing"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-xs font-medium underline underline-offset-4 hover:text-muted-foreground transition-colors"
-            >
-              Upgrade to Pro →
-            </a>
-          </div>
-        </div>
-      )}
-      {auth?.loggedIn && auth.isPro && (
+      {auth?.loggedIn && (
         <div className="border-b border-border bg-muted/40">
           <div className="max-w-5xl mx-auto px-8 py-2.5 flex items-center justify-between">
             <p className="text-xs text-muted-foreground">
               <span className="text-foreground font-medium">{auth.email}</span>
-              {' '}· You're the pro.
+              {' '}· signed in
             </p>
-            <span className="text-xs font-medium uppercase tracking-widest text-foreground">
-              {auth.plan ?? 'Pro'}
-            </span>
+            <a
+              href="https://trojancli.com/dashboard"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs font-medium underline underline-offset-4 hover:text-muted-foreground transition-colors"
+            >
+              Token balance →
+            </a>
           </div>
         </div>
       )}
@@ -162,7 +154,6 @@ export default function App() {
         ) : (
           <FindingsList
             findings={scan.findings}
-            lockedCount={scan.locked_count ?? 0}
             onSelect={setSelected}
           />
         )}

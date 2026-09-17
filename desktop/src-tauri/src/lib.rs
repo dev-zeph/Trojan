@@ -267,17 +267,45 @@ async fn start_dast(app: AppHandle, url: String) -> Result<ScanReturn, String> {
     Ok(ScanReturn { url: report_url, cache_path })
 }
 
+/// A named auth session supplied for authorization (IDOR/BOLA) testing.
+#[derive(serde::Deserialize)]
+struct PtIdentity {
+    name: String,
+    header: String,
+}
+
+// AttackTemplateArg is the selected Attack Market playbook (§9.4) passed from the
+// desktop into the run. Serialized to a single JSON arg for the sidecar so the
+// (possibly multi-line) body needs no shell escaping.
+#[derive(serde::Deserialize, serde::Serialize)]
+struct AttackTemplateArg {
+    title: String,
+    technique: Vec<String>,
+    body: String,
+}
+
 /// Run the adaptive AI agent pen-tester against a live URL (agentic DAST).
 /// Starts the embedded UI early and streams the run to it; the report loads the
 /// live "Penetration Testing" view. Consent (for non-local targets) is enforced
 /// by the sidecar and surfaced as an "__consent__ <domain>" error.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn start_agentic_dast(
     app: AppHandle,
     url: String,
     tier: String,
     environment: String,
     accept_side_effects: bool,
+    grey_box: bool,
+    focus: String,
+    identities: Vec<PtIdentity>,
+    api_spec: String,
+    require_approval: bool,
+    allow_endpoints: Vec<String>,
+    deny_endpoints: Vec<String>,
+    limit_to_allowlist: bool,
+    allow_dangerous: bool,
+    attack_template: Option<AttackTemplateArg>,
 ) -> Result<ScanReturn, String> {
     kill_old_scans(&app);
     let _ = app.emit(
@@ -291,6 +319,56 @@ async fn start_agentic_dast(
     ];
     if accept_side_effects {
         args.push("--accept-side-effects".into());
+    }
+    if grey_box {
+        args.push("--grey-box".into());
+    }
+    if !focus.is_empty() {
+        args.push("--focus".into());
+        args.push(focus);
+    }
+    for id in &identities {
+        let name = id.name.trim();
+        let header = id.header.trim();
+        if !name.is_empty() && !header.is_empty() {
+            args.push("--identity".into());
+            args.push(format!("{name}={header}"));
+        }
+    }
+    if !api_spec.trim().is_empty() {
+        args.push("--api-spec".into());
+        args.push(api_spec.trim().into());
+    }
+    // §8 human-in-the-loop + rules of engagement.
+    if require_approval {
+        args.push("--require-approval".into());
+    }
+    for ep in &allow_endpoints {
+        let ep = ep.trim();
+        if !ep.is_empty() {
+            args.push("--allow-endpoint".into());
+            args.push(ep.into());
+        }
+    }
+    for ep in &deny_endpoints {
+        let ep = ep.trim();
+        if !ep.is_empty() {
+            args.push("--deny-endpoint".into());
+            args.push(ep.into());
+        }
+    }
+    if limit_to_allowlist {
+        args.push("--limit-to-allowlist".into());
+    }
+    if allow_dangerous {
+        args.push("--allow-dangerous".into());
+    }
+    // §9.4 selected Attack Market playbook, passed as one JSON arg (no shell).
+    if let Some(t) = &attack_template {
+        if let Ok(js) = serde_json::to_string(t) {
+            args.push("--attack-template".into());
+            args.push(js);
+        }
     }
 
     let (rx, child) = app

@@ -34,6 +34,11 @@ type triageFindingWire struct {
 	MatchedAt       string `json:"matchedAt,omitempty"`
 	Evidence        string `json:"evidence,omitempty"`
 	ResponseSnippet string `json:"responseSnippet,omitempty"`
+
+	// AgreedScanners lists every engine that independently reported this finding
+	// (from cross-scanner dedup — internal/normalizer/dedup.go). More than one is
+	// corroboration the edge prompt weights toward "confirmed" (A2).
+	AgreedScanners []string `json:"agreedScanners,omitempty"`
 }
 
 // TriageFindings asks the backend to adversarially verify each finding against
@@ -73,6 +78,7 @@ func triageBatch(findings []normalizer.Finding, accessToken string) ([]Verdict, 
 			MatchedAt:       f.FilePath, // holds MatchedAt for DAST findings
 			Evidence:        evidence,
 			ResponseSnippet: f.SurroundingCode,
+			AgreedScanners:  f.AgreedScanners,
 		}
 	}
 

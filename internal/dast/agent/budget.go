@@ -187,3 +187,22 @@ func (r *RateLimiter) Wait() {
 	}
 	r.last = now
 }
+
+// Restore rehydrates step/request/elapsed counters from a checkpoint so a
+// resumed run continues against the SAME caps rather than getting a fresh
+// budget. Without this, resuming would reset the step ceiling and a run could
+// loop indefinitely by exhausting tokens and topping up repeatedly.
+//
+// Elapsed is restored by back-dating start, which keeps the wall-clock cap
+// honest across the gap: time spent waiting for the user to top up is not
+// counted, but time already spent probing is.
+func (b *Budget) Restore(steps, requests int, elapsed time.Duration) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.steps = steps
+	b.requests = requests
+	b.start = b.clock().Add(-elapsed)
+	b.started = true
+	b.stopped = false
+	b.reason = ""
+}
