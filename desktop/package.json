@@ -16,7 +16,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run",
-    "build:ui": "cd ../ui && npm run build && cd ../dast-ui && npm run build",
+    "build:ui": "cd ../ui && npm run build && cd ../dast-ui && npm run build && touch dist/.gitkeep",
     "prebuild:go": "npm run build:ui"
   },
   "dependencies": {
