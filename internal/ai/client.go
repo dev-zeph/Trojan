@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/md5"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -13,10 +14,52 @@ import (
 	"github.com/dev-zeph/trojan/internal/normalizer"
 )
 
+// synthesizeURL is a var (not const) so tests can point it at an
+// httptest.NewServer instead of the real edge function.
+var synthesizeURL = "https://dtmocojzvgsswjdsrmqr.supabase.co/functions/v1/synthesize"
+
+// OverrideSynthesizeURL is a test-only hook: it points SynthesizeFinding at a
+// stub server (e.g. httptest.NewServer) and returns a func that restores the
+// real edge function URL. Exported because callers in other packages (like
+// cmd/trojan's concurrent-synthesis tests) need to stub the network too.
+func OverrideSynthesizeURL(url string) (restore func()) {
+	orig := synthesizeURL
+	synthesizeURL = url
+	return func() { synthesizeURL = orig }
+}
+
 const (
-	synthesizeURL = "https://dtmocojzvgsswjdsrmqr.supabase.co/functions/v1/synthesize"
-	licenseURL    = "https://dtmocojzvgsswjdsrmqr.supabase.co/functions/v1/license"
+	licenseURL = "https://dtmocojzvgsswjdsrmqr.supabase.co/functions/v1/license"
 )
+
+// ErrInsufficientTokens is the sentinel behind every InsufficientTokensError.
+// Callers that don't need the balance can just check errors.Is(err,
+// ErrInsufficientTokens) instead of type-asserting.
+var ErrInsufficientTokens = errors.New("insufficient trojan tokens")
+
+// InsufficientTokensError means the edge function returned 402: the request
+// itself was fine, the user's Trojan Token balance just can't cover it. This
+// is not a failure in the ordinary sense -- it's the single most important
+// message this feature can return, so it needs to be distinguishable from a
+// generic synthesis error rather than collapsed into one. Balance and Message
+// are parsed from the JSON body the edge function sends alongside the 402.
+type InsufficientTokensError struct {
+	Balance int
+	Message string
+}
+
+func (e *InsufficientTokensError) Error() string {
+	if e.Message != "" {
+		return e.Message
+	}
+	return fmt.Sprintf("insufficient trojan tokens, balance: %d", e.Balance)
+}
+
+// Unwrap lets errors.Is(err, ErrInsufficientTokens) succeed alongside
+// errors.As(err, &insufficientTokensErr) for callers that want the balance.
+func (e *InsufficientTokensError) Unwrap() error {
+	return ErrInsufficientTokens
+}
 
 // Synthesis holds the AI-generated explanation and fix steps for a finding.
 type Synthesis struct {
@@ -69,10 +112,8 @@ func FetchLicense(accessToken string) (*LicenseInfo, error) {
 // familiarity controls the tone: 0 = non-technical, 1 = junior dev, 2 = experienced.
 // aboutYou is free-form context from the user's profile.
 func SynthesizeFinding(finding normalizer.Finding, accessToken string, familiarity int, aboutYou string) (*Synthesis, error) {
-	activeFamiliarity = familiarity
-
 	// Check local cache first
-	if cached := loadFromCache(finding); cached != nil {
+	if cached := loadFromCache(finding, familiarity); cached != nil {
 		return cached, nil
 	}
 
@@ -112,6 +153,19 @@ func SynthesizeFinding(finding normalizer.Finding, accessToken string, familiari
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusPaymentRequired {
+		// The edge function's 402 body is {"error":"insufficient_tokens",
+		// "message":..., "balance":N}. Best-effort decode: even if the body is
+		// missing or malformed, still return a distinguishable error rather
+		// than falling through to the generic one below.
+		var body struct {
+			Message string `json:"message"`
+			Balance int    `json:"balance"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&body)
+		return nil, &InsufficientTokensError{Balance: body.Balance, Message: body.Message}
+	}
+
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("synthesis failed (status %d)", resp.StatusCode)
 	}
@@ -121,28 +175,27 @@ func SynthesizeFinding(finding normalizer.Finding, accessToken string, familiari
 		return nil, err
 	}
 
-	saveToCache(finding, &synthesis)
+	saveToCache(finding, familiarity, &synthesis)
 	return &synthesis, nil
 }
-
-// activeFamiliarity is set once per process from the config and included in
-// cache keys so changing your familiarity level invalidates stale explanations.
-var activeFamiliarity int
 
 // cachePath returns the local cache file path for a finding.
 // The key includes a 4-byte hash of the code snippet + file path + familiarity
 // so that the same rule at different tone levels gets its own cached explanation.
-func cachePath(f normalizer.Finding) string {
+// familiarity is passed in rather than read off a package-level var: synthesis
+// runs many findings concurrently (see cmd/trojan's synthesizeConcurrently),
+// and a shared mutable global here would race across those goroutines.
+func cachePath(f normalizer.Finding, familiarity int) string {
 	home, _ := os.UserHomeDir()
-	h := md5.Sum([]byte(f.CodeSnippet + f.FilePath + fmt.Sprintf("%d", activeFamiliarity)))
+	h := md5.Sum([]byte(f.CodeSnippet + f.FilePath + fmt.Sprintf("%d", familiarity)))
 	key := fmt.Sprintf("%s-%s-%x.json", sanitize(f.RuleID), sanitize(f.Scanner), h[:4])
 	return filepath.Join(home, ".trojan", "cache", key)
 }
 
 const cacheTTL = 30 * 24 * time.Hour // AI explanations refresh every 30 days
 
-func loadFromCache(f normalizer.Finding) *Synthesis {
-	p := cachePath(f)
+func loadFromCache(f normalizer.Finding, familiarity int) *Synthesis {
+	p := cachePath(f, familiarity)
 
 	info, err := os.Stat(p)
 	if err != nil || time.Since(info.ModTime()) > cacheTTL {
@@ -160,8 +213,8 @@ func loadFromCache(f normalizer.Finding) *Synthesis {
 	return &s
 }
 
-func saveToCache(f normalizer.Finding, s *Synthesis) {
-	path := cachePath(f)
+func saveToCache(f normalizer.Finding, familiarity int, s *Synthesis) {
+	path := cachePath(f, familiarity)
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return
 	}
