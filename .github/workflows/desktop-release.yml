@@ -142,36 +142,67 @@ jobs:
       # desktop releases went out unsigned because nothing ever checked, and the
       # website picks up whatever .dmg it finds (lib/releases.ts) without
       # looking at its signature.
+      #
+      # The .app is what Gatekeeper quarantines and launches, so the app checks
+      # are the hard gate. The .dmg is reported but not enforced: Tauri notarizes
+      # and staples the APP and then builds the disk image around it, so the
+      # image itself is not necessarily stapled and failing on that would be
+      # wrong.
       - name: Verify signature and notarization
         if: matrix.os == 'macos-14'
         working-directory: desktop
         run: |
           set -euo pipefail
           APP="src-tauri/target/${{ matrix.target }}/release/bundle/macos/Trojan.app"
-          DMG=$(ls src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg | head -1)
 
-          echo "::group::codesign"
+          echo "::group::app signature"
           codesign --verify --deep --strict --verbose=2 "$APP"
           codesign -dvvv "$APP" 2>&1 | grep -E 'Authority|TeamIdentifier|flags'
+          # 0x10000(runtime) is the hardened runtime bit. Notarization is
+          # refused without it, so its absence means something regressed.
+          codesign -dvvv "$APP" 2>&1 | grep -q 'flags=.*runtime' \
+            || { echo "::error::hardened runtime flag missing"; exit 1; }
           echo "::endgroup::"
 
-          # The sidecar is a nested Mach-O. If it is unsigned, notarization
-          # fails -- and if it were somehow missed, the app breaks on launch.
-          echo "::group::sidecar"
-          codesign --verify --strict --verbose=2 \
-            "$APP/Contents/MacOS/trojan-${{ matrix.target }}"
+          # Every Mach-O in Contents/MacOS must be signed, including the Go
+          # sidecar from bundle.externalBin. Do NOT hardcode the sidecar name:
+          # Tauri strips the target triple when bundling, so binaries/trojan
+          # lands as "trojan", not "trojan-aarch64-apple-darwin". Hardcoding the
+          # suffixed name cost a full 73-minute notarization cycle on 0.3.0.
+          echo "::group::nested binaries"
+          for bin in "$APP/Contents/MacOS/"*; do
+            [ -f "$bin" ] || continue
+            echo "checking $(basename "$bin")"
+            codesign --verify --strict --verbose=2 "$bin"
+          done
           echo "::endgroup::"
 
-          # The real test. "source=Notarized Developer ID" is the only output
-          # that means a downloader will not see a Gatekeeper warning.
+          # The real test: this is the assessment a downloader's Mac performs.
           echo "::group::gatekeeper"
-          spctl -a -vvv -t install "$DMG"
-          xcrun stapler validate "$DMG"
+          spctl -a -vvv -t exec "$APP"
+          xcrun stapler validate "$APP"
           echo "::endgroup::"
 
-      # Uploads whatever this OS produced; globs that match nothing are ignored
-      # (fail_on_unmatched_files defaults to false). macOS → .dmg; Windows →
-      # NSIS .exe + .msi. Both matrix jobs write to the same draft release.
+          echo "::group::dmg (informational)"
+          DMG=$(ls src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg | head -1)
+          codesign -dvv "$DMG" 2>&1 | head -5 || echo "dmg is not itself signed"
+          xcrun stapler validate "$DMG" || echo "dmg not stapled (expected; the app inside is)"
+          echo "::endgroup::"
+
+      # A notarized build costs over an hour of Apple queue time. If the step
+      # above fails on its own bug rather than a real signing problem, keep the
+      # artifact so the fix can be verified without paying that again. Workflow
+      # artifacts are not the release, so nothing reaches users this way.
+      - name: Preserve bundle on verification failure
+        if: failure() && matrix.os == 'macos-14'
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-bundle-unverified
+          retention-days: 3
+          path: |
+            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app
+
       - name: Upload installers to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
