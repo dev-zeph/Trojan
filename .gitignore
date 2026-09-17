@@ -47,7 +47,7 @@ docs/
 # Crash analytics (Trojan Errors) — local runtime, never committed
 crash-analytics/bugsink/.venv/
 crash-analytics/bugsink/bugsink_conf.py
-crash-analytics/bugsink/*.sqlite3
+crash-analytics/bugsink/*.sqlite3*
 crash-analytics/bugsink/ingestion-store/
 crash-analytics/runtime.json
 crash-analytics/.data/
