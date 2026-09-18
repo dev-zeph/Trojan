@@ -51,6 +51,12 @@ type Node struct {
 	SinkRule string `json:"sink_rule,omitempty"`
 	// Severity is a coarse rank for sinks: "high" | "medium".
 	Severity string `json:"severity,omitempty"`
+	// Tags carries org-authored annotations layered onto the graph by
+	// internal/orgcontext (e.g. sensitive_data_category="PHI",
+	// trust_boundary="public API"). Nil until an overlay has been applied;
+	// additive so generic heuristics above are never overwritten, only
+	// corrected or extended by what the user actually told Trojan.
+	Tags map[string]string `json:"tags,omitempty"`
 }
 
 // Edge is a directed relationship between two nodes.
