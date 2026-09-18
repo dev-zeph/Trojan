@@ -9,6 +9,7 @@ require (
 	github.com/mark3labs/mcp-go v0.54.1
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
 	github.com/spf13/cobra v1.10.2
+	github.com/tetratelabs/wazero v1.8.2
 	golang.org/x/net v0.55.0
 	gopkg.in/yaml.v3 v3.0.1
 )
