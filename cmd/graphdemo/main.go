@@ -28,19 +28,15 @@ func main() {
 	}
 	root := os.Args[1]
 
-	all, err := rag.WalkSource(root)
+	files, err := rag.WalkSource(root)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "walk: %v\n", err)
 		os.Exit(1)
 	}
-	var goFiles []string
-	for _, f := range all {
-		if strings.EqualFold(filepath.Ext(f), ".go") {
-			goFiles = append(goFiles, f)
-		}
-	}
 
-	g, err := graph.BuildFromGoFiles(goFiles)
+	// BuildFromFiles routes each file by extension: Go via go/ast, JS/TS/Python
+	// via the tree-sitter WASM pipeline (wazero, CGO-free).
+	g, err := graph.BuildFromFiles(files)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "build: %v\n", err)
 		os.Exit(1)
@@ -60,7 +56,7 @@ func main() {
 	}
 
 	fmt.Printf("Code Property Graph for %s\n", root)
-	fmt.Printf("  Go files scanned : %d\n", len(goFiles))
+	fmt.Printf("  files scanned    : %d  (Go, JS, TS, Python)\n", len(files))
 	fmt.Printf("  functions        : %d\n", funcs)
 	fmt.Printf("  entrypoints      : %d  (untrusted sources)\n", sources)
 	fmt.Printf("  sinks            : %d  (dangerous calls)\n", sinks)
