@@ -111,6 +111,7 @@ func (s *Server) Start() (string, error) {
 	mux.HandleFunc("/api/dast/consent/mint", s.handleConsentMint)
 	mux.HandleFunc("/api/dast/consent/verify", s.handleConsentVerify)
 	mux.HandleFunc("/api/dast/agentic/status", s.handleAgenticStatus)
+	mux.HandleFunc("/api/dast/resumable", s.handleResumable)
 	mux.HandleFunc("/api/dast/agentic/events", s.handleAgenticEvents)
 	mux.HandleFunc("/api/dast/approval", s.handleApproval)
 

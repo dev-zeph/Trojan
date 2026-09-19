@@ -72,6 +72,40 @@ func (s *Server) BroadcastAgentEvent(evt AgentEvent) {
 	}
 }
 
+// handleResumable reports whether a prior agentic run for the given target
+// paused resumably (it ran out of Trojan Tokens). The desktop calls this after
+// a run to decide whether to show a "Resume run" affordance in the report
+// header. Matches the target when a url is given, else the newest resumable run.
+func (s *Server) handleResumable(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method_not_allowed"})
+		return
+	}
+	target := r.URL.Query().Get("url")
+	sums, err := agent.ListCheckpoints()
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"resumable": false})
+		return
+	}
+	for _, cp := range sums { // newest-first
+		if !cp.Resumable {
+			continue
+		}
+		if target == "" || cp.TargetURL == target {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"resumable":  true,
+				"runId":      cp.RunID,
+				"targetUrl":  cp.TargetURL,
+				"stopReason": string(cp.StopReason),
+				"steps":      cp.Steps,
+				"findings":   cp.Findings,
+			})
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"resumable": false})
+}
+
 func (s *Server) handleAgenticStatus(w http.ResponseWriter, r *http.Request) {
 	s.agenticMu.Lock()
 	status := s.agenticStatus

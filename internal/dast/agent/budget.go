@@ -36,9 +36,9 @@ type Limits struct {
 // DefaultLimits are the shipping defaults from §8 (all configurable).
 func DefaultLimits() Limits {
 	return Limits{
-		MaxSteps:         15,
-		MaxRequests:      500,
-		WallClock:        5 * time.Minute,
+		MaxSteps:         30,
+		MaxRequests:      800,
+		WallClock:        15 * time.Minute,
 		RequestsPerSec:   10,
 		MaxResponseBytes: 256 * 1024,
 		ProbeTimeout:     15 * time.Second,

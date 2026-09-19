@@ -50,9 +50,12 @@ func turn(stop string, blocks ...json.RawMessage) *TurnResult {
 }
 
 func TestRunFinishesOnFinishTool(t *testing.T) {
-	tb, _ := newTestbox(t, DefaultLimits(), http.NotFoundHandler())
+	// Probe the one seeded endpoint first so coverage is met and the diligence
+	// gate honors the finish (a finish with zero coverage would be deferred, see
+	// TestConsiderFinishGate).
+	tb, base := newTestbox(t, DefaultLimits(), http.NotFoundHandler())
 	tr := &fakeTransport{turns: []*TurnResult{
-		turn("tool_use", textBlock("Let me look at the map."), toolUseBlock("t1", toolGetCrawlMap, map[string]any{})),
+		turn("tool_use", textBlock("Let me probe the endpoint."), toolUseBlock("p1", toolHTTPProbe, ProbeRequest{Method: "GET", URL: base + "/"})),
 		turn("tool_use", toolUseBlock("t2", toolFinish, map[string]any{"summary": "nothing exploitable"})),
 	}}
 
@@ -68,6 +71,50 @@ func TestRunFinishesOnFinishTool(t *testing.T) {
 	}
 	if res.Steps != 2 {
 		t.Errorf("Steps = %d, want 2", res.Steps)
+	}
+}
+
+// TestConsiderFinishGate verifies the diligence gate: an early finish with thin
+// coverage is declined with a nudge, then honored once the surface is covered.
+func TestConsiderFinishGate(t *testing.T) {
+	tb, _ := newTestbox(t, DefaultLimits(), http.NotFoundHandler()) // seeds 1 endpoint, 0 tested
+
+	nudge, done := tb.ConsiderFinish("looks clean")
+	if done {
+		t.Fatal("finish honored with 0 coverage, want deferred")
+	}
+	if nudge == "" {
+		t.Error("expected a nudge message guiding the agent to keep testing")
+	}
+	if fin, _ := tb.Finished(); fin {
+		t.Error("run should not be marked finished while deferred")
+	}
+
+	// Cover the surface, then finish is honored.
+	if id, ok := tb.Graph().EndpointNodeByPath("/"); ok {
+		tb.Graph().SetStatus(id, StatusSafe)
+	} else {
+		t.Fatal("seeded endpoint / not found in graph")
+	}
+	if _, done := tb.ConsiderFinish("done"); !done {
+		t.Error("finish should be honored once coverage is met")
+	}
+	if fin, sum := tb.Finished(); !fin || sum != "done" {
+		t.Errorf("Finished() = (%v, %q), want (true, \"done\")", fin, sum)
+	}
+}
+
+// TestConsiderFinishNudgeCap verifies the gate eventually yields to the agent's
+// judgment so a run can never be trapped: after maxFinishNudges, finish wins.
+func TestConsiderFinishNudgeCap(t *testing.T) {
+	tb, _ := newTestbox(t, DefaultLimits(), http.NotFoundHandler())
+	for i := range maxFinishNudges {
+		if _, done := tb.ConsiderFinish("stop"); done {
+			t.Fatalf("nudge %d honored early, want deferred", i)
+		}
+	}
+	if _, done := tb.ConsiderFinish("stop"); !done {
+		t.Errorf("finish should be honored after %d nudges", maxFinishNudges)
 	}
 }
 
