@@ -118,6 +118,9 @@ export default function App() {
   const [dastFindings, setDastFindings]   = useState<any[]>([]);
   const [pentestReport, setPentestReport] = useState<PentestReport | null>(null);
   const [pentestReportRunning, setPentestReportRunning] = useState(false);
+  // Set when a prior agentic run for the open target paused because tokens ran
+  // out. Drives the "Resume run" affordance in the report header.
+  const [resumable, setResumable]         = useState<{ runId: string; stopReason: string } | null>(null);
   const [toasts, setToasts]               = useState<Toast[]>([]);
   const [packages, setPackages]           = useState<PkgInfo[]>([]);
   const [privacyReport, setPrivacyReport] = useState<PrivacyReport | null>(null);
@@ -755,6 +758,51 @@ export default function App() {
       });
   }
 
+  // Continue a run that paused when tokens ran out. Grey-box and approval are
+  // runtime options rebuilt each run (not held in the checkpoint), so we pass
+  // the current toggles through, matching a fresh agentic run.
+  function triggerResumeDast(url: string): void {
+    if (!url.trim() || isScanning) return;
+    const id = crypto.randomUUID();
+    addToast(id, url, "dast", url);
+
+    invoke<{ url: string; cachePath: string }>("resume_agentic_dast", {
+      url,
+      greyBox: agGreyBox,
+      requireApproval: agRequireApproval,
+    })
+      .then(async ({ url: rUrl, cachePath }) => {
+        updateToastDone(id, rUrl, cachePath);
+        await updateRecentUrl(url, rUrl);
+        await updateRecentCachePath(url, cachePath);
+        setRecent(await loadRecent());
+        setResumable(null);
+        openReport(rUrl, url, "dast");
+      })
+      .catch((e) => {
+        const msg = String(e);
+        if (msg.includes("__cancelled__")) return;
+        updateToastError(id, friendlyError(msg));
+      });
+  }
+
+  // When a DAST report is open, ask the report server whether a prior run for
+  // this target paused resumably (out of tokens), to show the Resume button.
+  useEffect(() => {
+    if (view !== "report" || scanType !== "dast" || !reportUrl || !scanPath) {
+      setResumable(null);
+      return;
+    }
+    let cancelled = false;
+    fetch(`${reportUrl}/api/dast/resumable?url=${encodeURIComponent(scanPath)}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (!cancelled) setResumable(d?.resumable ? { runId: d.runId, stopReason: d.stopReason } : null);
+      })
+      .catch(() => { if (!cancelled) setResumable(null); });
+    return () => { cancelled = true; };
+  }, [view, scanType, scanPath, reportUrl]);
+
   function openReport(url: string, path: string, type: ScanType): void {
     setScanPath(path);
     setScanType(type);
@@ -1117,6 +1165,17 @@ export default function App() {
                       ? <span className="lab-spinner" />
                       : <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M9 15l2 2 4-4"/></svg>}
                     {pentestReportRunning ? "Generating…" : "Generate Report"}
+                  </button>
+                )}
+                {scanType === "dast" && resumable && (
+                  <button
+                    className="rescan-btn"
+                    onClick={() => triggerResumeDast(scanPath)}
+                    disabled={isScanning}
+                    title={`Continue the run that paused (${resumable.stopReason}). Picks up where it stopped.`}
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9"/><path d="M10 8l6 4-6 4V8z"/></svg>
+                    Resume run
                   </button>
                 )}
                 <button
