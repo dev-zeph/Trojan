@@ -1,13 +1,28 @@
 import { useState } from "react";
 import { saveProfile } from "../lib/store";
-import type { UserProfile } from "../types";
+import { saveContextDraft, setContextOnboarded } from "../lib/orgContext";
+import type { OrgContext, UserProfile } from "../types";
 import { AuthForm } from "./AuthForm";
+import { OrgContextWizard } from "./OrgContext";
 
 // ── Onboarding ────────────────────────────────────────────────────────────
+// First run is two acts: (1) set up the account or a local workspace, then
+// (2) author the project's security-and-privacy context in a guided wizard.
+// Act 2 runs BEFORE onDone so the wizard is not unmounted the instant the
+// profile is set. Whatever the user authors is stored locally (never uploaded)
+// and synced into the project's .trojan/context.yaml on the first scan.
 export function Onboarding({ onDone }: { onDone: (p: UserProfile) => void }) {
+  const [phase, setPhase]         = useState<"account" | "context">("account");
+  const [pending, setPending]     = useState<UserProfile | null>(null);
   const [showLocal, setShowLocal] = useState(false);
   const [name, setName]           = useState("");
   const [busy, setBusy]           = useState(false);
+
+  // Account setup done -> move on to the context wizard instead of finishing.
+  function toContext(p: UserProfile) {
+    setPending(p);
+    setPhase("context");
+  }
 
   function handleAuth(token: string, authName: string, email: string, refreshToken: string) {
     const p: UserProfile = {
@@ -16,7 +31,7 @@ export function Onboarding({ onDone }: { onDone: (p: UserProfile) => void }) {
       token,
       refreshToken,
     };
-    saveProfile(p).then(() => onDone(p));
+    saveProfile(p).then(() => toContext(p));
   }
 
   async function handleLocalSubmit(e: React.FormEvent) {
@@ -25,9 +40,27 @@ export function Onboarding({ onDone }: { onDone: (p: UserProfile) => void }) {
     setBusy(true);
     const p: UserProfile = { name: name.trim(), email: "" };
     await saveProfile(p);
-    onDone(p);
+    setBusy(false);
+    toContext(p);
   }
 
+  async function finishContext(ctx: OrgContext | null) {
+    if (ctx) await saveContextDraft(ctx);
+    await setContextOnboarded(true);
+    if (pending) onDone(pending);
+  }
+
+  // ── Act 2: guided org-context wizard ──
+  if (phase === "context") {
+    return (
+      <OrgContextWizard
+        onFinish={(ctx) => finishContext(ctx)}
+        onSkip={() => finishContext(null)}
+      />
+    );
+  }
+
+  // ── Act 1: account / local workspace ──
   return (
     <div className="ob-split">
 

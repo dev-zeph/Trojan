@@ -11,6 +11,8 @@ import type { PentestReport } from "./PrintPenTestReport";
 import { AttackMarket, prefetchAttackMarket } from "./AttackMarket";
 import type { AttackTemplate } from "./AttackMarket";
 import { McpConnect } from "./McpConnect";
+import { OrgContextEditor, LocalPrivacyBadge } from "./components/OrgContext";
+import { syncDraftToServer } from "./lib/orgContext";
 import { gradeColor, licenseRiskColor } from "./lib/reportColors";
 import { MARKETING_URL, STORE_KEY, SUPABASE_URL, TERMINAL_KEY, APP_VERSION } from "./constants";
 import { supabase, decodeJWT, encodeBody, syncAuthToGoConfig } from "./lib/supabase";
@@ -80,6 +82,9 @@ const NAV: { view: NavView; label: string; icon: React.ReactNode; pro?: boolean;
   },
   { view: "autofix", label: "Fix with AI",
     icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z M2 17l10 5 10-5 M2 12l10 5 10-5"/></svg>,
+  },
+  { view: "context", label: "Project Context",
+    icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>,
   },
   { view: "profile", label: "Profile",
     icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>,
@@ -538,6 +543,11 @@ export default function App() {
 
   async function fetchAndCachePackages(serverUrl: string) {
     setCurrentServerUrl(serverUrl);
+    // If the user authored an org context during onboarding and this project
+    // doesn't have one yet, write it into the project's .trojan/context.yaml
+    // now that a server (which knows the project root) is running. Fire and
+    // forget: it never blocks or breaks a scan, and retries on the next one.
+    void syncDraftToServer(serverUrl);
     try {
       const [scanRes, authRes] = await Promise.all([
         fetch(`${serverUrl}/api/scans/latest`),
@@ -1198,6 +1208,10 @@ export default function App() {
                   <button className="first-run-cta" onClick={handlePickFolder}>
                     Scan a project
                   </button>
+                  <button className="first-run-context-link" onClick={() => setView("context")}>
+                    Set up your project context for smarter, privacy-aware scans {"→"}
+                  </button>
+                  <LocalPrivacyBadge compact />
                 </div>
               );
             }
@@ -1394,6 +1408,19 @@ export default function App() {
                 <h1 className="page-header-title">Static Analysis</h1>
                 <p className="page-header-desc">Scan a local project for vulnerabilities, secrets, and misconfigurations.</p>
               </div>
+
+              {/* Context-aware scanning callout — surfaces the local org-context
+                  feature without nagging. */}
+              <button className="oc-feature-callout" onClick={() => setView("context")}>
+                <span className="oc-feature-icon">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
+                </span>
+                <span className="oc-feature-text">
+                  <span className="oc-feature-title">Context-aware scanning</span>
+                  <span className="oc-feature-sub">Tell Trojan what you are building and it tests intentionally, for security and privacy. Stored on your machine, never uploaded.</span>
+                </span>
+                <span className="oc-feature-cta">Set up context {"→"}</span>
+              </button>
 
               <div className={`scan-tip-wrap ${isScanning ? "scanning-active" : ""}`}>
               <div
@@ -2813,6 +2840,11 @@ export default function App() {
           })()}
 
           {/* ── Profile ── */}
+          {/* ── Project Context (view + edit the local org context) ── */}
+          {view === "context" && (
+            <OrgContextEditor serverUrl={currentServerUrl} />
+          )}
+
           {view === "profile" && (() => {
             const fams = [
               { name: "Non-technical founder", desc: "Plain language, no jargon — what each risk means for your business and customers." },
