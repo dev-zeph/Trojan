@@ -287,3 +287,74 @@ func TestWriteScaffold_CreatesFileAndRefusesOverwrite(t *testing.T) {
 		t.Errorf("WriteScaffold with force: %v", err)
 	}
 }
+
+// TestSave_RoundTrip proves Save writes a context that Load can read back
+// with the same values, and that it returns an absolute path to the file it
+// wrote at the conventional location.
+func TestSave_RoundTrip(t *testing.T) {
+	root := t.TempDir()
+
+	want := &OrgContext{
+		App: AppInfo{
+			Name:        "Acme Billing API",
+			Description: "Billing API for a B2B SaaS product.",
+		},
+		SensitiveData: []SensitiveDataCategory{
+			{Category: "PII", Description: "Customer contact info", SymbolPatterns: []string{"(?i)email"}},
+		},
+		TrustBoundaries: []TrustBoundary{
+			{Name: "public API", FilePatterns: []string{"internal/api/**"}},
+		},
+		ThreatActors: []ThreatActor{
+			{Name: "external attacker", Targets: []string{"public API"}},
+		},
+	}
+
+	path, err := Save(root, want)
+	if err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if !filepath.IsAbs(path) {
+		t.Errorf("Save path = %q, want an absolute path", path)
+	}
+	wantPath, err := filepath.Abs(Path(root))
+	if err != nil {
+		t.Fatalf("filepath.Abs: %v", err)
+	}
+	if path != wantPath {
+		t.Errorf("Save path = %q, want %q", path, wantPath)
+	}
+	if !Exists(Path(root)) {
+		t.Fatal("Save did not create a file at the conventional path")
+	}
+
+	got, err := Load(Path(root))
+	if err != nil {
+		t.Fatalf("Load after Save: %v", err)
+	}
+	if got.App.Name != want.App.Name || got.App.Description != want.App.Description {
+		t.Errorf("App round-trip mismatch: got %+v, want %+v", got.App, want.App)
+	}
+	if len(got.SensitiveData) != 1 || got.SensitiveData[0].Category != "PII" {
+		t.Errorf("SensitiveData round-trip mismatch: got %+v", got.SensitiveData)
+	}
+	if len(got.TrustBoundaries) != 1 || got.TrustBoundaries[0].Name != "public API" {
+		t.Errorf("TrustBoundaries round-trip mismatch: got %+v", got.TrustBoundaries)
+	}
+	if len(got.ThreatActors) != 1 || got.ThreatActors[0].Name != "external attacker" {
+		t.Errorf("ThreatActors round-trip mismatch: got %+v", got.ThreatActors)
+	}
+
+	// Save again overwrites cleanly (unlike WriteScaffold, which refuses).
+	want.App.Name = "Renamed"
+	if _, err := Save(root, want); err != nil {
+		t.Fatalf("second Save: %v", err)
+	}
+	got2, err := Load(Path(root))
+	if err != nil {
+		t.Fatalf("Load after second Save: %v", err)
+	}
+	if got2.App.Name != "Renamed" {
+		t.Errorf("App.Name after overwrite = %q, want %q", got2.App.Name, "Renamed")
+	}
+}

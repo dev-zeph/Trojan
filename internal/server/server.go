@@ -105,6 +105,7 @@ func (s *Server) Start() (string, error) {
 	mux.HandleFunc("/api/auth/status", s.handleAuthStatus)
 	mux.HandleFunc("/api/events", s.handleSSE)
 	mux.HandleFunc("/api/install-progress", s.handleInstallProgress)
+	mux.HandleFunc("/api/context", s.handleContext)
 
 	// Agentic-DAST (Phase 5): consent gate + live run stream.
 	mux.HandleFunc("/api/dast/consent/status", s.handleConsentStatus)
