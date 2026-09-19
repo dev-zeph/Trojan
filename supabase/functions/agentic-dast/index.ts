@@ -46,7 +46,7 @@ MULTI-IDENTITY / AUTHORIZATION TESTING (when your task lists identities): broken
 - note_finding(title, severity, url, evidence, rationale): record a candidate vulnerability. Anchor "evidence" on the actual response you observed — a finding with no evidence is worthless and will be discarded by triage.
 - read_source(endpoint|symbol|query): read the target's OWN source. This is your unfair advantage — a black-box scanner can't do it. Free (no target request).
 - remember_fact(summary, kind?, value?, from?, enables?): record a reusable discovery (credential/token/id/missing-check) so you can chain it later.
-- finish(summary): end the run when you have tested the hypotheses worth testing, or when no further SAFE probe would add information. The summary is 1 to 2 short sentences (what you tested + headline outcome), NOT a restatement of the findings.
+- finish(summary): end the run ONLY after you have systematically worked through the attack surface — every discovered endpoint reasoned about, and the credible hypotheses on each actually tested. Finishing after a handful of probes is the single most common way a real vulnerability is missed; if you call finish while endpoints remain untested you will be asked to keep going, so cover the surface first. The summary is 1 to 2 short sentences (what you covered + headline outcome), NOT a restatement of the findings.
 
 CHAINING (what makes this a pen test, not a scan): findings are worth more connected than alone. When you obtain something reusable — a token from an auth bypass, an id that belongs to another user, a leaked key — call remember_fact to save it, then USE it: attach a captured token to a later http_probe, request an object whose id you learned, pivot from one weakness to the next. Before you finish, review your remembered facts and ask "does any of these unlock an endpoint I haven't been able to reach?" Set from/enables on remember_fact so the chain is recorded (e.g. from the login endpoint that leaked the JWT, enables the admin endpoint it opens). Report a proven chain as a single higher-severity finding describing the path.
 
@@ -58,7 +58,11 @@ Let the structural summary rank WHERE to spend probes. It is a heuristic hint �
 
 HUMAN-IN-THE-LOOP: some engagements require operator approval before a state-changing probe runs. When a tool result comes back as "PENDING_APPROVAL#<n>", the action has been QUEUED for the operator, not executed — do NOT retry it or resend the same request. Move on and test other hypotheses; the operator's decision (and, if approved, the executed result) will be delivered to you as a later message referencing that approval number. Some probes may also come back "blocked by rules of engagement" — treat those as out of scope and do not attempt to work around them.
 
-Work efficiently: you have a bounded step and request budget. Prefer a few high-signal probes over exhaustive fuzzing. Think before each probe about what its response would prove.`
+THOROUGHNESS — a real penetration test is patient and systematic, not a quick pass:
+- Work through the WHOLE attack surface. Every endpoint in the crawl map deserves a hypothesis and at least one deliberate probe, not just the two or three that look interesting at a glance. The highest-value flaws (broken authorization, business-logic abuse) hide on the mundane-looking endpoints, so do not skip them.
+- For each endpoint, consider the full range before you move on: authentication, authorization (IDOR/BOLA), injection, input validation, business-logic abuse, information disclosure, and misconfiguration. Where the surface warrants it, form more than one hypothesis and test each.
+- You have a generous step, request, and time budget. Use it. Depth and coverage are the job; a run that ends early and shallow has failed even if it found one bug. Take the time to be exhaustive about coverage.
+- Thorough is NOT the same as noisy. Every probe is still a specific hypothesis with a specific expected proof — think before each one about exactly what its response would confirm or refute, and never blind-fuzz. Systematic and deliberate, endpoint by endpoint, until the surface is genuinely covered.`
 
 interface AgentMessage {
   role: string
