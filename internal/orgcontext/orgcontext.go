@@ -33,12 +33,12 @@ const DefaultRelPath = ".trojan/context.yaml"
 // AppInfo describes what the app is and does, in the user's own words.
 type AppInfo struct {
 	// Name is the app's name, used in report copy ("threat model for X").
-	Name string `yaml:"name"`
+	Name string `json:"name" yaml:"name"`
 	// Description is a one-paragraph, free-text explanation of what the app
 	// is, who uses it, and why it exists. This is the single highest-value
 	// field in the whole schema: it is what lets Trojan test intentionally
 	// instead of generically.
-	Description string `yaml:"description"`
+	Description string `json:"description" yaml:"description"`
 }
 
 // SensitiveDataCategory names one category of sensitive data the app handles
@@ -47,15 +47,15 @@ type AppInfo struct {
 // PII and tags it with the category name.
 type SensitiveDataCategory struct {
 	// Category is a short label, e.g. "PII", "PHI", "payment", "credentials".
-	Category string `yaml:"category"`
+	Category string `json:"category" yaml:"category"`
 	// Description is optional free text, e.g. "Customer names and emails".
-	Description string `yaml:"description,omitempty"`
+	Description string `json:"description,omitempty" yaml:"description,omitempty"`
 	// FilePatterns are glob-like path patterns (supporting "*" and "**")
 	// matched against a node's source file, e.g. "internal/billing/**".
-	FilePatterns []string `yaml:"file_patterns,omitempty"`
+	FilePatterns []string `json:"file_patterns,omitempty" yaml:"file_patterns,omitempty"`
 	// SymbolPatterns are regexes matched against a node's name (a function's
 	// package-qualified symbol, or a sink's callee expression).
-	SymbolPatterns []string `yaml:"symbol_patterns,omitempty"`
+	SymbolPatterns []string `json:"symbol_patterns,omitempty" yaml:"symbol_patterns,omitempty"`
 }
 
 // TrustBoundary names a zone of trust (public API, internal admin, ...) and
@@ -63,15 +63,15 @@ type SensitiveDataCategory struct {
 // graph nodes with the boundary's name.
 type TrustBoundary struct {
 	// Name identifies the boundary, e.g. "public API", "internal admin".
-	Name string `yaml:"name"`
+	Name string `json:"name" yaml:"name"`
 	// Description is optional free text explaining the boundary.
-	Description string `yaml:"description,omitempty"`
+	Description string `json:"description,omitempty" yaml:"description,omitempty"`
 	// FilePatterns are glob-like path patterns matched against a node's
 	// source file.
-	FilePatterns []string `yaml:"file_patterns,omitempty"`
+	FilePatterns []string `json:"file_patterns,omitempty" yaml:"file_patterns,omitempty"`
 	// SymbolPatterns are regexes matched against a node's name, useful for
 	// route/handler naming conventions (e.g. "(?i)^Handle").
-	SymbolPatterns []string `yaml:"symbol_patterns,omitempty"`
+	SymbolPatterns []string `json:"symbol_patterns,omitempty" yaml:"symbol_patterns,omitempty"`
 }
 
 // ThreatActor names who the user is defending against, and, optionally, which
@@ -79,23 +79,23 @@ type TrustBoundary struct {
 type ThreatActor struct {
 	// Name identifies the actor, e.g. "external attacker", "malicious
 	// tenant", "insider".
-	Name string `yaml:"name"`
+	Name string `json:"name" yaml:"name"`
 	// Description is optional free text about this actor's capabilities.
-	Description string `yaml:"description,omitempty"`
+	Description string `json:"description,omitempty" yaml:"description,omitempty"`
 	// Targets lists TrustBoundary.Name values this actor is assumed to be
 	// able to reach. Purely descriptive metadata for now (consumed by the AI
 	// loop and reporting, not by ApplyOverlay).
-	Targets []string `yaml:"targets,omitempty"`
+	Targets []string `json:"targets,omitempty" yaml:"targets,omitempty"`
 }
 
 // OrgContext is the authored, organization-level model of a codebase: what it
 // is, what data it protects, where its boundaries are, and who threatens it.
 // It is deliberately small and hand-written, not inferred.
 type OrgContext struct {
-	App             AppInfo                 `yaml:"app"`
-	SensitiveData   []SensitiveDataCategory `yaml:"sensitive_data,omitempty"`
-	TrustBoundaries []TrustBoundary         `yaml:"trust_boundaries,omitempty"`
-	ThreatActors    []ThreatActor           `yaml:"threat_actors,omitempty"`
+	App             AppInfo                 `json:"app" yaml:"app"`
+	SensitiveData   []SensitiveDataCategory `json:"sensitive_data,omitempty" yaml:"sensitive_data,omitempty"`
+	TrustBoundaries []TrustBoundary         `json:"trust_boundaries,omitempty" yaml:"trust_boundaries,omitempty"`
+	ThreatActors    []ThreatActor           `json:"threat_actors,omitempty" yaml:"threat_actors,omitempty"`
 }
 
 // Path returns the project-local context file path for a project root
@@ -121,4 +121,29 @@ func Load(path string) (*OrgContext, error) {
 		return nil, fmt.Errorf("orgcontext: parse %s: %w", path, err)
 	}
 	return &ctx, nil
+}
+
+// Save marshals ctx to YAML and writes it to .trojan/context.yaml under root,
+// creating .trojan/ if needed. It overwrites any existing file (unlike
+// WriteScaffold, which refuses to clobber authored context) since Save is the
+// explicit "persist what the user just edited" path used by the API and any
+// caller that already holds a validated OrgContext. It returns the absolute
+// path written.
+func Save(root string, ctx *OrgContext) (string, error) {
+	path := Path(root)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", fmt.Errorf("orgcontext: create %s: %w", filepath.Dir(path), err)
+	}
+	data, err := yaml.Marshal(ctx)
+	if err != nil {
+		return "", fmt.Errorf("orgcontext: marshal context: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return "", fmt.Errorf("orgcontext: write %s: %w", path, err)
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return path, nil
+	}
+	return abs, nil
 }

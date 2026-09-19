@@ -23,18 +23,22 @@ import (
 	"github.com/fatih/color"
 	"github.com/pkg/browser"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 
 	trojan "github.com/dev-zeph/trojan"
+	ctxagent "github.com/dev-zeph/trojan/internal/agent"
 	"github.com/dev-zeph/trojan/internal/ai"
 	"github.com/dev-zeph/trojan/internal/apispec"
 	"github.com/dev-zeph/trojan/internal/ci"
 	"github.com/dev-zeph/trojan/internal/config"
 	"github.com/dev-zeph/trojan/internal/dast"
 	"github.com/dev-zeph/trojan/internal/dast/agent"
+	"github.com/dev-zeph/trojan/internal/graph"
 	"github.com/dev-zeph/trojan/internal/greybox"
 	"github.com/dev-zeph/trojan/internal/hook"
 	"github.com/dev-zeph/trojan/internal/mcpserver"
 	"github.com/dev-zeph/trojan/internal/normalizer"
+	"github.com/dev-zeph/trojan/internal/orgcontext"
 	"github.com/dev-zeph/trojan/internal/rag"
 	"github.com/dev-zeph/trojan/internal/routes"
 	"github.com/dev-zeph/trojan/internal/scanners"
@@ -67,6 +71,7 @@ func main() {
 	rootCmd.AddCommand(serveCmd())
 	rootCmd.AddCommand(depsCmd())
 	rootCmd.AddCommand(indexCmd())
+	rootCmd.AddCommand(contextCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -1842,6 +1847,209 @@ re-embedded).`,
 	}
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "Skip the confirmation prompt")
 	return cmd
+}
+
+// contextCmd groups the org-context subcommands: init scaffolds
+// .trojan/context.yaml, show prints it, and scan builds the local Code
+// Property Graph, layers the org context onto it (if present), and prints
+// the source->sink attack paths it finds.
+//
+// This is entirely local and free to run — the graph build and pattern
+// overlay need no account and no tokens. Only the optional AI hypothesis
+// loop in `scan` talks to a model, and only when ANTHROPIC_API_KEY is set
+// (the same gate cmd/agentdemo uses), so there is nothing to Pro-gate here
+// the way dastCmd gates a billed, server-metered run.
+func contextCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "context",
+		Short: "Describe your app so Trojan tests intentionally, not generically",
+		Long: `Trojan reasons far more precisely about your app when you tell it what it
+is, what data it protects, where its trust boundaries sit, and who you are
+defending against. This is the authored context at .trojan/context.yaml —
+the single highest-leverage input you can give the tool.`,
+	}
+	cmd.AddCommand(contextInitCmd())
+	cmd.AddCommand(contextShowCmd())
+	cmd.AddCommand(contextScanCmd())
+	return cmd
+}
+
+func contextInitCmd() *cobra.Command {
+	var force bool
+	cmd := &cobra.Command{
+		Use:   "init",
+		Short: "Scaffold .trojan/context.yaml",
+		Long: `Writes a starter .trojan/context.yaml with commented prompts guiding you
+through describing your app, its sensitive data, trust boundaries, and threat
+actors. Refuses to overwrite an existing file unless --force is passed.`,
+		Args: cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			path, err := orgcontext.WriteScaffold(".", force)
+			if err != nil {
+				color.Red("Error: %s\n", err)
+				os.Exit(1)
+			}
+			color.Green("✓ Wrote %s\n", path)
+			fmt.Println("Open it and describe your app: what it does, who uses it, what data it")
+			fmt.Println("handles, and who you are defending against. A few honest sentences focus")
+			fmt.Println("every scan on what actually matters for your app, instead of a generic")
+			fmt.Println("checklist. Run `trojan context show` any time to see what's loaded.")
+		},
+	}
+	cmd.Flags().BoolVarP(&force, "force", "f", false, "Overwrite an existing context.yaml")
+	return cmd
+}
+
+func contextShowCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "show",
+		Short: "Print the current org context",
+		Args:  cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			path := orgcontext.Path(".")
+			if !orgcontext.Exists(path) {
+				fmt.Println("No org context found. Run `trojan context init` to get started.")
+				return
+			}
+			ctx, err := orgcontext.Load(path)
+			if err != nil {
+				color.Red("Error: %s\n", err)
+				os.Exit(1)
+			}
+			data, err := yaml.Marshal(ctx)
+			if err != nil {
+				color.Red("Error: %s\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("%s (%s)\n\n%s", "org context", path, string(data))
+		},
+	}
+}
+
+func contextScanCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "scan [path]",
+		Short: "Build the local code graph and show what actually matters",
+		Long: `Walks the project's source, builds Trojan's local Code Property Graph, and
+(when .trojan/context.yaml exists) layers the authored org context onto it
+before printing the source->sink attack paths it finds. This step is fully
+offline.
+
+If ANTHROPIC_API_KEY is set, it then runs the hypothesis-driven agent loop
+over the graph and prints the resulting finding. Without a key, it prints a
+clear message and exits cleanly.`,
+		Args: cobra.MaximumNArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			path := "."
+			if len(args) > 0 {
+				path = args[0]
+			}
+
+			files, err := rag.WalkSource(path)
+			if err != nil {
+				color.Red("Error walking source: %s\n", err)
+				os.Exit(1)
+			}
+			if len(files) == 0 {
+				fmt.Println("No source files found.")
+				return
+			}
+
+			g, err := graph.BuildFromFiles(files)
+			if err != nil {
+				color.Red("Error building graph: %s\n", err)
+				os.Exit(1)
+			}
+
+			ctxPath := orgcontext.Path(path)
+			if orgcontext.Exists(ctxPath) {
+				orgCtx, err := orgcontext.Load(ctxPath)
+				if err != nil {
+					color.Red("Error loading org context: %s\n", err)
+					os.Exit(1)
+				}
+				res := orgcontext.ApplyOverlay(g, orgCtx)
+				fmt.Printf("Applied org context from %s: %d sensitive-data match(es), %d trust-boundary match(es).\n\n",
+					ctxPath, res.SensitiveMatches, res.BoundaryMatches)
+			} else {
+				fmt.Println("No .trojan/context.yaml found — using generic heuristics only.")
+				fmt.Println("Run `trojan context init` to describe your app and sharpen this scan.")
+				fmt.Println()
+			}
+
+			fmt.Printf("Code Property Graph for %s\n", path)
+			fmt.Printf("  files scanned : %d\n", len(files))
+			fmt.Printf("  nodes         : %d\n", len(g.Nodes))
+			fmt.Printf("  edges         : %d\n\n", len(g.Edges))
+
+			paths := g.Paths()
+			if len(paths) == 0 {
+				fmt.Println("No source->sink attack paths found.")
+			} else {
+				fmt.Printf("%d attack path(s) — entrypoint reaching a dangerous sink:\n\n", len(paths))
+				for i, p := range paths {
+					pii := ""
+					if p.TouchPII {
+						pii = "  [touches PII/PHI]"
+					}
+					fmt.Printf("[%d] %s severity%s\n", i+1, strings.ToUpper(p.Severity), pii)
+					fmt.Printf("    what : %s\n", p.Sink.SinkRule)
+					fmt.Printf("    from : %s (%s:%d)\n", p.Source.Name, contextShortPath(p.Source.File, path), p.Source.Line)
+					fmt.Printf("    path : %s\n", contextChainString(p.Via))
+					fmt.Printf("    sink : %s (%s:%d)\n\n", p.Sink.Name, contextShortPath(p.Sink.File, path), p.Sink.Line)
+				}
+			}
+
+			if strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")) == "" {
+				fmt.Println("ANTHROPIC_API_KEY is not set, so the AI hypothesis loop is disabled.")
+				fmt.Println("The graph above ran fully offline. Set ANTHROPIC_API_KEY to have Claude")
+				fmt.Println("form an attack hypothesis grounded in this graph.")
+				return
+			}
+
+			fmt.Println("== Running hypothesis loop (Claude) ==")
+			tb := ctxagent.NewToolbox(g)
+			loopCfg := ctxagent.Config{
+				Model: os.Getenv("TROJAN_AGENT_MODEL"),
+				Logf:  func(format string, args ...any) { fmt.Printf("  "+format+"\n", args...) },
+			}
+			finding, err := ctxagent.RunHypothesisLoop(context.Background(), tb, loopCfg)
+			if err != nil {
+				if errors.Is(err, ctxagent.ErrNoFinding) {
+					fmt.Println("The model finished without emitting a finding.")
+					return
+				}
+				color.Red("Error: %s\n", err)
+				os.Exit(1)
+			}
+
+			fmt.Println()
+			fmt.Println("== Finding ==")
+			fmt.Printf("Hypothesis: %s\n", finding.Hypothesis)
+			fmt.Printf("Severity:   %s\n", finding.Severity)
+			fmt.Printf("Path:       %s\n", strings.Join(finding.Path, " -> "))
+			fmt.Printf("Rationale:  %s\n", finding.Rationale)
+		},
+	}
+}
+
+// contextChainString renders a node chain as "a -> b -> c" for the printed
+// attack path, mirroring cmd/graphdemo's chainString.
+func contextChainString(chain []graph.Node) string {
+	names := make([]string, len(chain))
+	for i, n := range chain {
+		names[i] = n.Name
+	}
+	return strings.Join(names, " -> ")
+}
+
+// contextShortPath renders path relative to root when possible, mirroring
+// cmd/graphdemo's short helper.
+func contextShortPath(path, root string) string {
+	if rel, err := filepath.Rel(root, path); err == nil {
+		return rel
+	}
+	return path
 }
 
 // ragRetriever adapts *rag.Retriever to ai.ContextRetriever so the ai package
