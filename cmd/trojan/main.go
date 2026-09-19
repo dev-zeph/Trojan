@@ -34,6 +34,7 @@ import (
 	"github.com/dev-zeph/trojan/internal/dast"
 	"github.com/dev-zeph/trojan/internal/dast/agent"
 	"github.com/dev-zeph/trojan/internal/graph"
+	"github.com/dev-zeph/trojan/internal/graphstore"
 	"github.com/dev-zeph/trojan/internal/greybox"
 	"github.com/dev-zeph/trojan/internal/hook"
 	"github.com/dev-zeph/trojan/internal/mcpserver"
@@ -1961,13 +1962,15 @@ clear message and exits cleanly.`,
 				os.Exit(1)
 			}
 
+			var orgCtx *orgcontext.OrgContext
 			ctxPath := orgcontext.Path(path)
 			if orgcontext.Exists(ctxPath) {
-				orgCtx, err := orgcontext.Load(ctxPath)
+				loaded, err := orgcontext.Load(ctxPath)
 				if err != nil {
 					color.Red("Error loading org context: %s\n", err)
 					os.Exit(1)
 				}
+				orgCtx = loaded
 				res := orgcontext.ApplyOverlay(g, orgCtx)
 				fmt.Printf("Applied org context from %s: %d sensitive-data match(es), %d trust-boundary match(es).\n\n",
 					ctxPath, res.SensitiveMatches, res.BoundaryMatches)
@@ -1975,6 +1978,17 @@ clear message and exits cleanly.`,
 				fmt.Println("No .trojan/context.yaml found — using generic heuristics only.")
 				fmt.Println("Run `trojan context init` to describe your app and sharpen this scan.")
 				fmt.Println()
+			}
+
+			// Persist the overlaid graph locally so context accumulates across
+			// runs. This is the compounding local memory that is the point of
+			// the tool; the database never leaves the machine. A write failure
+			// is a warning, not a fatal, since the scan output is still useful.
+			dbPath := filepath.Join(path, graphstore.DefaultDBPath)
+			if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+				color.Yellow("  Warning: could not create %s: %s\n", filepath.Dir(dbPath), err)
+			} else if err := graphstore.Save(dbPath, g); err != nil {
+				color.Yellow("  Warning: could not persist graph to %s: %s\n", dbPath, err)
 			}
 
 			fmt.Printf("Code Property Graph for %s\n", path)
@@ -2010,8 +2024,9 @@ clear message and exits cleanly.`,
 			fmt.Println("== Running hypothesis loop (Claude) ==")
 			tb := ctxagent.NewToolbox(g)
 			loopCfg := ctxagent.Config{
-				Model: os.Getenv("TROJAN_AGENT_MODEL"),
-				Logf:  func(format string, args ...any) { fmt.Printf("  "+format+"\n", args...) },
+				Model:      os.Getenv("TROJAN_AGENT_MODEL"),
+				OrgContext: orgContextText(orgCtx),
+				Logf:       func(format string, args ...any) { fmt.Printf("  "+format+"\n", args...) },
 			}
 			finding, err := ctxagent.RunHypothesisLoop(context.Background(), tb, loopCfg)
 			if err != nil {
@@ -2031,6 +2046,20 @@ clear message and exits cleanly.`,
 			fmt.Printf("Rationale:  %s\n", finding.Rationale)
 		},
 	}
+}
+
+// orgContextText renders the authored org context as YAML text so the agent
+// loop can fold it into its system prompt (grounding hypotheses in what the app
+// actually is and protects). Returns "" when no context was authored.
+func orgContextText(ctx *orgcontext.OrgContext) string {
+	if ctx == nil {
+		return ""
+	}
+	data, err := yaml.Marshal(ctx)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
 
 // contextChainString renders a node chain as "a -> b -> c" for the printed
