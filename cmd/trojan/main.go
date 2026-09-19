@@ -415,6 +415,7 @@ func dastCmd() *cobra.Command {
 	var identityFlags []string
 	var apiSpec string
 	var requireApproval bool
+	var resumeRun bool
 	var allowEndpoints, denyEndpoints []string
 	var limitToAllowlist, allowDangerous bool
 	var attackTemplateJSON string
@@ -491,6 +492,20 @@ func dastCmd() *cobra.Command {
 			// Consent (Step 2.5) has already passed. Hand off to the agent loop,
 			// which streams its run to the embedded "Penetration Testing" UI.
 			if agentic {
+				// Resume a run that paused when the user ran out of Trojan Tokens.
+				// The checkpoint holds the tier, env, RoE, task, findings and
+				// consumed budget, so we hand off immediately without re-parsing
+				// run config; resumeAgenticDast keeps the server alive itself.
+				if resumeRun {
+					resumeAgenticDast(resumeParams{
+						targetURL:       targetURL,
+						accessToken:     accessToken,
+						desktop:         desktop,
+						greyBox:         greyBox,
+						requireApproval: requireApproval,
+					})
+					return
+				}
 				tier, terr := agent.ParseTier(tierStr)
 				if terr != nil {
 					color.Red("Error: %s\n", terr)
@@ -789,6 +804,7 @@ func dastCmd() *cobra.Command {
 	cmd.Flags().StringArrayVar(&identityFlags, "identity", nil, "Auth session for authorization (IDOR/BOLA) testing, as 'name=Header: value'. Repeatable; repeat with the same name for multiple headers. Example: --identity 'alice=Authorization: Bearer <token>'")
 	cmd.Flags().StringVar(&apiSpec, "api-spec", "", "OpenAPI/Swagger spec (file path or URL) to expand the agent's attack surface beyond what the crawler finds. If omitted, common spec URLs on the target are auto-probed.")
 	cmd.Flags().BoolVar(&requireApproval, "require-approval", false, "Human-in-the-loop: pause for operator approval before every state-changing action (§8). Approve/deny in the run view; read-only probes still run automatically.")
+	cmd.Flags().BoolVar(&resumeRun, "resume", false, "Resume the most recent agentic run that paused because you ran out of Trojan Tokens (top up first). Picks up exactly where it stopped, spending no tokens on ground already covered.")
 	cmd.Flags().StringArrayVar(&allowEndpoints, "allow-endpoint", nil, "Rules of engagement: an endpoint path the agent may target (repeatable; trailing * = prefix, e.g. /api/*). Outside the list is gated for approval unless --limit-to-allowlist.")
 	cmd.Flags().StringArrayVar(&denyEndpoints, "deny-endpoint", nil, "Rules of engagement: an endpoint path the agent must never touch (repeatable; trailing * = prefix).")
 	cmd.Flags().BoolVar(&limitToAllowlist, "limit-to-allowlist", false, "Make --allow-endpoint a hard boundary: anything outside it is blocked, not just gated.")
@@ -1098,46 +1114,191 @@ func runAgenticDast(p agenticParams) {
 		},
 	})
 
-	if rerr != nil {
-		srv.BroadcastAgentEvent(server.AgentEvent{Type: "run", Status: "error", Detail: rerr.Error()})
-		color.Red("\n  Agentic run failed: %s\n", rerr)
-	} else {
-		// Merge the agent's evidence-anchored candidates with the Nuclei baseline,
-		// then run everything through adversarial triage (Phase 1).
-		all := append(baseline, agenticFindingsFromCandidates(res.Findings)...) //nolint:gocritic
-		if len(all) > 0 {
-			if verdicts, terr := ai.TriageWithContext(all, p.accessToken, loadRetriever(".", p.accessToken)); terr == nil {
-				for i := range all {
-					if v, ok := verdicts[all[i].ID]; ok {
-						all[i].Verdict = v.Verdict
-						all[i].VerdictReason = v.Rationale
-						all[i].VerdictConfidence = v.Confidence
-					}
-				}
-			}
-		}
-
-		// AI synthesis — plain-English explanation + fix actions per finding, the
-		// same pass the one-shot scan runs. Without it, Simply/Actions are empty
-		// and the report shows the Pro upsell even to logged-in Pro users.
-		synthesizeFindings(all, p.accessToken)
-
-		// Persist under the cwd so `trojan mcp` (run from the same project) can
-		// read these DAST findings; ProjectPath keeps the scanned URL for display.
-		scan := persistScan(p.targetURL, all)
-		srv.UpdateScan(scan)
-		// Overwrite the desktop cache with the finished results so re-opening
-		// this target from "recent" shows the full report (not a new scan).
-		if p.desktop {
-			writeDesktopCache(cacheFile, scan)
-		}
-		srv.BroadcastAgentEvent(server.AgentEvent{Type: "run", Status: "complete", Detail: res.Summary})
-		fmt.Printf("\n  → Agentic pen-test complete — %d candidate finding(s); %s\n", len(res.Findings), stopLabel(res))
-	}
+	finalizeAgenticRun(srv, p.targetURL, p.accessToken, baseline, res, rerr, cacheFile, p.desktop)
 
 	// Keep the server alive until cancelled/closed — installDastCancelHandler
 	// (installed at the top) handles SIGINT/SIGTERM and exits the process.
 	select {}
+}
+
+// finalizeAgenticRun merges the agent's evidence-anchored candidates with the
+// Nuclei baseline, triages and synthesizes them, persists the scan, and
+// broadcasts the terminal run status. Shared by fresh runs (runAgenticDast) and
+// resumes (resumeAgenticDast) so both paths produce an identical report.
+func finalizeAgenticRun(srv *server.Server, targetURL, accessToken string, baseline []normalizer.Finding, res *agent.RunResult, rerr error, cacheFile string, desktop bool) {
+	if rerr != nil {
+		srv.BroadcastAgentEvent(server.AgentEvent{Type: "run", Status: "error", Detail: rerr.Error()})
+		color.Red("\n  Agentic run failed: %s\n", rerr)
+		return
+	}
+
+	// Merge the agent's evidence-anchored candidates with the Nuclei baseline,
+	// then run everything through adversarial triage (Phase 1).
+	all := append(baseline, agenticFindingsFromCandidates(res.Findings)...) //nolint:gocritic
+	if len(all) > 0 {
+		if verdicts, terr := ai.TriageWithContext(all, accessToken, loadRetriever(".", accessToken)); terr == nil {
+			for i := range all {
+				if v, ok := verdicts[all[i].ID]; ok {
+					all[i].Verdict = v.Verdict
+					all[i].VerdictReason = v.Rationale
+					all[i].VerdictConfidence = v.Confidence
+				}
+			}
+		}
+	}
+
+	// AI synthesis — plain-English explanation + fix actions per finding, the
+	// same pass the one-shot scan runs. Without it, Simply/Actions are empty
+	// and the report shows the Pro upsell even to logged-in Pro users.
+	synthesizeFindings(all, accessToken)
+
+	// Persist under the cwd so `trojan mcp` (run from the same project) can
+	// read these DAST findings; ProjectPath keeps the scanned URL for display.
+	scan := persistScan(targetURL, all)
+	srv.UpdateScan(scan)
+	// Overwrite the desktop cache with the finished results so re-opening
+	// this target from "recent" shows the full report (not a new scan).
+	if desktop {
+		writeDesktopCache(cacheFile, scan)
+	}
+	srv.BroadcastAgentEvent(server.AgentEvent{Type: "run", Status: "complete", Detail: res.Summary})
+	fmt.Printf("\n  → Agentic pen-test complete — %d candidate finding(s); %s\n", len(res.Findings), stopLabel(res))
+}
+
+// resumeParams bundles what a resume needs that the checkpoint cannot hold: the
+// target (for the resumable-run lookup), the Pro access token (a credential,
+// never written to disk), and the two live opts rebuilt fresh each run.
+type resumeParams struct {
+	targetURL       string
+	accessToken     string
+	desktop         bool
+	greyBox         bool
+	requireApproval bool
+}
+
+// resumeAgenticDast continues the most recent agentic run that paused because
+// the user ran out of Trojan Tokens. The engagement picks up on the exact
+// conversation it stopped on, with its findings, attack graph and consumed
+// budget intact, so nothing already covered is rediscovered and no tokens are
+// wasted. Everything after the handoff mirrors a fresh run's live stream.
+func resumeAgenticDast(p resumeParams) {
+	installDastCancelHandler()
+
+	cp, err := findResumableCheckpoint(p.targetURL)
+	if err != nil {
+		color.Red("\n  %s\n", err)
+		fmt.Println("  Nothing to resume. Start a new pen test, or top up your tokens and run again.")
+		os.Exit(1)
+	}
+	fmt.Printf("\n  → Resuming agentic pen-test (run %s, paused: %s)\n\n", cp.RunID, cp.StopReason)
+
+	// Reachability.
+	httpClient := &http.Client{Timeout: 5 * time.Second}
+	if _, err := httpClient.Get(cp.TargetURL); err != nil { //nolint:noctx
+		color.Red("\nCannot reach %s\n", cp.TargetURL)
+		fmt.Println("Is the server running?")
+		os.Exit(1)
+	}
+
+	// Re-run the deterministic Nuclei baseline (zero tokens) so the resumed
+	// report keeps the same breadth as a fresh run before the agent findings
+	// merge in. The crawl and task are restored from the checkpoint, not redone.
+	if err := config.EnsureDastScanners(); err != nil {
+		color.Yellow("Warning: could not install DAST scanners: %s\n", err)
+	}
+	fmt.Printf("  → Running Nuclei baseline...\n")
+	baseline := scanners.RunDast(cp.TargetURL, []scanners.DastScanner{scanners.Nuclei{}}, func(_ string, _ bool, _ int, _ error) {})
+	fmt.Printf("  → Baseline: %d finding(s)\n\n", len(baseline))
+
+	// Start the UI server so the resumed run streams live, same as a fresh run.
+	scanResult := normalizer.NewScanResult(cp.TargetURL, baseline)
+	dastUI, _ := fs.Sub(trojan.DastUIAssets, "dast-ui/dist")
+	srv := server.New(scanResult, dastUI)
+	reportURL, err := srv.Start()
+	if err != nil {
+		color.Yellow("Warning: could not start UI server: %s\n", err)
+		return
+	}
+	srv.ResetAgenticRun()
+
+	cacheFile := desktopCachePath(cp.TargetURL)
+	if p.desktop {
+		writeDesktopCache(cacheFile, scanResult)
+		fmt.Printf("\nCACHE_PATH %s\n", cacheFile)
+		fmt.Printf("\nREADY %s\n", reportURL)
+	} else {
+		fmt.Printf("  → Live run at %s\n", reportURL)
+		fmt.Printf("  → Press Ctrl+C to close\n\n")
+		browser.OpenURL(reportURL)
+	}
+
+	// Rebuild grey-box source from the current directory, as on a fresh run.
+	var source agent.SourceReader
+	if p.greyBox {
+		if gb := buildGreyBox(".", p.accessToken); gb != nil {
+			source = gb
+		}
+	}
+
+	// Rebuild the §8 approval sink if the operator wants human-in-the-loop.
+	var approvals *agent.Approvals
+	if p.requireApproval {
+		approvals = agent.NewApprovals(0)
+		srv.SetApprovalSink(func(id int, ok bool, note string) {
+			approvals.Decide(agent.ApprovalDecision{ID: id, Approve: ok, Note: note})
+		})
+		defer srv.SetApprovalSink(nil)
+	}
+
+	srv.BroadcastAgentEvent(server.AgentEvent{Type: "run", Status: "running"})
+	res, rerr := agent.ResumeAgentic(context.Background(), cp, agent.ResumeOptions{
+		AccessToken: p.accessToken,
+		Source:      source,
+		Approvals:   approvals,
+		OnEvent: func(e agent.Event) {
+			evt := server.AgentEvent{Type: string(e.Type), Step: e.Step, Tool: e.Tool, Detail: e.Detail}
+			if pl := e.Payload; pl != nil {
+				evt.Node, evt.Edge, evt.Source, evt.Summary, evt.Mode = pl.Node, pl.Edge, pl.Source, pl.Summary, pl.Mode
+				evt.Approval, evt.Approved = pl.Approval, pl.Approved
+			}
+			srv.BroadcastAgentEvent(evt)
+			printAgentEvent(e)
+		},
+	})
+	finalizeAgenticRun(srv, cp.TargetURL, p.accessToken, baseline, res, rerr, cacheFile, p.desktop)
+
+	// Keep the server alive until cancelled/closed, same as a fresh run.
+	select {}
+}
+
+// findResumableCheckpoint returns the newest resumable checkpoint whose target
+// matches targetURL, falling back to the newest resumable run overall when none
+// matches (targetURL may be empty). It errors when there is nothing to resume.
+func findResumableCheckpoint(targetURL string) (*agent.Checkpoint, error) {
+	sums, err := agent.ListCheckpoints()
+	if err != nil {
+		return nil, fmt.Errorf("could not read saved runs: %w", err)
+	}
+	var pick, fallback string
+	for _, s := range sums { // newest-first
+		if !s.Resumable {
+			continue
+		}
+		if fallback == "" {
+			fallback = s.RunID
+		}
+		if targetURL != "" && s.TargetURL == targetURL {
+			pick = s.RunID
+			break
+		}
+	}
+	if pick == "" {
+		pick = fallback
+	}
+	if pick == "" {
+		return nil, fmt.Errorf("no resumable run found for %s", targetURL)
+	}
+	return agent.LoadCheckpoint(pick)
 }
 
 // buildAgenticTask composes the seed message: the goal, the run's tier +
