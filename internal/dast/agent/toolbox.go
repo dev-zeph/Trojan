@@ -129,11 +129,12 @@ type Toolbox struct {
 	identOrder []string            // identity insertion order, for stable listing
 	approvals  *Approvals          // §8 runtime approval queue; nil = HITL off (auto-execute)
 
-	mu       sync.Mutex
-	findings []Candidate
-	facts    []Fact
-	finished bool
-	summary  string
+	mu           sync.Mutex
+	findings     []Candidate
+	facts        []Fact
+	finished     bool
+	summary      string
+	finishNudges int // times an early finish has been declined for thin coverage
 
 	// probe capture store for diff_responses (§6.5 #3). Bounded to the most
 	// recent maxRetainedProbes; probeOrder is the eviction queue (oldest first).
@@ -390,6 +391,50 @@ func (t *Toolbox) Finish(summary string) {
 	defer t.mu.Unlock()
 	t.finished = true
 	t.summary = summary
+}
+
+// Diligence gate: a pen test that concludes after touching a handful of
+// endpoints is not a pen test. finishCoverage{Num,Den} is the fraction of
+// discovered endpoints a run is nudged to probe before an early finish is
+// honored; maxFinishNudges caps how often the agent is pushed back so its
+// judgment ultimately wins and the step/time budget always bounds the run.
+const (
+	finishCoverageNum = 7
+	finishCoverageDen = 10
+	maxFinishNudges   = 3
+)
+
+// ConsiderFinish decides whether an agent's finish call is honored now. When
+// coverage is thin and the agent has not been nudged too many times, it declines
+// (done=false) and returns guidance pushing it to keep testing the untested
+// surface. Otherwise it ends the run (done=true). Endpoints==0 (nothing was
+// discovered to test) always finishes cleanly.
+func (t *Toolbox) ConsiderFinish(summary string) (nudge string, done bool) {
+	endpoints, tested, _ := t.graph.Counts()
+
+	t.mu.Lock()
+	nudges := t.finishNudges
+	t.mu.Unlock()
+
+	// ceil(num/den * endpoints) without floating point.
+	threshold := (finishCoverageNum*endpoints + finishCoverageDen - 1) / finishCoverageDen
+	if endpoints == 0 || tested >= threshold || nudges >= maxFinishNudges {
+		t.Finish(summary)
+		return "", true
+	}
+
+	t.mu.Lock()
+	t.finishNudges++
+	t.mu.Unlock()
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "Not so fast. You have probed %d of %d discovered endpoints (%d%% coverage). A thorough penetration test covers the attack surface before concluding, and rushing to finish is how real vulnerabilities get missed.",
+		tested, endpoints, 100*tested/endpoints)
+	if remaining := t.graph.UntestedEndpoints(8); len(remaining) > 0 {
+		fmt.Fprintf(&b, " Still UNTESTED: %s.", strings.Join(remaining, ", "))
+	}
+	b.WriteString(" Keep testing these for authentication gaps, IDOR/BOLA, injection, and business-logic flaws. Chain what you have already learned. Only call finish once you have genuinely exercised the surface, or can name a concrete reason the rest is out of scope.")
+	return b.String(), false
 }
 
 // Finished reports whether the agent called finish, and its summary.

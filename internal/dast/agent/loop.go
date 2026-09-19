@@ -392,7 +392,13 @@ func executeTool(ctx context.Context, tb *Toolbox, b blockPeek, step int, emit f
 			Summary string `json:"summary"`
 		}
 		_ = json.Unmarshal(b.Input, &f)
-		tb.Finish(f.Summary)
+		// Diligence gate: decline an early finish while coverage is thin and
+		// budget remains, nudging the agent to keep testing. Capped so its
+		// judgment eventually wins and the step/time budget still bounds the run.
+		if nudge, done := tb.ConsiderFinish(f.Summary); !done {
+			emit(Event{Type: EventStep, Step: step, Detail: "finish deferred: coverage still thin, keep testing"})
+			return nudge, false, false
+		}
 		return `{"ok":true}`, false, true
 
 	default:

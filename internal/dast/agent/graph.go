@@ -360,6 +360,30 @@ func (g *AttackGraph) Counts() (endpoints, tested, vulnerable int) {
 	return
 }
 
+// UntestedEndpoints returns up to limit labels (METHOD /path) of endpoints the
+// run has not touched yet, for the finish-diligence nudge. A limit <= 0 returns
+// all of them. Iteration follows insertion order so the list is deterministic.
+func (g *AttackGraph) UntestedEndpoints(limit int) []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	var out []string
+	for _, id := range g.order {
+		n := g.nodes[id]
+		if n.Type != NodeEndpoint || n.Status != StatusUntested {
+			continue
+		}
+		label := n.Label
+		if n.Method != "" {
+			label = n.Method + " " + n.Label
+		}
+		out = append(out, label)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
 // Restore rehydrates a graph from a checkpoint snapshot, replacing any existing
 // contents. The edge dedup key set is rebuilt with the SAME key format AddEdge
 // uses -- if the two ever diverge, a resumed run would re-add edges it already
