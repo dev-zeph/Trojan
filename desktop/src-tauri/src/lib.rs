@@ -388,6 +388,50 @@ async fn start_agentic_dast(
     Ok(ScanReturn { url: report_url, cache_path })
 }
 
+/// Resume the most recent agentic run that paused because the user ran out of
+/// Trojan Tokens. The sidecar loads the checkpoint and continues exactly where
+/// it stopped, spending no tokens on ground already covered. grey_box and
+/// require_approval are runtime options rebuilt each run (not held in the
+/// checkpoint), so they are passed through here as on a fresh run.
+#[tauri::command]
+async fn resume_agentic_dast(
+    app: AppHandle,
+    url: String,
+    grey_box: bool,
+    require_approval: bool,
+) -> Result<ScanReturn, String> {
+    kill_old_scans(&app);
+    let _ = app.emit(
+        "terminal-output",
+        format!("\x1b[1;35m$ trojan dast {} --agentic --resume\x1b[0m\r\n", url),
+    );
+
+    let mut args: Vec<String> =
+        vec!["dast".into(), url.clone(), "--agentic".into(), "--desktop".into(), "--resume".into()];
+    if grey_box {
+        args.push("--grey-box".into());
+    }
+    if require_approval {
+        args.push("--require-approval".into());
+    }
+
+    let (rx, child) = app
+        .shell()
+        .sidecar("trojan")
+        .map_err(|e| format!("sidecar not found: {e}"))?
+        .args(args)
+        .spawn()
+        .map_err(|e| format!("spawn failed: {e}"))?;
+    // Track the child before awaiting READY so a mid-scan cancel can kill it.
+    if let Ok(mut children) = app.state::<ActiveScans>().0.lock() {
+        children.push(child);
+    }
+    let result = await_ready(&app, rx).await;
+    let _ = app.emit("terminal-scan-done", ());
+    let (report_url, cache_path) = result?;
+    Ok(ScanReturn { url: report_url, cache_path })
+}
+
 /// Re-serve a previously cached scan result without re-running scanners.
 #[tauri::command]
 async fn serve_scan(app: AppHandle, cache_path: String) -> Result<String, String> {
@@ -846,6 +890,7 @@ pub fn run() {
             start_scan,
             start_dast,
             start_agentic_dast,
+            resume_agentic_dast,
             scan_deps,
             cancel_scan,
             open_auth,
