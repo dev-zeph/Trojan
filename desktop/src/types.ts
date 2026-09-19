@@ -1,8 +1,26 @@
 // Shared domain types for the desktop app.
 // Extracted verbatim from App.tsx; no shape changes.
 
-export type NavView  = "overview" | "sast" | "dast" | "market" | "dependencies" | "threatlab" | "licenses" | "privacy" | "compliancelab" | "history" | "autofix" | "profile" | "report";
+export type NavView  = "overview" | "sast" | "dast" | "market" | "dependencies" | "threatlab" | "licenses" | "privacy" | "compliancelab" | "history" | "autofix" | "context" | "profile" | "report";
 export type ScanType = "sast" | "dast";
+
+// ── Org context ────────────────────────────────────────────────────────────
+// The authored, project-local model of what the user is building: what it is,
+// what data it protects, where its trust boundaries sit, and who it defends
+// against. This is the wire shape (snake_case) sent to and received from the
+// embedded Go server's /api/context endpoint, which persists it as
+// .trojan/context.yaml INSIDE the project. It is never uploaded to Trojan's
+// cloud -- it only ever lives on the user's machine.
+export interface OrgAppInfo { name: string; description: string; }
+export interface SensitiveDataCategory { category: string; description?: string; file_patterns?: string[]; symbol_patterns?: string[]; }
+export interface TrustBoundary { name: string; description?: string; file_patterns?: string[]; symbol_patterns?: string[]; }
+export interface ThreatActor { name: string; description?: string; targets?: string[]; }
+export interface OrgContext {
+  app: OrgAppInfo;
+  sensitive_data: SensitiveDataCategory[];
+  trust_boundaries: TrustBoundary[];
+  threat_actors: ThreatActor[];
+}
 
 export interface PackageAdvisory { id: string; severity: string; summary: string; fix_version?: string; }
 export interface PkgInfo { name: string; version: string; ecosystem: string; direct: boolean; cve_count: number; highest_severity?: string; fix_version?: string; advisories?: PackageAdvisory[]; license?: string; license_risk?: string; }
