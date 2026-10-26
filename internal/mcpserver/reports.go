@@ -155,7 +155,7 @@ func securityReport(projectPath string, scan *normalizer.ScanResult) (*report, e
 		ComplianceSummary string `json:"compliance_summary"`
 	}
 	if err := callEdge("threat-lab", map[string]any{
-		"project_path": projectPath, "findings": scan.Findings, "packages": scan.Packages, "user_familiarity": familiarity(),
+		"project_path": projectPath, "findings": nonNil(scan.Findings), "packages": nonNil(scan.Packages), "user_familiarity": familiarity(),
 	}, &r); err != nil {
 		return nil, err
 	}
@@ -228,7 +228,7 @@ func complianceReport(projectPath string, scan *normalizer.ScanResult) (*report,
 		for _, x := range scan.Privacy.ThirdParty {
 			t = append(t, tp{x.Name, x.DataTypes})
 		}
-		privacy = map[string]any{"data_types": d, "third_party": t}
+		privacy = map[string]any{"data_types": nonNil(d), "third_party": nonNil(t)}
 	}
 
 	var r struct {
@@ -241,7 +241,7 @@ func complianceReport(projectPath string, scan *normalizer.ScanResult) (*report,
 	}
 	if err := callEdge("compliance-lab", map[string]any{
 		"project_path": projectPath,
-		"licenses": map[string]any{"total_packages": len(scan.Packages), "copyleft": copyleft, "weak_copyleft": weak,
+		"licenses": map[string]any{"total_packages": len(scan.Packages), "copyleft": nonNil(copyleft), "weak_copyleft": nonNil(weak),
 			"unknown_count": unknown, "permissive_count": permissive},
 		"privacy":          privacy,
 		"user_familiarity": familiarity(),
@@ -298,7 +298,7 @@ func websiteReport(rawURL string) (*report, string, error) {
 		Recommendations  []string `json:"recommendations"`
 	}
 	if err := callEdge("pentest-report", map[string]any{
-		"target": scan.ProjectPath, "findings": findings, "user_familiarity": familiarity(),
+		"target": scan.ProjectPath, "findings": nonNil(findings), "user_familiarity": familiarity(),
 	}, &r); err != nil {
 		return nil, "", err
 	}
@@ -310,6 +310,15 @@ func websiteReport(rawURL string) (*report, string, error) {
 			{Heading: "Recommendations", Items: r.Recommendations},
 			{Heading: "Findings", Items: listed},
 		}}, dir, nil
+}
+
+// nonNil sends an empty JSON array instead of null: the edge functions read
+// .length on these fields and crash on null (a scan with no packages).
+func nonNil[T any](s []T) []T {
+	if s == nil {
+		return []T{}
+	}
+	return s
 }
 
 func clamp(n int) int {

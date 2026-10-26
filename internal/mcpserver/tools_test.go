@@ -136,6 +136,11 @@ func TestGenerateSecurityReport(t *testing.T) {
 	if isErr {
 		t.Fatal(text)
 	}
+	// The fixture scan has no packages: they must go out as [] (the edge
+	// function crashes on null).
+	if pk, ok := gotPayload["packages"].([]any); !ok || len(pk) != 0 {
+		t.Errorf("packages sent as %#v, want []", gotPayload["packages"])
+	}
 	if gotPayload["user_familiarity"] != float64(0) || len(gotPayload["findings"].([]any)) != 4 {
 		t.Errorf("payload = %v", gotPayload)
 	}
