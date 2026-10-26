@@ -10,6 +10,60 @@ use std::sync::Mutex;
 /// keep serving the report after `start_scan` / `start_dast` return.
 struct ActiveScans(Mutex<Vec<CommandChild>>);
 
+/// The local MCP server (`trojan mcp serve-local`) AI tools connect to while
+/// the app is open. Kept apart from ActiveScans so cancelling a scan never
+/// stops it; killed when the app exits.
+struct McpServer(Mutex<Option<CommandChild>>);
+
+const MCP_ADDR: &str = "127.0.0.1:7880";
+
+/// Set once the app is quitting so the MCP watchdog stops restarting the server.
+static APP_EXITING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Keep the MCP server up for as long as the app is open: every few seconds,
+/// start it if nothing answers on its port (it crashed, was killed, or the port
+/// was busy at launch). AI tools give up on a session after one failed connect,
+/// so a server that stays down means "fix my findings" silently stops working.
+fn watch_mcp_server(app: AppHandle) {
+    std::thread::spawn(move || loop {
+        if APP_EXITING.load(std::sync::atomic::Ordering::SeqCst) {
+            break;
+        }
+        start_mcp_server(&app);
+        std::thread::sleep(std::time::Duration::from_secs(5));
+    });
+}
+
+/// Start the local MCP server unless something already answers on its port.
+fn start_mcp_server(app: &AppHandle) {
+    let addr: std::net::SocketAddr = MCP_ADDR.parse().expect("valid MCP address");
+    if std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(200)).is_ok() {
+        return;
+    }
+    let spawned = app
+        .shell()
+        .sidecar("trojan")
+        .map(|c| c.args(["mcp", "serve-local"]))
+        .and_then(|c| c.spawn());
+    match spawned {
+        Ok((mut rx, child)) => {
+            if let Ok(mut slot) = app.state::<McpServer>().0.lock() {
+                *slot = Some(child);
+            }
+            // Drain output so the pipe never fills; surface failures in the terminal panel.
+            let handle = app.clone();
+            tauri::async_runtime::spawn(async move {
+                while let Some(event) = rx.recv().await {
+                    if let CommandEvent::Stderr(line) = event {
+                        let _ = handle.emit("terminal-output", format!("\x1b[31m[mcp] {}\x1b[0m\r\n", String::from_utf8_lossy(&line).trim_end()));
+                    }
+                }
+            });
+        }
+        Err(e) => eprintln!("could not start MCP server: {e}"),
+    }
+}
+
 /// Set to true when the user explicitly cancels a scan so `await_ready` can
 /// distinguish a user cancellation from a genuine scanner crash.
 struct CancelFlag(Mutex<bool>);
@@ -246,15 +300,19 @@ async fn start_scan(app: AppHandle, path: String) -> Result<ScanReturn, String> 
 
 /// Run DAST scanning (Nuclei) against a live local server URL.
 #[tauri::command]
-async fn start_dast(app: AppHandle, url: String) -> Result<ScanReturn, String> {
+async fn start_dast(app: AppHandle, url: String, owner_confirmed: bool) -> Result<ScanReturn, String> {
     kill_old_scans(&app);
     let _ = app.emit("terminal-output", format!("\x1b[1;35m$ trojan dast {}\x1b[0m\r\n", url));
 
+    let mut args = vec!["dast", url.as_str(), "--desktop"];
+    if owner_confirmed {
+        args.push("--owner-confirmed");
+    }
     let (rx, child) = app
         .shell()
         .sidecar("trojan")
         .map_err(|e| format!("sidecar not found: {e}"))?
-        .args(["dast", &url, "--desktop"])
+        .args(args)
         .spawn()
         .map_err(|e| format!("spawn failed: {e}"))?;
     // Track the child before awaiting READY so a mid-scan cancel can kill it.
@@ -306,6 +364,7 @@ async fn start_agentic_dast(
     limit_to_allowlist: bool,
     allow_dangerous: bool,
     attack_template: Option<AttackTemplateArg>,
+    owner_confirmed: bool,
 ) -> Result<ScanReturn, String> {
     kill_old_scans(&app);
     let _ = app.emit(
@@ -319,6 +378,9 @@ async fn start_agentic_dast(
     ];
     if accept_side_effects {
         args.push("--accept-side-effects".into());
+    }
+    if owner_confirmed {
+        args.push("--owner-confirmed".into());
     }
     if grey_box {
         args.push("--grey-box".into());
@@ -652,36 +714,18 @@ fn sync_profile_context(familiarity: u8, about_you: String) -> Result<(), String
     Ok(())
 }
 
-/// Check which AI editors have the Trojan MCP server configured by looking for
-/// the "trojan" entry in each editor's config file.
+/// Per-tool MCP status from `trojan mcp status`: whether the tool is installed,
+/// whether its config points at the local server, and when it last used Trojan.
 #[tauri::command]
-fn check_mcp_status() -> serde_json::Value {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_default();
-
-    let editors = vec![
-        ("claude_code", std::path::Path::new(&home).join(".claude").join("settings.json")),
-        ("cursor", std::path::Path::new(&home).join(".cursor").join("mcp.json")),
-        ("codex_cli", std::path::Path::new(&home).join(".codex").join("config.toml")),
-    ];
-
-    let mut status = serde_json::Map::new();
-    for (name, path) in &editors {
-        let installed = path.exists();
-        let configured = if installed {
-            std::fs::read_to_string(path)
-                .map(|c| c.contains("trojan"))
-                .unwrap_or(false)
-        } else {
-            false
-        };
-        status.insert(name.to_string(), serde_json::json!({
-            "installed": installed,
-            "configured": configured,
-        }));
+async fn check_mcp_status(app: AppHandle) -> serde_json::Value {
+    let out = match app.shell().sidecar("trojan").map(|c| c.args(["mcp", "status"])) {
+        Ok(cmd) => cmd.output().await,
+        Err(e) => return serde_json::json!({ "error": e.to_string() }),
+    };
+    match out {
+        Ok(o) => serde_json::from_slice(&o.stdout).unwrap_or_else(|_| serde_json::json!({})),
+        Err(e) => serde_json::json!({ "error": e.to_string() }),
     }
-    serde_json::Value::Object(status)
 }
 
 /// Run `trojan init` to install all missing scanner binaries.
@@ -723,35 +767,22 @@ async fn setup_scanners(app: AppHandle) -> Result<String, String> {
     Ok(output)
 }
 
-/// Run `trojan mcp install` to auto-configure all detected AI editors.
-/// Returns the combined stdout+stderr output for display.
+/// Point one AI tool (claude_code | cursor | codex_cli) at the local MCP server.
 #[tauri::command]
-async fn setup_mcp(app: AppHandle) -> Result<String, String> {
-    let (mut rx, _child) = app
+async fn setup_mcp(app: AppHandle, tool: String) -> Result<(), String> {
+    let out = app
         .shell()
         .sidecar("trojan")
         .map_err(|e| format!("sidecar not found: {e}"))?
-        .args(["mcp", "install"])
-        .spawn()
-        .map_err(|e| format!("spawn failed: {e}"))?;
-
-    let mut output = String::new();
-    while let Some(event) = rx.recv().await {
-        use tauri_plugin_shell::process::CommandEvent;
-        match event {
-            CommandEvent::Stdout(line) => {
-                output.push_str(&String::from_utf8_lossy(&line));
-                output.push('\n');
-            }
-            CommandEvent::Stderr(line) => {
-                output.push_str(&String::from_utf8_lossy(&line));
-                output.push('\n');
-            }
-            CommandEvent::Terminated(_) => break,
-            _ => {}
-        }
+        .args(["mcp", "connect", tool.as_str()])
+        .output()
+        .await
+        .map_err(|e| format!("could not run trojan: {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
     }
-    Ok(output)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -824,6 +855,8 @@ pub fn run() {
             app.manage(ActiveScans(Mutex::new(Vec::new())));
             // Flag set by cancel_scan so await_ready can detect intentional cancellation.
             app.manage(CancelFlag(Mutex::new(false)));
+            app.manage(McpServer(Mutex::new(None)));
+            watch_mcp_server(app.handle().clone());
 
             // On Windows/Linux, register the trojan:// scheme at runtime so
             // deep links work in dev mode too. On macOS the scheme is baked
@@ -858,6 +891,14 @@ pub fn run() {
             sync_profile_context,
             clear_trojan_cache,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                APP_EXITING.store(true, std::sync::atomic::Ordering::SeqCst);
+                if let Some(child) = app.state::<McpServer>().0.lock().ok().and_then(|mut s| s.take()) {
+                    let _ = child.kill();
+                }
+            }
+        });
 }

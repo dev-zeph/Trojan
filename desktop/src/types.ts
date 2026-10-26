@@ -56,7 +56,17 @@ export interface ThreatLabResult {
 export interface AuthStatus { loggedIn: boolean; isPro: boolean; plan: string; email?: string; }
 
 export interface RecentProject { path: string; name: string; type: ScanType; scannedAt: string; reportUrl?: string; cachePath?: string; }
-export interface UserProfile   { name: string; email: string; token?: string; refreshToken?: string; familiarity?: number; aboutYou?: string; avatarDataUrl?: string; }
+export interface UserProfile   { name: string; email: string; token?: string; refreshToken?: string; familiarity?: number; aboutYou?: string; avatarDataUrl?: string; dashboard?: DashboardMode; securityExperience?: SecurityExperience; codeAuthor?: CodeAuthor; }
+
+// Founder mode: "simple" is the plain-language dashboard for non-technical
+// founders, "full" the original one. Missing means "full" (pre-existing users).
+export type DashboardMode      = "simple" | "full";
+export type SecurityExperience = "none" | "some" | "comfortable";
+export type CodeAuthor         = "ai-builder" | "ai-editor" | "me" | "team";
+
+// One AI tool's MCP connection, from `trojan mcp status`. lastUsed is set once
+// the tool has actually talked to the app's local MCP server.
+export interface McpToolStatus { installed: boolean; configured: boolean; lastUsed?: string; project?: string; }
 
 export interface Toast {
   id: string;

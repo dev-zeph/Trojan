@@ -199,3 +199,31 @@ func TestConsentStoreRoundTrip(t *testing.T) {
 		t.Error("removePending did not remove the token")
 	}
 }
+
+func TestAttestOwnership(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	// Use an IP literal from a public range so IsLocalHost doesn't need DNS.
+	const target = "https://203.0.113.7/app"
+	if allowed, _, _, _, _ := GateStatus(target, "u@x.com"); allowed {
+		t.Fatal("gate open before attestation")
+	}
+	rec, err := AttestOwnership(target, "u@x.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Method != MethodAttest || rec.Domain != "203.0.113.7" {
+		t.Errorf("record = %+v", rec)
+	}
+	if allowed, _, _, _, _ := GateStatus(target, "u@x.com"); !allowed {
+		t.Error("gate still closed after attestation")
+	}
+	// Attestation is per user, like the other methods.
+	if allowed, _, _, _, _ := GateStatus(target, "other@x.com"); allowed {
+		t.Error("attestation leaked across users")
+	}
+
+	if _, err := AttestOwnership("http://localhost:3000", "u@x.com"); err == nil {
+		t.Error("expected an error for a local target")
+	}
+}

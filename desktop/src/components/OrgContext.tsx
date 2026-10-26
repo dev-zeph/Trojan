@@ -277,20 +277,26 @@ export function LocalPrivacyBadge({ compact }: { compact?: boolean }) {
 // ── Onboarding wizard ────────────────────────────────────────────────────────
 type WizardStep = { key: string; eyebrow: string; title: string; blurb: string; render: () => React.ReactNode };
 
-export function OrgContextWizard({ initial, onFinish, onSkip }: {
+export function OrgContextWizard({ initial, onFinish, onSkip, simple = false }: {
   initial?: OrgContext | null;
   onFinish: (ctx: OrgContext) => void;
   onSkip: () => void;
+  // Simple (founder) mode asks only for the plain-language description and
+  // skips the sensitive-data, trust-boundary and attacker steps.
+  simple?: boolean;
 }) {
   const [ctx, setCtx] = useState<OrgContext>(initial && orgContextHasContent(initial) ? initial : emptyOrgContext());
   const [step, setStep] = useState(0);
 
-  const steps: WizardStep[] = [
+  const allSteps: WizardStep[] = [
     { key: "app", eyebrow: "STEP 1 OF 4", title: "What are you building?", blurb: "Describe your app the way you would to a new teammate. This is the highest-value thing you can tell Trojan.", render: () => <AppSection value={ctx} onChange={setCtx} /> },
     { key: "sensitive", eyebrow: "STEP 2 OF 4", title: "What sensitive data does it handle?", blurb: "Tap the kinds of data your app touches. Trojan tests these paths harder for both security and privacy.", render: () => <SensitiveSection value={ctx} onChange={setCtx} /> },
     { key: "boundaries", eyebrow: "STEP 3 OF 4", title: "Where are your trust boundaries?", blurb: "The zones with different levels of trust. This is how Trojan reasons about who can reach what.", render: () => <BoundarySection value={ctx} onChange={setCtx} /> },
     { key: "actors", eyebrow: "STEP 4 OF 4", title: "Who are you defending against?", blurb: "The attackers you actually care about. Trojan prioritizes the paths they would take.", render: () => <ActorSection value={ctx} onChange={setCtx} /> },
   ];
+  const steps: WizardStep[] = simple
+    ? [{ ...allSteps[0], eyebrow: "LAST STEP", title: "Tell us about your app", blurb: "Describe it the way you'd explain it to a friend: what it does and who uses it. Trojan uses this to know what to protect." }]
+    : allSteps;
 
   const isLast = step === steps.length - 1;
   const canAdvance = step > 0 || ctx.app.name.trim().length > 0 || ctx.app.description.trim().length > 0;
@@ -304,7 +310,9 @@ export function OrgContextWizard({ initial, onFinish, onSkip }: {
           <img src="/logo.png" alt="Trojan" className="ob-left-logo" />
           <span className="ob-left-wordmark">TROJAN</span>
           <p className="ob-left-tagline">
-            Trojan is smarter than a generic scanner because you tell it what you are building. It tests intentionally, for security and privacy, against your own model.
+            {simple
+              ? "The more Trojan knows about your app, the better it can check whether your users' information is safe."
+              : "Trojan is smarter than a generic scanner because you tell it what you are building. It tests intentionally, for security and privacy, against your own model."}
           </p>
           <div className="oc-privacy-panel">
             <div className="oc-privacy-panel-head">
@@ -314,7 +322,9 @@ export function OrgContextWizard({ initial, onFinish, onSkip }: {
               This never leaves your machine
             </div>
             <p className="oc-privacy-panel-body">
-              Everything here is saved locally in your project (.trojan/context.yaml). Trojan never uploads it. You stay in control, and you can edit or delete it any time.
+              {simple
+                ? "What you write here is saved on your computer, inside your project. Trojan never uploads it, and you can change it any time."
+                : "Everything here is saved locally in your project (.trojan/context.yaml). Trojan never uploads it. You stay in control, and you can edit or delete it any time."}
             </p>
           </div>
         </div>
@@ -330,7 +340,7 @@ export function OrgContextWizard({ initial, onFinish, onSkip }: {
               />
             ))}
           </div>
-          <div className="ob-left-ver">Set up local context</div>
+          <div className="ob-left-ver">{simple ? "About your app" : "Set up local context"}</div>
         </div>
       </div>
 
@@ -353,13 +363,13 @@ export function OrgContextWizard({ initial, onFinish, onSkip }: {
               ? <button type="button" className="oc-nav-back" onClick={() => setStep((s) => s - 1)}>{"←"} Back</button>
               : <span />}
             {isLast
-              ? <button type="button" className="oc-nav-next" onClick={() => onFinish(ctx)}>Save context {"→"}</button>
+              ? <button type="button" className="oc-nav-next" onClick={() => onFinish(ctx)}>{simple ? "Finish" : "Save context"} {"→"}</button>
               : <button type="button" className="oc-nav-next" disabled={!canAdvance} onClick={() => setStep((s) => s + 1)}>Continue {"→"}</button>}
           </div>
 
           <div className="ob-footer-sep">
             <button type="button" className="ob-footer-skip" onClick={onSkip}>Skip for now, set this up later</button>
-            <span className="ob-footer-note">You can add or edit this any time from Project Context.</span>
+            <span className="ob-footer-note">{simple ? "Trojan still works without it." : "You can add or edit this any time from Project Context."}</span>
           </div>
         </div>
       </div>
