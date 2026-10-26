@@ -53,6 +53,9 @@ const (
 	MethodDNS  VerifyMethod = "dns"
 	MethodFile VerifyMethod = "file"
 	MethodMeta VerifyMethod = "meta"
+	// MethodAttest is the user's confirmation that they own the target, with
+	// no token placed (see AttestOwnership).
+	MethodAttest VerifyMethod = "attest"
 )
 
 // ConsentRecord is a persisted proof that a user verified control of a domain.
@@ -164,6 +167,34 @@ func VerifyOwnership(rawURL string, method VerifyMethod, userEmail string) (*Con
 		UserEmail:  userEmail,
 		Method:     method,
 		Token:      p.Token,
+		VerifiedAt: time.Now().UTC(),
+	}
+	store.upsertVerified(rec)
+	store.removePending(host, userEmail)
+	if err := saveConsentStore(store); err != nil {
+		return nil, err
+	}
+	return &rec, nil
+}
+
+// AttestOwnership records the user's own statement that they own or are
+// authorized to test the URL's host, in place of a DNS/file/meta proof. The
+// desktop app uses it for founders who can't edit DNS or place a file: they
+// tick "I own this website" and the record keeps who confirmed it and when.
+func AttestOwnership(rawURL, userEmail string) (*ConsentRecord, error) {
+	host, err := NormalizeHost(rawURL)
+	if err != nil {
+		return nil, err
+	}
+	if IsLocalHost(host) {
+		return nil, fmt.Errorf("%s is a local target — no ownership check is required", host)
+	}
+
+	store, _ := loadConsentStore()
+	rec := ConsentRecord{
+		Domain:     host,
+		UserEmail:  userEmail,
+		Method:     MethodAttest,
 		VerifiedAt: time.Now().UTC(),
 	}
 	store.upsertVerified(rec)

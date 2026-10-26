@@ -23,18 +23,23 @@ import (
 	"github.com/fatih/color"
 	"github.com/pkg/browser"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 
 	trojan "github.com/dev-zeph/trojan"
+	ctxagent "github.com/dev-zeph/trojan/internal/agent"
 	"github.com/dev-zeph/trojan/internal/ai"
 	"github.com/dev-zeph/trojan/internal/apispec"
 	"github.com/dev-zeph/trojan/internal/ci"
 	"github.com/dev-zeph/trojan/internal/config"
 	"github.com/dev-zeph/trojan/internal/dast"
 	"github.com/dev-zeph/trojan/internal/dast/agent"
+	"github.com/dev-zeph/trojan/internal/graph"
+	"github.com/dev-zeph/trojan/internal/graphstore"
 	"github.com/dev-zeph/trojan/internal/greybox"
 	"github.com/dev-zeph/trojan/internal/hook"
 	"github.com/dev-zeph/trojan/internal/mcpserver"
 	"github.com/dev-zeph/trojan/internal/normalizer"
+	"github.com/dev-zeph/trojan/internal/orgcontext"
 	"github.com/dev-zeph/trojan/internal/rag"
 	"github.com/dev-zeph/trojan/internal/routes"
 	"github.com/dev-zeph/trojan/internal/scanners"
@@ -67,6 +72,7 @@ func main() {
 	rootCmd.AddCommand(serveCmd())
 	rootCmd.AddCommand(depsCmd())
 	rootCmd.AddCommand(indexCmd())
+	rootCmd.AddCommand(contextCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -418,6 +424,8 @@ func dastCmd() *cobra.Command {
 	var allowEndpoints, denyEndpoints []string
 	var limitToAllowlist, allowDangerous bool
 	var attackTemplateJSON string
+	var ownerConfirmed bool
+	var exitWhenDone bool
 
 	cmd := &cobra.Command{
 		Use:   "dast <url>",
@@ -466,6 +474,14 @@ func dastCmd() *cobra.Command {
 			if gateErr != nil {
 				color.Red("\nError: %s\n", gateErr)
 				os.Exit(1)
+			}
+			if !allowed && ownerConfirmed {
+				rec, aErr := dast.AttestOwnership(targetURL, userEmail)
+				if aErr != nil {
+					color.Red("\nError recording ownership confirmation: %s\n", aErr)
+					os.Exit(1)
+				}
+				allowed, consentRec = true, rec
 			}
 			if isLocalTarget {
 				color.New(color.Faint).Printf("  Local target (%s) — no ownership check required.\n", gateDomain)
@@ -535,6 +551,7 @@ func dastCmd() *cobra.Command {
 					desktop:           desktop,
 					crawlDepth:        crawlDepth,
 					crawlTimeout:      crawlTimeout,
+					exitWhenDone:      exitWhenDone,
 				})
 				return
 			}
@@ -740,7 +757,7 @@ func dastCmd() *cobra.Command {
 			fmt.Printf(")\n")
 
 			// Persist under the cwd so MCP clients can read DAST findings too.
-			scanResult := persistScan(targetURL, findings)
+			scanResult := persistScan(targetURL, findings, desktop)
 
 			dastUI, _ := fs.Sub(trojan.DastUIAssets, "dast-ui/dist")
 			srv := server.New(scanResult, dastUI)
@@ -797,6 +814,9 @@ func dastCmd() *cobra.Command {
 	// {title, technique, body}. Not a user-facing CLI feature (§9.4 is desktop-only).
 	cmd.Flags().StringVar(&attackTemplateJSON, "attack-template", "", "")
 	cmd.Flags().MarkHidden("attack-template") //nolint:errcheck
+	cmd.Flags().BoolVar(&exitWhenDone, "exit-when-done", false, "Exit once an agentic run's findings are saved instead of serving the report")
+	cmd.Flags().MarkHidden("exit-when-done") //nolint:errcheck
+	cmd.Flags().BoolVar(&ownerConfirmed, "owner-confirmed", false, "Confirm you own or are authorized to test the target, instead of a DNS/file/meta proof")
 	cmd.AddCommand(dastVerifyCmd())
 	return cmd
 }
@@ -941,6 +961,9 @@ type agenticParams struct {
 	desktop           bool
 	crawlDepth        int
 	crawlTimeout      int
+	// exitWhenDone ends the process once findings are saved instead of
+	// serving the live report; used for tests started from an AI tool (MCP).
+	exitWhenDone bool
 }
 
 // runAgenticDast drives the adaptive AI pen-test (docs/agentic-dast.md Phase 4/5).
@@ -1122,9 +1145,9 @@ func runAgenticDast(p agenticParams) {
 		// and the report shows the Pro upsell even to logged-in Pro users.
 		synthesizeFindings(all, p.accessToken)
 
-		// Persist under the cwd so `trojan mcp` (run from the same project) can
-		// read these DAST findings; ProjectPath keeps the scanned URL for display.
-		scan := persistScan(p.targetURL, all)
+		// Persist where the MCP server reads website tests (see persistScan);
+		// ProjectPath keeps the scanned URL for display.
+		scan := persistScan(p.targetURL, all, p.desktop)
 		srv.UpdateScan(scan)
 		// Overwrite the desktop cache with the finished results so re-opening
 		// this target from "recent" shows the full report (not a new scan).
@@ -1135,6 +1158,9 @@ func runAgenticDast(p agenticParams) {
 		fmt.Printf("\n  → Agentic pen-test complete — %d candidate finding(s); %s\n", len(res.Findings), stopLabel(res))
 	}
 
+	if p.exitWhenDone {
+		os.Exit(0)
+	}
 	// Keep the server alive until cancelled/closed — installDastCancelHandler
 	// (installed at the top) handles SIGINT/SIGTERM and exits the process.
 	select {}
@@ -1474,18 +1500,22 @@ func printSynthesisSummary(res synthesisResult, total int) {
 	fmt.Printf("\r  → %d / %d complete\n", total, total)
 }
 
-// persistScan writes the findings under the cwd's .trojan/scans/ (so MCP can read
-// them) with the scanned URL as the display path, falling back to in-memory if
-// the write fails.
-func persistScan(targetURL string, findings []normalizer.Finding) *normalizer.ScanResult {
-	cwd, err := os.Getwd()
+// persistScan saves a website test's findings to that site's folder under
+// ~/.trojan/website-tests (where the MCP server reads them), with the scanned
+// URL as the display path. A CLI run also keeps a copy under the cwd's
+// .trojan/scans for `trojan mcp` started from that folder; the desktop app's
+// cwd isn't a project, so it skips that. Falls back to in-memory on failure.
+func persistScan(targetURL string, findings []normalizer.Finding, desktop bool) *normalizer.ScanResult {
+	scan, err := normalizer.SaveWebsiteTest(targetURL, findings)
 	if err != nil {
-		return normalizer.NewScanResult(targetURL, findings)
+		scan = normalizer.NewScanResult(targetURL, findings)
 	}
-	if scan, serr := normalizer.SaveScanResultAt(cwd, targetURL, findings); serr == nil {
-		return scan
+	if !desktop {
+		if cwd, err := os.Getwd(); err == nil {
+			normalizer.SaveScanResultAt(cwd, targetURL, findings) //nolint:errcheck // secondary copy
+		}
 	}
-	return normalizer.NewScanResult(targetURL, findings)
+	return scan
 }
 
 func parseAgentSeverity(s string) normalizer.Severity {
@@ -1844,6 +1874,237 @@ re-embedded).`,
 	return cmd
 }
 
+// contextCmd groups the org-context subcommands: init scaffolds
+// .trojan/context.yaml, show prints it, and scan builds the local Code
+// Property Graph, layers the org context onto it (if present), and prints
+// the source->sink attack paths it finds.
+//
+// This is entirely local and free to run — the graph build and pattern
+// overlay need no account and no tokens. Only the optional AI hypothesis
+// loop in `scan` talks to a model, and only when ANTHROPIC_API_KEY is set
+// (the same gate cmd/agentdemo uses), so there is nothing to Pro-gate here
+// the way dastCmd gates a billed, server-metered run.
+func contextCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "context",
+		Short: "Describe your app so Trojan tests intentionally, not generically",
+		Long: `Trojan reasons far more precisely about your app when you tell it what it
+is, what data it protects, where its trust boundaries sit, and who you are
+defending against. This is the authored context at .trojan/context.yaml —
+the single highest-leverage input you can give the tool.`,
+	}
+	cmd.AddCommand(contextInitCmd())
+	cmd.AddCommand(contextShowCmd())
+	cmd.AddCommand(contextScanCmd())
+	return cmd
+}
+
+func contextInitCmd() *cobra.Command {
+	var force bool
+	cmd := &cobra.Command{
+		Use:   "init",
+		Short: "Scaffold .trojan/context.yaml",
+		Long: `Writes a starter .trojan/context.yaml with commented prompts guiding you
+through describing your app, its sensitive data, trust boundaries, and threat
+actors. Refuses to overwrite an existing file unless --force is passed.`,
+		Args: cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			path, err := orgcontext.WriteScaffold(".", force)
+			if err != nil {
+				color.Red("Error: %s\n", err)
+				os.Exit(1)
+			}
+			color.Green("✓ Wrote %s\n", path)
+			fmt.Println("Open it and describe your app: what it does, who uses it, what data it")
+			fmt.Println("handles, and who you are defending against. A few honest sentences focus")
+			fmt.Println("every scan on what actually matters for your app, instead of a generic")
+			fmt.Println("checklist. Run `trojan context show` any time to see what's loaded.")
+		},
+	}
+	cmd.Flags().BoolVarP(&force, "force", "f", false, "Overwrite an existing context.yaml")
+	return cmd
+}
+
+func contextShowCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "show",
+		Short: "Print the current org context",
+		Args:  cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			path := orgcontext.Path(".")
+			if !orgcontext.Exists(path) {
+				fmt.Println("No org context found. Run `trojan context init` to get started.")
+				return
+			}
+			ctx, err := orgcontext.Load(path)
+			if err != nil {
+				color.Red("Error: %s\n", err)
+				os.Exit(1)
+			}
+			data, err := yaml.Marshal(ctx)
+			if err != nil {
+				color.Red("Error: %s\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("%s (%s)\n\n%s", "org context", path, string(data))
+		},
+	}
+}
+
+func contextScanCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "scan [path]",
+		Short: "Build the local code graph and show what actually matters",
+		Long: `Walks the project's source, builds Trojan's local Code Property Graph, and
+(when .trojan/context.yaml exists) layers the authored org context onto it
+before printing the source->sink attack paths it finds. This step is fully
+offline.
+
+If ANTHROPIC_API_KEY is set, it then runs the hypothesis-driven agent loop
+over the graph and prints the resulting finding. Without a key, it prints a
+clear message and exits cleanly.`,
+		Args: cobra.MaximumNArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			path := "."
+			if len(args) > 0 {
+				path = args[0]
+			}
+
+			files, err := rag.WalkSource(path)
+			if err != nil {
+				color.Red("Error walking source: %s\n", err)
+				os.Exit(1)
+			}
+			if len(files) == 0 {
+				fmt.Println("No source files found.")
+				return
+			}
+
+			g, err := graph.BuildFromFiles(files)
+			if err != nil {
+				color.Red("Error building graph: %s\n", err)
+				os.Exit(1)
+			}
+
+			var orgCtx *orgcontext.OrgContext
+			ctxPath := orgcontext.Path(path)
+			if orgcontext.Exists(ctxPath) {
+				loaded, err := orgcontext.Load(ctxPath)
+				if err != nil {
+					color.Red("Error loading org context: %s\n", err)
+					os.Exit(1)
+				}
+				orgCtx = loaded
+				res := orgcontext.ApplyOverlay(g, orgCtx)
+				fmt.Printf("Applied org context from %s: %d sensitive-data match(es), %d trust-boundary match(es).\n\n",
+					ctxPath, res.SensitiveMatches, res.BoundaryMatches)
+			} else {
+				fmt.Println("No .trojan/context.yaml found — using generic heuristics only.")
+				fmt.Println("Run `trojan context init` to describe your app and sharpen this scan.")
+				fmt.Println()
+			}
+
+			// Persist the overlaid graph locally so context accumulates across
+			// runs. This is the compounding local memory that is the point of
+			// the tool; the database never leaves the machine. A write failure
+			// is a warning, not a fatal, since the scan output is still useful.
+			dbPath := filepath.Join(path, graphstore.DefaultDBPath)
+			if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+				color.Yellow("  Warning: could not create %s: %s\n", filepath.Dir(dbPath), err)
+			} else if err := graphstore.Save(dbPath, g); err != nil {
+				color.Yellow("  Warning: could not persist graph to %s: %s\n", dbPath, err)
+			}
+
+			fmt.Printf("Code Property Graph for %s\n", path)
+			fmt.Printf("  files scanned : %d\n", len(files))
+			fmt.Printf("  nodes         : %d\n", len(g.Nodes))
+			fmt.Printf("  edges         : %d\n\n", len(g.Edges))
+
+			paths := g.Paths()
+			if len(paths) == 0 {
+				fmt.Println("No source->sink attack paths found.")
+			} else {
+				fmt.Printf("%d attack path(s) — entrypoint reaching a dangerous sink:\n\n", len(paths))
+				for i, p := range paths {
+					pii := ""
+					if p.TouchPII {
+						pii = "  [touches PII/PHI]"
+					}
+					fmt.Printf("[%d] %s severity%s\n", i+1, strings.ToUpper(p.Severity), pii)
+					fmt.Printf("    what : %s\n", p.Sink.SinkRule)
+					fmt.Printf("    from : %s (%s:%d)\n", p.Source.Name, contextShortPath(p.Source.File, path), p.Source.Line)
+					fmt.Printf("    path : %s\n", contextChainString(p.Via))
+					fmt.Printf("    sink : %s (%s:%d)\n\n", p.Sink.Name, contextShortPath(p.Sink.File, path), p.Sink.Line)
+				}
+			}
+
+			if strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")) == "" {
+				fmt.Println("ANTHROPIC_API_KEY is not set, so the AI hypothesis loop is disabled.")
+				fmt.Println("The graph above ran fully offline. Set ANTHROPIC_API_KEY to have Claude")
+				fmt.Println("form an attack hypothesis grounded in this graph.")
+				return
+			}
+
+			fmt.Println("== Running hypothesis loop (Claude) ==")
+			tb := ctxagent.NewToolbox(g)
+			loopCfg := ctxagent.Config{
+				Model:      os.Getenv("TROJAN_AGENT_MODEL"),
+				OrgContext: orgContextText(orgCtx),
+				Logf:       func(format string, args ...any) { fmt.Printf("  "+format+"\n", args...) },
+			}
+			finding, err := ctxagent.RunHypothesisLoop(context.Background(), tb, loopCfg)
+			if err != nil {
+				if errors.Is(err, ctxagent.ErrNoFinding) {
+					fmt.Println("The model finished without emitting a finding.")
+					return
+				}
+				color.Red("Error: %s\n", err)
+				os.Exit(1)
+			}
+
+			fmt.Println()
+			fmt.Println("== Finding ==")
+			fmt.Printf("Hypothesis: %s\n", finding.Hypothesis)
+			fmt.Printf("Severity:   %s\n", finding.Severity)
+			fmt.Printf("Path:       %s\n", strings.Join(finding.Path, " -> "))
+			fmt.Printf("Rationale:  %s\n", finding.Rationale)
+		},
+	}
+}
+
+// orgContextText renders the authored org context as YAML text so the agent
+// loop can fold it into its system prompt (grounding hypotheses in what the app
+// actually is and protects). Returns "" when no context was authored.
+func orgContextText(ctx *orgcontext.OrgContext) string {
+	if ctx == nil {
+		return ""
+	}
+	data, err := yaml.Marshal(ctx)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+// contextChainString renders a node chain as "a -> b -> c" for the printed
+// attack path, mirroring cmd/graphdemo's chainString.
+func contextChainString(chain []graph.Node) string {
+	names := make([]string, len(chain))
+	for i, n := range chain {
+		names[i] = n.Name
+	}
+	return strings.Join(names, " -> ")
+}
+
+// contextShortPath renders path relative to root when possible, mirroring
+// cmd/graphdemo's short helper.
+func contextShortPath(path, root string) string {
+	if rel, err := filepath.Rel(root, path); err == nil {
+		return rel
+	}
+	return path
+}
+
 // ragRetriever adapts *rag.Retriever to ai.ContextRetriever so the ai package
 // (which owns triage) needs no import of rag. main is the composition root.
 type ragRetriever struct{ r *rag.Retriever }
@@ -2006,6 +2267,67 @@ func mcpCmd() *cobra.Command {
 			fmt.Println()
 			if err := mcpserver.Install(); err != nil {
 				color.Red("Error: %s\n", err)
+				os.Exit(1)
+			}
+		},
+	})
+
+	// ── Desktop app: local server at mcpserver.LocalURL ──────────────────────
+	// Internal commands the Tauri app runs as a sidecar; hidden from help.
+	cmd.AddCommand(&cobra.Command{
+		Use:    "serve-local",
+		Short:  "Run the local MCP server the desktop app hosts",
+		Hidden: true,
+		Run: func(cmd *cobra.Command, args []string) {
+			if err := mcpserver.ServeLocal(); err != nil {
+				fmt.Fprintf(os.Stderr, "MCP server error: %s\n", err)
+				os.Exit(1)
+			}
+		},
+	})
+	cmd.AddCommand(&cobra.Command{
+		Use:    "connect <claude_code|cursor|codex_cli>",
+		Short:  "Point an AI tool at the desktop app's local MCP server",
+		Hidden: true,
+		Args:   cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			if err := mcpserver.ConnectLocal(args[0]); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+		},
+	})
+	cmd.AddCommand(&cobra.Command{
+		Use:    "status",
+		Short:  "Print each AI tool's connection status as JSON",
+		Hidden: true,
+		Run: func(cmd *cobra.Command, args []string) {
+			json.NewEncoder(os.Stdout).Encode(mcpserver.LocalStatus()) //nolint:errcheck
+		},
+	})
+	cmd.AddCommand(&cobra.Command{
+		Use:    "verify-once <path> <finding-id>",
+		Short:  "Re-check one finding (used by the verify_fix tool)",
+		Hidden: true,
+		Args:   cobra.ExactArgs(2),
+		Run: func(cmd *cobra.Command, args []string) {
+			res, err := mcpserver.VerifyOnce(args[0], args[1])
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			data, _ := json.Marshal(res)
+			fmt.Printf("\n%s%s\n", mcpserver.VerifyMarker, data)
+		},
+	})
+	cmd.AddCommand(&cobra.Command{
+		Use:    "scan-once <path>",
+		Short:  "Scan a project and save the results (used by the run_scan tool)",
+		Hidden: true,
+		Args:   cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			if _, err := mcpserver.ScanOnce(args[0]); err != nil {
+				fmt.Fprintln(os.Stderr, err)
 				os.Exit(1)
 			}
 		},

@@ -11,6 +11,8 @@ import type { PentestReport } from "./PrintPenTestReport";
 import { AttackMarket, prefetchAttackMarket } from "./AttackMarket";
 import type { AttackTemplate } from "./AttackMarket";
 import { McpConnect } from "./McpConnect";
+import { OrgContextEditor, LocalPrivacyBadge } from "./components/OrgContext";
+import { syncDraftToServer } from "./lib/orgContext";
 import { gradeColor, licenseRiskColor } from "./lib/reportColors";
 import { MARKETING_URL, STORE_KEY, SUPABASE_URL, TERMINAL_KEY, APP_VERSION } from "./constants";
 import { supabase, decodeJWT, encodeBody, syncAuthToGoConfig } from "./lib/supabase";
@@ -26,8 +28,9 @@ import {
   updateRecentCachePath,
   deleteRecentEntry,
 } from "./lib/store";
-import { friendlyError, timeAgo, parseAuthCallback, greet, initials } from "./lib/format";
+import { friendlyError, timeAgo, parseAuthCallback, greet, initials, isLocalUrl } from "./lib/format";
 import { AuthForm } from "./components/AuthForm";
+import { FounderHome } from "./components/FounderHome";
 import { Onboarding } from "./components/Onboarding";
 import { CM } from "./components/CornerMarks";
 import { FeedbackForm } from "./components/FeedbackForm";
@@ -44,6 +47,7 @@ import type {
   AuthStatus,
   RecentProject,
   UserProfile,
+  McpToolStatus,
   Toast,
 } from "./types";
 import "./App.css";
@@ -81,10 +85,44 @@ const NAV: { view: NavView; label: string; icon: React.ReactNode; pro?: boolean;
   { view: "autofix", label: "Fix with AI",
     icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z M2 17l10 5 10-5 M2 12l10 5 10-5"/></svg>,
   },
+  { view: "context", label: "Project Context",
+    icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>,
+  },
   { view: "profile", label: "Profile",
     icon: <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>,
   },
 ];
+
+// ── Report button ──────────────────────────────────────────────────────────
+// Sits with the scan control it reports on. Always shown so the next step is
+// visible; disabled with a hint until there are results to report on. Click
+// handling stops at the wrapper so a drop zone underneath never also fires.
+function ReportAction({ label, enabled, hint, title, onClick }: {
+  label: string; enabled: boolean; hint: string; title: string; onClick: () => void;
+}) {
+  return (
+    <span className="report-action" onClick={(e) => e.stopPropagation()}>
+      <button className="card-btn primary-btn sast-choose-btn report-btn" onClick={onClick} disabled={!enabled} title={enabled ? title : hint}>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M9 15l2 2 4-4"/></svg>
+        {label}
+      </button>
+      {!enabled && <span className="report-action-hint">{hint}</span>}
+    </span>
+  );
+}
+
+// ── Simple (founder) dashboard nav ─────────────────────────────────────────
+// The same views as NAV, renamed in plain language. Dependencies, Licenses,
+// Privacy and Project Context are left out of the simple dashboard.
+const SIMPLE_NAV: typeof NAV = ([
+  ["overview", "Home", "YOUR APP"],
+  ["sast", "Codebase Scanning"],
+  ["dast", "Live URL Testing"],
+  ["market", "Attack Market"],
+  ["autofix", "Connect your AI tool", "FIX"],
+  ["history", "Past Scans", "GENERAL"],
+  ["profile", "Profile"],
+] as const).map(([v, label, section]) => ({ ...NAV.find((n) => n.view === v)!, label, section }));
 
 // ── App ───────────────────────────────────────────────────────────────────
 export default function App() {
@@ -105,6 +143,8 @@ export default function App() {
   const [agTier, setAgTier]               = useState<"passive" | "safe-active" | "aggressive">("passive");
   const [agEnv, setAgEnv]                 = useState<"production" | "staging">("production");
   const [agAck, setAgAck]                 = useState(false);
+  // "I own this website": replaces the DNS/file/meta ownership proof in the app.
+  const [ownerConfirmed, setOwnerConfirmed] = useState(false);
   const [agGreyBox, setAgGreyBox]         = useState(false);
   const [agFocus, setAgFocus]             = useState<"" | "api" | "web" | "llm">("");
   const [agIdentities, setAgIdentities]   = useState<{ name: string; header: string }[]>([]);
@@ -148,8 +188,7 @@ export default function App() {
   const [terminalOpen, setTerminalOpen]   = useState(true);
   const [terminalHeight, setTerminalHeight] = useState(220);
   const [sessionExpired, setSessionExpired] = useState(false);
-  const [mcpStatus, setMcpStatus]         = useState<Record<string, { installed: boolean; configured: boolean }>>({});
-  const [mcpSetupBusy, setMcpSetupBusy]   = useState(false);
+  const [mcpStatus, setMcpStatus]         = useState<Record<string, McpToolStatus>>({});
   const [fixScanIdx, setFixScanIdx]       = useState(0);
   const [fixScanPage, setFixScanPage]     = useState(0);
   const [profileSaved, setProfileSaved]   = useState(true);
@@ -170,6 +209,16 @@ export default function App() {
   // Keep viewRef in sync so the drag-drop callback can read current view without stale closure.
   useEffect(() => { viewRef.current = view; }, [view]);
   useEffect(() => { profileRef.current = profile; }, [profile]);
+
+  // While the AI-connection page is open, refresh MCP status so a tool turns
+  // "connected" the moment it first talks to Trojan.
+  useEffect(() => {
+    if (view !== "autofix") return;
+    const poll = () => invoke<Record<string, McpToolStatus>>("check_mcp_status").then((st) => setMcpStatus(st ?? {})).catch(() => {});
+    poll();
+    const t = window.setInterval(poll, 4000);
+    return () => window.clearInterval(t);
+  }, [view]);
 
   // Persist terminal layout so it survives app restarts.
   useEffect(() => {
@@ -322,6 +371,8 @@ export default function App() {
 
       setProfile(activeProfile);
       setProfileLoaded(true);
+      // The terminal is developer-facing; the simple dashboard starts with it closed.
+      if (activeProfile?.dashboard === "simple") setTerminalOpen(false);
       if (activeProfile) {
         savedProfileRef.current = { aboutYou: activeProfile.aboutYou ?? "", familiarity: activeProfile.familiarity ?? 1 };
       }
@@ -335,7 +386,7 @@ export default function App() {
     init();
 
     // Load MCP editor status on mount
-    invoke("check_mcp_status").then((s) => setMcpStatus(s as Record<string, { installed: boolean; configured: boolean }>)).catch(() => {});
+    invoke<Record<string, McpToolStatus>>("check_mcp_status").then((st) => setMcpStatus(st ?? {})).catch(() => {});
   }, [applyAuthFromToken]);
 
   // Warm the Attack Market catalog in the background once the user is a logged-in
@@ -538,6 +589,11 @@ export default function App() {
 
   async function fetchAndCachePackages(serverUrl: string) {
     setCurrentServerUrl(serverUrl);
+    // If the user authored an org context during onboarding and this project
+    // doesn't have one yet, write it into the project's .trojan/context.yaml
+    // now that a server (which knows the project root) is running. Fire and
+    // forget: it never blocks or breaks a scan, and retries on the next one.
+    void syncDraftToServer(serverUrl);
     try {
       const [scanRes, authRes] = await Promise.all([
         fetch(`${serverUrl}/api/scans/latest`),
@@ -697,7 +753,7 @@ export default function App() {
 
     saveRecent(url, "dast").then(() => loadRecent().then(setRecent));
 
-    invoke<{ url: string; cachePath: string }>("start_dast", { url })
+    invoke<{ url: string; cachePath: string }>("start_dast", { url, ownerConfirmed })
       .then(async ({ url: rUrl, cachePath }) => {
         updateToastDone(id, rUrl, cachePath);
         await updateRecentUrl(url, rUrl);
@@ -734,6 +790,7 @@ export default function App() {
       attackTemplate: agTemplate
         ? { title: agTemplate.title, technique: agTemplate.technique, body: agTemplate.prompt_body }
         : null,
+      ownerConfirmed,
     })
       .then(async ({ url: rUrl, cachePath }) => {
         updateToastDone(id, rUrl, cachePath);
@@ -748,7 +805,7 @@ export default function App() {
         if (msg.includes("__cancelled__")) return;
         if (msg.includes("__consent__")) {
           const domain = msg.split("__consent__")[1]?.trim() || "the target";
-          updateToastError(id, `Prove you own ${domain} first — verification steps are in the terminal panel below.`);
+          updateToastError(id, `Confirm you own ${domain} first: tick the box under the link, then start the test again.`);
           return;
         }
         updateToastError(id, friendlyError(msg));
@@ -852,6 +909,16 @@ export default function App() {
     }
   }
 
+  // The security report reads the loaded scan. If none is loaded yet (e.g. the
+  // app was just opened), load the most recent saved code scan first.
+  function openSecurityReport(): void {
+    if (!currentServerUrl) {
+      const latest = recent.find((r) => r.type === "sast" && r.cachePath && !staleCaches.has(r.path));
+      if (latest) loadScanData(latest);
+    }
+    setView("threatlab");
+  }
+
   // Load data from a previous scan without navigating away from the current view.
   // Used by Licenses, Privacy, and Compliance tabs.
   function loadScanData(r: RecentProject): void {
@@ -933,14 +1000,17 @@ export default function App() {
     if (selected) triggerSast(selected);
   }
 
-  async function handleSetupMcp() {
-    setMcpSetupBusy(true);
+  // Point one AI tool at the app's local MCP server. Resolves to an error
+  // message for the connect row, or null on success.
+  async function handleConnectTool(tool: string): Promise<string | null> {
+    let error: string | null = null;
     try {
-      await invoke("setup_mcp");
-      const s = await invoke("check_mcp_status") as Record<string, { installed: boolean; configured: boolean }>;
-      setMcpStatus(s);
-    } catch {}
-    setMcpSetupBusy(false);
+      await invoke("setup_mcp", { tool });
+    } catch (e) {
+      error = friendlyError(String(e));
+    }
+    try { setMcpStatus((await invoke<Record<string, McpToolStatus>>("check_mcp_status")) ?? {}); } catch {}
+    return error;
   }
 
   // ── Gate renders ─────────────────────────────────────────────────────
@@ -948,7 +1018,7 @@ export default function App() {
 
   if (!profile) return (
     <Onboarding
-      onDone={(p) => onOnboardingDone(p, {
+      onDone={(p) => { if (p.dashboard === "simple") setTerminalOpen(false); onOnboardingDone(p, {
         setProfile,
         // Sync auth to ~/.trojan/config.json immediately so the Go sidecar
         // and the embedded report UI recognise the session on the first scan,
@@ -957,9 +1027,12 @@ export default function App() {
         // this the user would need to sign in a second time.
         syncAuthToGoConfig,
         applyAuthFromToken,
-      })}
+      }); }}
     />
   );
+
+  const simple   = profile.dashboard === "simple";
+  const navItems = simple ? SIMPLE_NAV : NAV;
 
   // ── Terminal resize handler ───────────────────────────────────────────
   function handleTerminalResizeStart(e: React.MouseEvent) {
@@ -992,7 +1065,7 @@ export default function App() {
         </div>
 
         <nav className="sidebar-nav">
-          {NAV.map(({ view: v, label, icon, pro, section }) => (
+          {navItems.map(({ view: v, label, icon, pro, section }) => (
             <span key={v} style={{ display: "contents" }}>
               {section && <div className="sidebar-scan-label" style={{ marginTop: 8 }}>{section}</div>}
             <button
@@ -1132,7 +1205,7 @@ export default function App() {
           ) : (
             <>
               <span className="topbar-title">
-                {NAV.find((n) => n.view === view)?.label ?? (view === "threatlab" ? "Security Report" : view === "compliancelab" ? "Compliance Report" : "")}
+                {navItems.find((n) => n.view === view)?.label ?? (view === "threatlab" ? "Security Report" : view === "compliancelab" ? "Compliance Report" : "")}
               </span>
               <div className="topbar-right">
                 <button
@@ -1169,7 +1242,20 @@ export default function App() {
         <main className={`content-area${view === "report" ? " content-area--report" : ""}`}>
 
           {/* ── Overview ── */}
-          {view === "overview" && (() => {
+          {view === "overview" && simple && (
+            <FounderHome
+              name={profile.name}
+              recent={recent}
+              isScanning={isScanning}
+              mcpStatus={mcpStatus}
+              onScanCode={handlePickFolder}
+              onTestWebsite={() => setView("dast")}
+              onConnectAI={() => setView("autofix")}
+              onOpenRecent={openRecent}
+            />
+          )}
+
+          {view === "overview" && !simple && (() => {
             // Posture ring — the security score (higher = better) from the last report.
             const ringR   = 63;
             const ringC   = 2 * Math.PI * ringR;
@@ -1198,6 +1284,10 @@ export default function App() {
                   <button className="first-run-cta" onClick={handlePickFolder}>
                     Scan a project
                   </button>
+                  <button className="first-run-context-link" onClick={() => setView("context")}>
+                    Set up your project context for smarter, privacy-aware scans {"→"}
+                  </button>
+                  <LocalPrivacyBadge compact />
                 </div>
               );
             }
@@ -1382,18 +1472,27 @@ export default function App() {
           {view === "sast" && (
             <div className="content-inner">
               <div className="page-header">
-                {recent.some(r => r.type === "sast" && r.cachePath) && (
-                  <div className="page-header-row">
-                    <button className="report-cta" onClick={() => setView("threatlab")} title="Generate an AI security report from your findings">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M9 15l2 2 4-4"/></svg>
-                      Generate Security Report
-                    </button>
-                  </div>
-                )}
-                <span className="page-header-eyebrow">SECURITY</span>
-                <h1 className="page-header-title">Static Analysis</h1>
-                <p className="page-header-desc">Scan a local project for vulnerabilities, secrets, and misconfigurations.</p>
+                <span className="page-header-eyebrow">{simple ? "YOUR APP" : "SECURITY"}</span>
+                <h1 className="page-header-title">{simple ? "Codebase Scanning" : "Static Analysis"}</h1>
+                <p className="page-header-desc">
+                  {simple
+                    ? "Check your project folder for leaked passwords and keys, weak spots, and places where user data could get out. Your code stays on your computer."
+                    : "Scan a local project for vulnerabilities, secrets, and misconfigurations."}
+                </p>
               </div>
+
+              {/* Context-aware scanning callout — surfaces the local org-context
+                  feature without nagging. Project Context isn't in the simple nav. */}
+              {!simple && <button className="oc-feature-callout" onClick={() => setView("context")}>
+                <span className="oc-feature-icon">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
+                </span>
+                <span className="oc-feature-text">
+                  <span className="oc-feature-title">Context-aware scanning</span>
+                  <span className="oc-feature-sub">Tell Trojan what you are building and it tests intentionally, for security and privacy. Stored on your machine, never uploaded.</span>
+                </span>
+                <span className="oc-feature-cta">Set up context {"→"}</span>
+              </button>}
 
               <div className={`scan-tip-wrap ${isScanning ? "scanning-active" : ""}`}>
               <div
@@ -1417,12 +1516,19 @@ export default function App() {
                     <button className="card-btn primary-btn sast-choose-btn" onClick={(e) => { e.stopPropagation(); handlePickFolder(); }}>
                       Choose folder
                     </button>
+                    <ReportAction
+                      label="Generate Security Report"
+                      enabled={recent.some(r => r.type === "sast" && r.cachePath)}
+                      hint="Run a scan first to generate a report."
+                      title="Generate an AI security report from your findings"
+                      onClick={openSecurityReport}
+                    />
                   </>
                 )}
               </div>
               </div>{/* /scan-tip-wrap */}
 
-              <div>
+              {!simple && <div>
                 <p className="scanner-grid-label">SCANNERS — 5 INSTALLED</p>
                 <div className="scanner-grid">
                   {[
@@ -1460,7 +1566,7 @@ export default function App() {
                     )}
                   </div>
                 </div>
-              </div>
+              </div>}
             </div>
           )}
 
@@ -1480,12 +1586,22 @@ export default function App() {
             // it can be AFFORDED is decided server-side against the token balance,
             // which returns 402 and pauses the run resumably rather than pre-blocking.
             const signedIn = authStatus?.loggedIn ?? false;
+            const needsOwner = dastUrl.trim() !== "" && !isLocalUrl(dastUrl);
             return (
             <div className="content-inner">
               <div className="page-header">
-                <span className="page-header-eyebrow">SECURITY</span>
-                <h1 className="page-header-title">Penetration Testing <span className="lab-pro-tag">365 TOKENS</span></h1>
-                <p className="page-header-desc">Scan a running server for runtime vulnerabilities using Nuclei's 6,000+ templates plus AI-generated attack patterns.</p>
+                <span className="page-header-eyebrow">{simple ? "YOUR APP" : "SECURITY"}</span>
+                {simple ? (
+                  <>
+                    <h1 className="page-header-title">Live URL Testing</h1>
+                    <p className="page-header-desc">Give Trojan the link to your app. It tries to get in the way a real attacker would, without breaking anything, and tells you what it found.</p>
+                  </>
+                ) : (
+                  <>
+                    <h1 className="page-header-title">Penetration Testing <span className="lab-pro-tag">365 TOKENS</span></h1>
+                    <p className="page-header-desc">Scan a running server for runtime vulnerabilities using Nuclei's 6,000+ templates plus AI-generated attack patterns.</p>
+                  </>
+                )}
               </div>
 
               {!signedIn && (
@@ -1499,39 +1615,76 @@ export default function App() {
               {signedIn && (
               <>
               <div className={`pt-setup ${isScanning ? "scan-locked" : ""}`}>
-                {/* Mode */}
-                <span className="scanner-grid-label">MODE</span>
-                <div className="pt-seg">
-                  <button type="button" className={!agenticMode ? "on" : ""} onClick={() => setAgenticMode(false)} disabled={isScanning}>One-shot scan</button>
-                  <button type="button" className={agenticMode ? "on" : ""} onClick={() => setAgenticMode(true)} disabled={isScanning}>AI Agent <span className="pt-seg-sub">adaptive</span></button>
-                </div>
+                {/* Mode: the simple dashboard always uses the AI agent. */}
+                {!simple && (
+                  <>
+                    <span className="scanner-grid-label">MODE</span>
+                    <div className="pt-seg">
+                      <button type="button" className={!agenticMode ? "on" : ""} onClick={() => setAgenticMode(false)} disabled={isScanning}>One-shot scan</button>
+                      <button type="button" className={agenticMode ? "on" : ""} onClick={() => setAgenticMode(true)} disabled={isScanning}>AI Agent <span className="pt-seg-sub">adaptive</span></button>
+                    </div>
+                  </>
+                )}
 
                 {/* Target */}
-                <span className="scanner-grid-label" style={{ marginTop: 16 }}>TARGET</span>
-                <form className="dast-row-form" onSubmit={(e) => { e.preventDefault(); (agenticMode ? triggerAgenticDast : triggerDast)(dastUrl); }}>
+                <span className="scanner-grid-label" style={{ marginTop: simple ? 0 : 16 }}>{simple ? "YOUR APP'S LINK" : "TARGET"}</span>
+                <form className="dast-row-form" onSubmit={(e) => { e.preventDefault(); if (needsOwner && !ownerConfirmed) return; (agenticMode || simple ? triggerAgenticDast : triggerDast)(dastUrl); }}>
                   <input
                     className="dast-input dast-input-lg"
                     type="url"
-                    placeholder="https://staging.example.com"
+                    placeholder={simple ? "https://myapp.com" : "https://staging.example.com"}
                     value={dastUrl}
-                    onChange={(e) => setDastUrl(e.target.value)}
+                    onChange={(e) => { setDastUrl(e.target.value); setOwnerConfirmed(false); }}
                     disabled={isScanning}
                     autoFocus
                     style={{ fontFamily: "var(--font-mono)" }}
                   />
-                  <button type="submit" className="station-btn" disabled={isScanning || !dastUrl.trim()} style={{ whiteSpace: "nowrap", padding: "0 22px" }}>
-                    {isScanning ? "Scan in progress…" : "Launch pen test"}
+                  <button type="submit" className="station-btn" disabled={isScanning || !dastUrl.trim() || (needsOwner && !ownerConfirmed)} style={{ whiteSpace: "nowrap", padding: "0 22px" }}>
+                    {isScanning ? (simple ? "Test running…" : "Scan in progress…") : (simple ? "Start test" : "Launch pen test")}
                   </button>
                 </form>
-                <div className="pt-authnote">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3 M12 9v4 M12 17h.01"/>
-                  </svg>
-                  Only test systems you own or are authorized to test.
-                </div>
+                {needsOwner ? (
+                  <label className="pt-owner">
+                    <input type="checkbox" checked={ownerConfirmed} onChange={(e) => setOwnerConfirmed(e.target.checked)} disabled={isScanning} />
+                    <span>
+                      I own this website, or I have permission to test it.
+                      <span className="pt-owner-sub">Testing a website you don't own is illegal. Trojan keeps a record of this confirmation.</span>
+                    </span>
+                  </label>
+                ) : (
+                  <div className="pt-authnote">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3 M12 9v4 M12 17h.01"/>
+                    </svg>
+                    {dastUrl.trim()
+                      ? (simple ? "This link is on your own computer, so no confirmation is needed." : "Local target: no ownership check needed.")
+                      : "Only test systems you own or are authorized to test."}
+                  </div>
+                )}
+
+                {/* Simple dashboard: one plain choice instead of the engagement panel. */}
+                {simple && (
+                  <>
+                    <span className="scanner-grid-label" style={{ marginTop: 18 }}>HOW THOROUGH?</span>
+                    <div className="pt-simple-tiers">
+                      <button type="button" className={`pt-simple-tier ${agTier === "passive" ? "on" : ""}`} disabled={isScanning}
+                        onClick={() => { setAgTier("passive"); setAgEnv("production"); setAgAck(false); }}>
+                        <span className="pt-simple-tier-t">Look only</span>
+                        <span className="pt-simple-tier-d">Trojan only reads pages, like a visitor. Nothing on your site changes.</span>
+                      </button>
+                      <button type="button" className={`pt-simple-tier ${agTier === "safe-active" ? "on" : ""}`} disabled={isScanning}
+                        onClick={() => { setAgTier("safe-active"); setAgEnv("production"); setAgAck(true); }}>
+                        <span className="pt-simple-tier-t">Try to get in</span>
+                        <span className="pt-simple-tier-d">Trojan also fills in forms and tries actions. It may leave a few test entries behind, like a test sign-up.</span>
+                      </button>
+                    </div>
+                    <span className="scanner-grid-label" style={{ marginTop: 18 }}>COST</span>
+                    <RunCostHint balance={tokenBalance} model="sonnet" />
+                  </>
+                )}
 
                 {/* Engagement — AI agent only */}
-                {agenticMode && (
+                {agenticMode && !simple && (
                   <>
                     {/* Cost guidance. A RANGE, not a point estimate: run cost
                         depends on how many steps the agent takes and how large
@@ -2248,14 +2401,6 @@ export default function App() {
           {view === "dependencies" && (
             <div className="content-inner">
               <div className="page-header">
-                {packages.length > 0 && (
-                  <div className="page-header-row">
-                    <button className="report-cta" onClick={() => setView("compliancelab")} title="Generate an AI compliance report from your dependencies">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M9 15l2 2 4-4"/></svg>
-                      Generate Compliance Report
-                    </button>
-                  </div>
-                )}
                 <span className="page-header-eyebrow">SECURITY</span>
                 <h1 className="page-header-title">Dependencies</h1>
                 <p className="page-header-desc">
@@ -2299,6 +2444,13 @@ export default function App() {
                   </>
                 )}
               </div>
+              <ReportAction
+                label="Generate Compliance Report"
+                enabled={packages.length > 0}
+                hint="Scan a project's dependencies first to generate a report."
+                title="Generate an AI compliance report from your dependencies"
+                onClick={() => setView("compliancelab")}
+              />
               {depScanError && <p className="dep-error">{depScanError}</p>}
 
               {packages.length === 0 ? null : (() => {
@@ -2471,7 +2623,7 @@ export default function App() {
                 {/* ── Header row ── */}
                 <div className="lab-header-row">
                   <div>
-                    <button className="lab-back" onClick={() => setView("sast")}>← Static Analysis</button>
+                    <button className="lab-back" onClick={() => setView("sast")}>← {simple ? "Codebase Scanning" : "Static Analysis"}</button>
                     <div className="lab-title-row">
                       <span className="lab-title-text">Security Report</span>
                       <span className="lab-pro-tag">100 TOKENS</span>
@@ -2677,23 +2829,33 @@ export default function App() {
 
                   {/* Row 1: header + status badge */}
                   <div className="page-header">
-                    <span className="page-header-eyebrow">GENERAL</span>
-                    <h1 className="page-header-title">Fix with AI</h1>
+                    <span className="page-header-eyebrow">{simple ? "FIX" : "GENERAL"}</span>
+                    <h1 className="page-header-title">{simple ? "Connect your AI tool" : "Fix with AI"}</h1>
                     <p className="page-header-desc">
-                      Connect your editor so Trojan can hand off findings as ready-to-run fix prompts, all local via MCP.
+                      {simple
+                        ? "Connect the AI tool you build with. It can then read what Trojan found and fix it for you. Just ask it to \"fix the issues Trojan found\"."
+                        : "Connect your editor so Trojan can hand off findings as ready-to-run fix prompts, all local via MCP."}
                     </p>
                     <div className="page-header-actions">
                       <div className="overview-status-badge">
                         <span className={`status-dot ${anyConfigured ? "status-dot-ok" : "status-dot-warn"}`} />
-                        {anyConfigured ? `${connectedCount} CONNECTED` : "NOT CONFIGURED"}
+                        {anyConfigured ? `${connectedCount} CONNECTED` : simple ? "NOT CONNECTED" : "NOT CONFIGURED"}
                       </div>
                     </div>
                   </div>
 
                   {/* Immersive MCP connection diagram */}
-                  <McpConnect editors={editors} mcpStatus={mcpStatus} onConnect={handleSetupMcp} busy={mcpSetupBusy} />
+                  <McpConnect
+                    editors={editors}
+                    mcpStatus={mcpStatus}
+                    onConnect={handleConnectTool}
+                    signedIn={authStatus?.loggedIn ?? false}
+                    onSignIn={() => setShowAuthForm(true)}
+                  />
 
-                  {/* Scan selector */}
+                  {/* Scan selector + how-it-works: full dashboard only. The simple one
+                      picks the project automatically and shows the prompt per tool. */}
+                  {!simple && (<>
                   <div className="autofix-action-row">
                     <div className="autofix-scan-card">
                       <CM />
@@ -2806,6 +2968,7 @@ export default function App() {
                       </p>
                     </div>
                   </div>
+                  </>)}
 
                 </div>
               </div>
@@ -2813,6 +2976,11 @@ export default function App() {
           })()}
 
           {/* ── Profile ── */}
+          {/* ── Project Context (view + edit the local org context) ── */}
+          {view === "context" && (
+            <OrgContextEditor serverUrl={currentServerUrl} />
+          )}
+
           {view === "profile" && (() => {
             const fams = [
               { name: "Non-technical founder", desc: "Plain language, no jargon — what each risk means for your business and customers." },
@@ -2923,6 +3091,30 @@ export default function App() {
                         }}
                       />
                       <span className="profile-hint">This context is used across all Trojan AI features — findings explanations, security reports, remediation advice, and more.</span>
+                    </div>
+                  </div>
+
+                  {/* ── Dashboard mode ── */}
+                  <div className="profile-section-group">
+                    <span className="profile-mono-label">DASHBOARD</span>
+                    <div className="profile-card">
+                      <CM />
+                      <div className="pt-simple-tiers">
+                        {([
+                          ["simple", "Simple", "Plain language and only the essentials: scan your code, test your website, and let your AI tool fix it."],
+                          ["full", "Full", "Every tool and all the technical detail: dependencies, licenses, privacy, project context and advanced test settings."],
+                        ] as const).map(([mode, title, desc]) => (
+                          <button
+                            key={mode}
+                            type="button"
+                            className={`pt-simple-tier ${(profile.dashboard ?? "full") === mode ? "on" : ""}`}
+                            onClick={() => updateProfile({ dashboard: mode })}
+                          >
+                            <span className="pt-simple-tier-t">{title}</span>
+                            <span className="pt-simple-tier-d">{desc}</span>
+                          </button>
+                        ))}
+                      </div>
                     </div>
                   </div>
 

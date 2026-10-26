@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: ["*"]
+    branches: ["**"]
   pull_request:
-    branches: ["*"]
+    branches: ["**"]
 
 jobs:
   build:
@@ -15,13 +15,36 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Node must come before Go — embed.go embeds ui/dist and dast-ui/dist
+      # at compile time, so both must exist before `go build` runs.
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            ui/package-lock.json
+            dast-ui/package-lock.json
+            desktop/package-lock.json
+
+      - name: Build embedded UI
+        run: cd ui && npm ci && npm run build
+
+      - name: Build embedded DAST UI
+        run: cd dast-ui && npm ci && npm run build
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
 
+      # Scoped to our packages: `./...` would also pick up Go code vendored
+      # inside ui/node_modules.
       - name: Build
-        run: go build ./...
+        run: go build ./cmd/... ./internal/...
 
       - name: Test
-        run: go test ./...
+        run: go test ./cmd/... ./internal/...
+
+      - name: Desktop typecheck and tests
+        run: cd desktop && npm ci && npx tsc --noEmit && npx vitest run

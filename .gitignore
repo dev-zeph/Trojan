@@ -32,8 +32,20 @@ backend/dist/
 # Supabase CLI temp files
 supabase/.temp/
 
-# Backend Edge Functions — proprietary, kept in private repo
-supabase/functions/
+# Backend Edge Functions: most are tracked for backup (they deploy separately
+# via supabase; git is a backup, not a deploy path). Billing + COGS/margin code
+# stays private — no secret values live in any function (all via Deno.env.get).
+supabase/functions/checkout/
+supabase/functions/customer-portal/
+supabase/functions/delete-account/
+supabase/functions/license/
+supabase/functions/preview-purchase-email/
+supabase/functions/stripe-webhook/
+supabase/functions/_shared/stripe_catalog.ts
+supabase/functions/_shared/pricing.ts
+supabase/functions/_shared/pricing.test.ts
+supabase/functions/_shared/purchase_email.ts
+supabase/functions/_shared/purchase_email.test.ts
 
 # Internal / private
 Blueprint.md
