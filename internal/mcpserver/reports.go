@@ -18,6 +18,7 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 
 	"github.com/dev-zeph/trojan/internal/config"
+	"github.com/dev-zeph/trojan/internal/gitignore"
 	"github.com/dev-zeph/trojan/internal/normalizer"
 )
 
@@ -337,6 +338,7 @@ func writeReport(dir, kind string, r *report) (string, string, error) {
 	if err := os.MkdirAll(outDir, 0755); err != nil {
 		return "", "", err
 	}
+	gitignore.EnsureTrojanIgnored(dir)
 	stamp := time.Now().Format("2006-01-02-1504")
 	base := filepath.Join(outDir, fmt.Sprintf("%s-%s", kind, stamp))
 	generated := time.Now().Format("January 2, 2006")

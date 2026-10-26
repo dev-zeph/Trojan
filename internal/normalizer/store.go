@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/dev-zeph/trojan/internal/gitignore"
 )
 
 // ScanResult wraps findings with metadata about the scan.
@@ -55,6 +57,7 @@ func SaveScanResultAt(dir, projectPath string, findings []Finding) (*ScanResult,
 	if err := os.MkdirAll(scansDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create scans directory: %w", err)
 	}
+	gitignore.EnsureTrojanIgnored(dir)
 
 	result := &ScanResult{
 		Timestamp:   time.Now(),

@@ -24,6 +24,8 @@ import (
 	"path/filepath"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/dev-zeph/trojan/internal/gitignore"
 )
 
 // DefaultRelPath is where the org-context file lives, relative to a project
@@ -141,6 +143,7 @@ func Save(root string, ctx *OrgContext) (string, error) {
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		return "", fmt.Errorf("orgcontext: write %s: %w", path, err)
 	}
+	gitignore.EnsureTrojanIgnored(root)
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return path, nil
