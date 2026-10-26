@@ -5,6 +5,7 @@ import { saveContextDraft, setContextOnboarded } from "../lib/orgContext";
 import type { OrgContext, UserProfile } from "../types";
 import { AuthForm } from "./AuthForm";
 import { OrgContextWizard } from "./OrgContext";
+import { APP_VERSION } from "../constants";
 import { GettingStarted, type FounderAnswers } from "./GettingStarted";
 
 // ── Onboarding ────────────────────────────────────────────────────────────
@@ -110,7 +111,7 @@ export function Onboarding({ onDone }: { onDone: (p: UserProfile) => void }) {
               ? "CODE SCANNING · WEBSITE TESTING · AI FIXES"
               : "SAST · DAST · SECRETS · DEPENDENCIES · AI THREAT ANALYSIS"}
           </div>
-          <div className="ob-left-ver">v0.1.0</div>
+          <div className="ob-left-ver">v{APP_VERSION}</div>
         </div>
       </div>
 
