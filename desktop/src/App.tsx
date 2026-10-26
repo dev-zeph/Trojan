@@ -93,6 +93,24 @@ const NAV: { view: NavView; label: string; icon: React.ReactNode; pro?: boolean;
   },
 ];
 
+// ── Report button ──────────────────────────────────────────────────────────
+// Sits with the scan control it reports on. Always shown so the next step is
+// visible; disabled with a hint until there are results to report on. Click
+// handling stops at the wrapper so a drop zone underneath never also fires.
+function ReportAction({ label, enabled, hint, title, onClick }: {
+  label: string; enabled: boolean; hint: string; title: string; onClick: () => void;
+}) {
+  return (
+    <span className="report-action" onClick={(e) => e.stopPropagation()}>
+      <button className="report-cta" onClick={onClick} disabled={!enabled} title={enabled ? title : hint}>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M9 15l2 2 4-4"/></svg>
+        {label}
+      </button>
+      {!enabled && <span className="report-action-hint">{hint}</span>}
+    </span>
+  );
+}
+
 // ── Simple (founder) dashboard nav ─────────────────────────────────────────
 // The same views as NAV, renamed in plain language. Dependencies, Licenses,
 // Privacy and Project Context are left out of the simple dashboard.
@@ -196,7 +214,7 @@ export default function App() {
   // "connected" the moment it first talks to Trojan.
   useEffect(() => {
     if (view !== "autofix") return;
-    const poll = () => invoke<Record<string, McpToolStatus>>("check_mcp_status").then(setMcpStatus).catch(() => {});
+    const poll = () => invoke<Record<string, McpToolStatus>>("check_mcp_status").then((st) => setMcpStatus(st ?? {})).catch(() => {});
     poll();
     const t = window.setInterval(poll, 4000);
     return () => window.clearInterval(t);
@@ -368,7 +386,7 @@ export default function App() {
     init();
 
     // Load MCP editor status on mount
-    invoke<Record<string, McpToolStatus>>("check_mcp_status").then(setMcpStatus).catch(() => {});
+    invoke<Record<string, McpToolStatus>>("check_mcp_status").then((st) => setMcpStatus(st ?? {})).catch(() => {});
   }, [applyAuthFromToken]);
 
   // Warm the Attack Market catalog in the background once the user is a logged-in
@@ -891,6 +909,16 @@ export default function App() {
     }
   }
 
+  // The security report reads the loaded scan. If none is loaded yet (e.g. the
+  // app was just opened), load the most recent saved code scan first.
+  function openSecurityReport(): void {
+    if (!currentServerUrl) {
+      const latest = recent.find((r) => r.type === "sast" && r.cachePath && !staleCaches.has(r.path));
+      if (latest) loadScanData(latest);
+    }
+    setView("threatlab");
+  }
+
   // Load data from a previous scan without navigating away from the current view.
   // Used by Licenses, Privacy, and Compliance tabs.
   function loadScanData(r: RecentProject): void {
@@ -981,7 +1009,7 @@ export default function App() {
     } catch (e) {
       error = friendlyError(String(e));
     }
-    try { setMcpStatus(await invoke<Record<string, McpToolStatus>>("check_mcp_status")); } catch {}
+    try { setMcpStatus((await invoke<Record<string, McpToolStatus>>("check_mcp_status")) ?? {}); } catch {}
     return error;
   }
 
@@ -1444,14 +1472,6 @@ export default function App() {
           {view === "sast" && (
             <div className="content-inner">
               <div className="page-header">
-                {recent.some(r => r.type === "sast" && r.cachePath) && (
-                  <div className="page-header-row">
-                    <button className="report-cta" onClick={() => setView("threatlab")} title="Generate an AI security report from your findings">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M9 15l2 2 4-4"/></svg>
-                      Generate Security Report
-                    </button>
-                  </div>
-                )}
                 <span className="page-header-eyebrow">{simple ? "YOUR APP" : "SECURITY"}</span>
                 <h1 className="page-header-title">{simple ? "Codebase Scanning" : "Static Analysis"}</h1>
                 <p className="page-header-desc">
@@ -1496,6 +1516,13 @@ export default function App() {
                     <button className="card-btn primary-btn sast-choose-btn" onClick={(e) => { e.stopPropagation(); handlePickFolder(); }}>
                       Choose folder
                     </button>
+                    <ReportAction
+                      label="Generate Security Report"
+                      enabled={recent.some(r => r.type === "sast" && r.cachePath)}
+                      hint="Run a scan first to generate a report."
+                      title="Generate an AI security report from your findings"
+                      onClick={openSecurityReport}
+                    />
                   </>
                 )}
               </div>
@@ -2374,14 +2401,6 @@ export default function App() {
           {view === "dependencies" && (
             <div className="content-inner">
               <div className="page-header">
-                {packages.length > 0 && (
-                  <div className="page-header-row">
-                    <button className="report-cta" onClick={() => setView("compliancelab")} title="Generate an AI compliance report from your dependencies">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M9 15l2 2 4-4"/></svg>
-                      Generate Compliance Report
-                    </button>
-                  </div>
-                )}
                 <span className="page-header-eyebrow">SECURITY</span>
                 <h1 className="page-header-title">Dependencies</h1>
                 <p className="page-header-desc">
@@ -2425,6 +2444,13 @@ export default function App() {
                   </>
                 )}
               </div>
+              <ReportAction
+                label="Generate Compliance Report"
+                enabled={packages.length > 0}
+                hint="Scan a project's dependencies first to generate a report."
+                title="Generate an AI compliance report from your dependencies"
+                onClick={() => setView("compliancelab")}
+              />
               {depScanError && <p className="dep-error">{depScanError}</p>}
 
               {packages.length === 0 ? null : (() => {
@@ -2597,7 +2623,7 @@ export default function App() {
                 {/* ── Header row ── */}
                 <div className="lab-header-row">
                   <div>
-                    <button className="lab-back" onClick={() => setView("sast")}>← Static Analysis</button>
+                    <button className="lab-back" onClick={() => setView("sast")}>← {simple ? "Codebase Scanning" : "Static Analysis"}</button>
                     <div className="lab-title-row">
                       <span className="lab-title-text">Security Report</span>
                       <span className="lab-pro-tag">100 TOKENS</span>

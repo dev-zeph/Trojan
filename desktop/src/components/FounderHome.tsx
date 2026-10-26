@@ -26,7 +26,7 @@ export function FounderHome({
   onConnectAI: () => void;
   onOpenRecent: (r: RecentProject) => void;
 }) {
-  const connected = Object.entries(mcpStatus)
+  const connected = Object.entries(mcpStatus ?? {})
     .filter(([, s]) => s.configured)
     .map(([k]) => AI_TOOL_NAMES[k] ?? k);
 
