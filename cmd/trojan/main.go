@@ -424,6 +424,8 @@ func dastCmd() *cobra.Command {
 	var allowEndpoints, denyEndpoints []string
 	var limitToAllowlist, allowDangerous bool
 	var attackTemplateJSON string
+	var ownerConfirmed bool
+	var exitWhenDone bool
 
 	cmd := &cobra.Command{
 		Use:   "dast <url>",
@@ -472,6 +474,14 @@ func dastCmd() *cobra.Command {
 			if gateErr != nil {
 				color.Red("\nError: %s\n", gateErr)
 				os.Exit(1)
+			}
+			if !allowed && ownerConfirmed {
+				rec, aErr := dast.AttestOwnership(targetURL, userEmail)
+				if aErr != nil {
+					color.Red("\nError recording ownership confirmation: %s\n", aErr)
+					os.Exit(1)
+				}
+				allowed, consentRec = true, rec
 			}
 			if isLocalTarget {
 				color.New(color.Faint).Printf("  Local target (%s) — no ownership check required.\n", gateDomain)
@@ -541,6 +551,7 @@ func dastCmd() *cobra.Command {
 					desktop:           desktop,
 					crawlDepth:        crawlDepth,
 					crawlTimeout:      crawlTimeout,
+					exitWhenDone:      exitWhenDone,
 				})
 				return
 			}
@@ -746,7 +757,7 @@ func dastCmd() *cobra.Command {
 			fmt.Printf(")\n")
 
 			// Persist under the cwd so MCP clients can read DAST findings too.
-			scanResult := persistScan(targetURL, findings)
+			scanResult := persistScan(targetURL, findings, desktop)
 
 			dastUI, _ := fs.Sub(trojan.DastUIAssets, "dast-ui/dist")
 			srv := server.New(scanResult, dastUI)
@@ -803,6 +814,9 @@ func dastCmd() *cobra.Command {
 	// {title, technique, body}. Not a user-facing CLI feature (§9.4 is desktop-only).
 	cmd.Flags().StringVar(&attackTemplateJSON, "attack-template", "", "")
 	cmd.Flags().MarkHidden("attack-template") //nolint:errcheck
+	cmd.Flags().BoolVar(&exitWhenDone, "exit-when-done", false, "Exit once an agentic run's findings are saved instead of serving the report")
+	cmd.Flags().MarkHidden("exit-when-done") //nolint:errcheck
+	cmd.Flags().BoolVar(&ownerConfirmed, "owner-confirmed", false, "Confirm you own or are authorized to test the target, instead of a DNS/file/meta proof")
 	cmd.AddCommand(dastVerifyCmd())
 	return cmd
 }
@@ -947,6 +961,9 @@ type agenticParams struct {
 	desktop           bool
 	crawlDepth        int
 	crawlTimeout      int
+	// exitWhenDone ends the process once findings are saved instead of
+	// serving the live report; used for tests started from an AI tool (MCP).
+	exitWhenDone bool
 }
 
 // runAgenticDast drives the adaptive AI pen-test (docs/agentic-dast.md Phase 4/5).
@@ -1128,9 +1145,9 @@ func runAgenticDast(p agenticParams) {
 		// and the report shows the Pro upsell even to logged-in Pro users.
 		synthesizeFindings(all, p.accessToken)
 
-		// Persist under the cwd so `trojan mcp` (run from the same project) can
-		// read these DAST findings; ProjectPath keeps the scanned URL for display.
-		scan := persistScan(p.targetURL, all)
+		// Persist where the MCP server reads website tests (see persistScan);
+		// ProjectPath keeps the scanned URL for display.
+		scan := persistScan(p.targetURL, all, p.desktop)
 		srv.UpdateScan(scan)
 		// Overwrite the desktop cache with the finished results so re-opening
 		// this target from "recent" shows the full report (not a new scan).
@@ -1141,6 +1158,9 @@ func runAgenticDast(p agenticParams) {
 		fmt.Printf("\n  → Agentic pen-test complete — %d candidate finding(s); %s\n", len(res.Findings), stopLabel(res))
 	}
 
+	if p.exitWhenDone {
+		os.Exit(0)
+	}
 	// Keep the server alive until cancelled/closed — installDastCancelHandler
 	// (installed at the top) handles SIGINT/SIGTERM and exits the process.
 	select {}
@@ -1480,18 +1500,22 @@ func printSynthesisSummary(res synthesisResult, total int) {
 	fmt.Printf("\r  → %d / %d complete\n", total, total)
 }
 
-// persistScan writes the findings under the cwd's .trojan/scans/ (so MCP can read
-// them) with the scanned URL as the display path, falling back to in-memory if
-// the write fails.
-func persistScan(targetURL string, findings []normalizer.Finding) *normalizer.ScanResult {
-	cwd, err := os.Getwd()
+// persistScan saves a website test's findings to that site's folder under
+// ~/.trojan/website-tests (where the MCP server reads them), with the scanned
+// URL as the display path. A CLI run also keeps a copy under the cwd's
+// .trojan/scans for `trojan mcp` started from that folder; the desktop app's
+// cwd isn't a project, so it skips that. Falls back to in-memory on failure.
+func persistScan(targetURL string, findings []normalizer.Finding, desktop bool) *normalizer.ScanResult {
+	scan, err := normalizer.SaveWebsiteTest(targetURL, findings)
 	if err != nil {
-		return normalizer.NewScanResult(targetURL, findings)
+		scan = normalizer.NewScanResult(targetURL, findings)
 	}
-	if scan, serr := normalizer.SaveScanResultAt(cwd, targetURL, findings); serr == nil {
-		return scan
+	if !desktop {
+		if cwd, err := os.Getwd(); err == nil {
+			normalizer.SaveScanResultAt(cwd, targetURL, findings) //nolint:errcheck // secondary copy
+		}
 	}
-	return normalizer.NewScanResult(targetURL, findings)
+	return scan
 }
 
 func parseAgentSeverity(s string) normalizer.Severity {
@@ -2243,6 +2267,67 @@ func mcpCmd() *cobra.Command {
 			fmt.Println()
 			if err := mcpserver.Install(); err != nil {
 				color.Red("Error: %s\n", err)
+				os.Exit(1)
+			}
+		},
+	})
+
+	// ── Desktop app: local server at mcpserver.LocalURL ──────────────────────
+	// Internal commands the Tauri app runs as a sidecar; hidden from help.
+	cmd.AddCommand(&cobra.Command{
+		Use:    "serve-local",
+		Short:  "Run the local MCP server the desktop app hosts",
+		Hidden: true,
+		Run: func(cmd *cobra.Command, args []string) {
+			if err := mcpserver.ServeLocal(); err != nil {
+				fmt.Fprintf(os.Stderr, "MCP server error: %s\n", err)
+				os.Exit(1)
+			}
+		},
+	})
+	cmd.AddCommand(&cobra.Command{
+		Use:    "connect <claude_code|cursor|codex_cli>",
+		Short:  "Point an AI tool at the desktop app's local MCP server",
+		Hidden: true,
+		Args:   cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			if err := mcpserver.ConnectLocal(args[0]); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+		},
+	})
+	cmd.AddCommand(&cobra.Command{
+		Use:    "status",
+		Short:  "Print each AI tool's connection status as JSON",
+		Hidden: true,
+		Run: func(cmd *cobra.Command, args []string) {
+			json.NewEncoder(os.Stdout).Encode(mcpserver.LocalStatus()) //nolint:errcheck
+		},
+	})
+	cmd.AddCommand(&cobra.Command{
+		Use:    "verify-once <path> <finding-id>",
+		Short:  "Re-check one finding (used by the verify_fix tool)",
+		Hidden: true,
+		Args:   cobra.ExactArgs(2),
+		Run: func(cmd *cobra.Command, args []string) {
+			res, err := mcpserver.VerifyOnce(args[0], args[1])
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			data, _ := json.Marshal(res)
+			fmt.Printf("\n%s%s\n", mcpserver.VerifyMarker, data)
+		},
+	})
+	cmd.AddCommand(&cobra.Command{
+		Use:    "scan-once <path>",
+		Short:  "Scan a project and save the results (used by the run_scan tool)",
+		Hidden: true,
+		Args:   cobra.ExactArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			if _, err := mcpserver.ScanOnce(args[0]); err != nil {
+				fmt.Fprintln(os.Stderr, err)
 				os.Exit(1)
 			}
 		},

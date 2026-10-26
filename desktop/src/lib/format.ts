@@ -87,3 +87,18 @@ export function greet(name: string) {
 export function initials(name: string) {
   return name.split(" ").filter(Boolean).map((w) => w[0]).join("").toUpperCase().slice(0, 2);
 }
+
+// True for loopback / private-network URLs. Mirrors the literal checks in the
+// Go consent gate (internal/dast IsLocalHost), which skips the ownership
+// confirmation for these. Hostnames that only resolve to private IPs aren't
+// detected here; the gate still accepts them, the box is just shown anyway.
+export function isLocalUrl(raw: string): boolean {
+  let host: string;
+  try { host = new URL(raw.trim()).hostname.toLowerCase().replace(/^\[|\]$/g, ""); } catch { return false; }
+  if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal")) return true;
+  if (host === "::1" || host === "::" || host.startsWith("fe80:") || /^f[cd][0-9a-f]{2}:/.test(host)) return true;
+  const m = host.match(/^(\d+)\.(\d+)\.\d+\.\d+$/);
+  if (!m) return false;
+  const [a, b] = [Number(m[1]), Number(m[2])];
+  return a === 127 || a === 10 || a === 0 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31) || (a === 169 && b === 254);
+}

@@ -1,25 +1,40 @@
 import { useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { saveProfile } from "../lib/store";
 import { saveContextDraft, setContextOnboarded } from "../lib/orgContext";
 import type { OrgContext, UserProfile } from "../types";
 import { AuthForm } from "./AuthForm";
 import { OrgContextWizard } from "./OrgContext";
+import { GettingStarted, type FounderAnswers } from "./GettingStarted";
 
 // ── Onboarding ────────────────────────────────────────────────────────────
-// First run is two acts: (1) set up the account or a local workspace, then
-// (2) author the project's security-and-privacy context in a guided wizard.
+// First run is three acts: (0) Getting Started, two questions that pick the
+// dashboard, (1) set up the account or a local workspace, then (2) author the
+// project's security-and-privacy context in a guided wizard.
 // Act 2 runs BEFORE onDone so the wizard is not unmounted the instant the
 // profile is set. Whatever the user authors is stored locally (never uploaded)
 // and synced into the project's .trojan/context.yaml on the first scan.
 export function Onboarding({ onDone }: { onDone: (p: UserProfile) => void }) {
-  const [phase, setPhase]         = useState<"account" | "context">("account");
+  const [phase, setPhase]         = useState<"start" | "account" | "context">("start");
+  const [answers, setAnswers]     = useState<FounderAnswers | null>(null);
   const [pending, setPending]     = useState<UserProfile | null>(null);
   const [showLocal, setShowLocal] = useState(false);
   const [name, setName]           = useState("");
   const [busy, setBusy]           = useState(false);
 
   // Account setup done -> move on to the context wizard instead of finishing.
-  function toContext(p: UserProfile) {
+  async function toContext(base: UserProfile) {
+    const p: UserProfile = answers ? {
+      ...base,
+      dashboard:          answers.dashboard,
+      securityExperience: answers.securityExperience,
+      codeAuthor:         answers.codeAuthor,
+      familiarity:        answers.familiarity,
+      aboutYou:           base.aboutYou || answers.aboutYou,
+    } : base;
+    await saveProfile(p);
+    // The Go sidecar reads these from ~/.trojan/config.json for pen-test runs.
+    invoke("sync_profile_context", { familiarity: p.familiarity ?? 1, aboutYou: p.aboutYou ?? "" }).catch(() => {});
     setPending(p);
     setPhase("context");
   }
@@ -31,7 +46,7 @@ export function Onboarding({ onDone }: { onDone: (p: UserProfile) => void }) {
       token,
       refreshToken,
     };
-    saveProfile(p).then(() => toContext(p));
+    toContext(p);
   }
 
   async function handleLocalSubmit(e: React.FormEvent) {
@@ -39,9 +54,8 @@ export function Onboarding({ onDone }: { onDone: (p: UserProfile) => void }) {
     if (!name.trim()) return;
     setBusy(true);
     const p: UserProfile = { name: name.trim(), email: "" };
-    await saveProfile(p);
+    await toContext(p);
     setBusy(false);
-    toContext(p);
   }
 
   async function finishContext(ctx: OrgContext | null) {
@@ -50,10 +64,22 @@ export function Onboarding({ onDone }: { onDone: (p: UserProfile) => void }) {
     if (pending) onDone(pending);
   }
 
+  // ── Act 0: Getting Started ──
+  if (phase === "start") {
+    return (
+      <GettingStarted
+        onDone={(a) => { setAnswers(a); setPhase("account"); }}
+      />
+    );
+  }
+
+  const simple = answers?.dashboard === "simple";
+
   // ── Act 2: guided org-context wizard ──
   if (phase === "context") {
     return (
       <OrgContextWizard
+        simple={simple}
         onFinish={(ctx) => finishContext(ctx)}
         onSkip={() => finishContext(null)}
       />
@@ -71,13 +97,19 @@ export function Onboarding({ onDone }: { onDone: (p: UserProfile) => void }) {
           <img src="/logo.png" alt="Trojan" className="ob-left-logo" />
           <span className="ob-left-wordmark">TROJAN</span>
           <p className="ob-left-tagline">
-            Industry-standard vulnerability scanners in one tool.
+            {simple
+              ? "Find out if your product is secure and private, in plain language."
+              : "Industry-standard vulnerability scanners in one tool."}
           </p>
         </div>
 
         {/* Bottom metadata */}
         <div className="ob-left-bottom">
-          <div className="ob-left-features">SAST · DAST · SECRETS · DEPENDENCIES · AI THREAT ANALYSIS</div>
+          <div className="ob-left-features">
+            {simple
+              ? "CODE SCANNING · WEBSITE TESTING · AI FIXES"
+              : "SAST · DAST · SECRETS · DEPENDENCIES · AI THREAT ANALYSIS"}
+          </div>
           <div className="ob-left-ver">v0.1.0</div>
         </div>
       </div>

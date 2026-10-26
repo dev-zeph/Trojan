@@ -48,11 +48,8 @@ func SaveScanResult(projectPath string, findings []Finding) (*ScanResult, error)
 
 // SaveScanResultAt writes scan results under <dir>/.trojan/scans/ while recording
 // `projectPath` as the scan's display path. This splits the two for URL-targeted
-// scans (DAST / agentic pen-tests): the file lands under the current working
-// directory (so `trojan mcp`, run from the same project, can read it) while the
-// ProjectPath shows the scanned URL. The MCP server reads the latest file in
-// <cwd>/.trojan/scans/ (internal/mcpserver/server.go), so persisting here is what
-// makes DAST findings available to MCP clients.
+// scans (DAST / agentic pen-tests): the file lands in the site's folder (see
+// SaveWebsiteTest) while ProjectPath shows the scanned URL.
 func SaveScanResultAt(dir, projectPath string, findings []Finding) (*ScanResult, error) {
 	scansDir := filepath.Join(dir, ".trojan", "scans")
 	if err := os.MkdirAll(scansDir, 0755); err != nil {
