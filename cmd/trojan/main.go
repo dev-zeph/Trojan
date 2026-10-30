@@ -524,6 +524,15 @@ func dastCmd() *cobra.Command {
 					color.Red("Error: %s\n", ierr)
 					os.Exit(1)
 				}
+				// The desktop passes test logins via an env var, not argv, so the
+				// secrets don't show up in `ps`. Merge them in with any --identity
+				// flags (env entries are deduped by name against the flags).
+				envIdentities, eierr := identitiesFromEnv()
+				if eierr != nil {
+					color.Red("Error: %s\n", eierr)
+					os.Exit(1)
+				}
+				identities = append(identities, envIdentities...)
 				var attackTemplate *agent.AttackTemplate
 				if attackTemplateJSON != "" {
 					var at agent.AttackTemplate
@@ -2159,6 +2168,39 @@ func parseIdentities(specs []string) ([]agent.Identity, error) {
 		out = append(out, agent.Identity{Name: n, Headers: byName[n]})
 	}
 	return out, nil
+}
+
+// envDASTIdentities is the env var the desktop sets to hand test logins to the
+// sidecar without putting the secrets on the command line (argv is world-readable
+// via `ps`; a child's environment is not). It holds a JSON array of
+// {name, header} objects, the same shape the desktop collects in its UI.
+const envDASTIdentities = "TROJAN_DAST_IDENTITIES"
+
+// identitiesFromEnv parses the TROJAN_DAST_IDENTITIES env var (set by the desktop)
+// into agent identities, reusing the same 'Header: value' parsing as --identity.
+// Empty/unset env returns no identities and no error.
+func identitiesFromEnv() ([]agent.Identity, error) {
+	raw := strings.TrimSpace(os.Getenv(envDASTIdentities))
+	if raw == "" {
+		return nil, nil
+	}
+	var specs []struct {
+		Name   string `json:"name"`
+		Header string `json:"header"`
+	}
+	if err := json.Unmarshal([]byte(raw), &specs); err != nil {
+		return nil, fmt.Errorf("invalid %s: expected a JSON array of {name, header}: %w", envDASTIdentities, err)
+	}
+	lines := make([]string, 0, len(specs))
+	for _, s := range specs {
+		name := strings.TrimSpace(s.Name)
+		header := strings.TrimSpace(s.Header)
+		if name == "" || header == "" {
+			continue
+		}
+		lines = append(lines, name+"="+header)
+	}
+	return parseIdentities(lines)
 }
 
 // agenticFocusHint maps a technique preset (§10 attack-type selection) to a

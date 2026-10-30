@@ -60,11 +60,21 @@ type Fact struct {
 // Identity is a named authenticated session the agent can send probes as, for
 // testing authorization boundaries — IDOR / BOLA (§6.5 #2). Headers (typically an
 // Authorization bearer or a Cookie) are attached to a probe when the agent
-// selects this identity. Supplied by the user; there is no login automation in
-// v1, so any auth scheme works.
+// selects this identity. Any auth scheme works.
+//
+// Two origins: user-supplied test logins (Source == "", handed in at setup), and
+// sessions the agent CAPTURES mid-run — a Set-Cookie it was issued, a token it
+// read out of a response, or a credential/token it chose to remember. A captured
+// identity is named "captured-N" and its Source is a short label of where it came
+// from, so later probes can replay it with the `identity` field instead of the
+// finding stalling as "needs a logged-in session".
 type Identity struct {
 	Name    string            `json:"name"`
 	Headers map[string]string `json:"headers"`
+	// Source is empty for user-supplied identities and a short human label for
+	// auto-captured ones ("session cookie from POST /rest/user/login"). It is
+	// shown to the agent; it must never contain the secret itself.
+	Source string `json:"source,omitempty"`
 }
 
 // ProbeRequest is a single constrained HTTP request the agent wants to send.
@@ -91,6 +101,16 @@ type ProbeResult struct {
 	Body      string            `json:"body"`
 	Truncated bool              `json:"truncated"`
 	Elapsed   time.Duration     `json:"elapsed"`
+	// CapturedIdentity is set when this response handed the agent a session
+	// (a Set-Cookie session/auth cookie, or a bearer token in the body) that was
+	// auto-registered as a named identity. The agent can replay it by name.
+	CapturedIdentity string `json:"captured_identity,omitempty"`
+	// CapturedFrom is a short label of what was captured, for the agent's benefit.
+	CapturedFrom string `json:"captured_identity_source,omitempty"`
+	// AvailableIdentities lists every identity the agent may send probes as right
+	// now (user-supplied + anything captured so far), so it always knows what the
+	// `identity` field accepts without having to guess.
+	AvailableIdentities []string `json:"available_identities,omitempty"`
 }
 
 // capturedProbe is a probe's request meta + response body retained for diffing
@@ -135,6 +155,13 @@ type Toolbox struct {
 	finished bool
 	summary  string
 	covered  map[string]bool // distinct method+URL pairs probed, for stall detection
+
+	// Auto-captured identities (§6.5 #2, expert feedback #3): sessions the agent
+	// obtains mid-run are registered as "captured-N" so it can reuse them. Bounded
+	// by maxCapturedIdentities; capturedSeen dedupes by header signature so the
+	// same session is never registered twice. Guarded by mu.
+	capturedSeq  int
+	capturedSeen map[string]bool
 
 	// probe capture store for diff_responses (§6.5 #3). Bounded to the most
 	// recent maxRetainedProbes; probeOrder is the eviction queue (oldest first).
@@ -196,8 +223,12 @@ func (t *Toolbox) Approvals() *Approvals { return t.approvals }
 // Envelope returns the run's safety envelope, so the loop can Classify an action.
 func (t *Toolbox) Envelope() *Envelope { return t.env }
 
-// SetIdentities registers the named auth sessions the agent may probe as.
+// SetIdentities registers the named auth sessions the agent may probe as. These
+// are the user-supplied test logins; the agent may add more by capturing sessions
+// mid-run (see registerCapturedIdentity).
 func (t *Toolbox) SetIdentities(ids []Identity) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	t.identities = make(map[string]Identity, len(ids))
 	t.identOrder = t.identOrder[:0]
 	for _, id := range ids {
@@ -211,12 +242,28 @@ func (t *Toolbox) SetIdentities(ids []Identity) {
 	}
 }
 
-// IdentityNames returns the registered identity names, in supply order, for the
-// run context handed to the agent.
+// IdentityNames returns the registered identity names, in registration order
+// (user-supplied first, then captured), for the context handed to the agent.
 func (t *Toolbox) IdentityNames() []string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.identityNamesLocked()
+}
+
+// identityNamesLocked is IdentityNames without taking the lock; callers that
+// already hold t.mu use this.
+func (t *Toolbox) identityNamesLocked() []string {
 	out := make([]string, len(t.identOrder))
 	copy(out, t.identOrder)
 	return out
+}
+
+// lookupIdentity resolves a named identity under the lock.
+func (t *Toolbox) lookupIdentity(name string) (Identity, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	id, ok := t.identities[name]
+	return id, ok
 }
 
 // ReadSource is the grey-box tool (§6.6): read the target's own source to form
@@ -248,7 +295,7 @@ func (t *Toolbox) HTTPProbe(ctx context.Context, req ProbeRequest) (*ProbeResult
 	// budget, so an unknown identity is a cheap, adaptable tool error.
 	var identityHeaders map[string]string
 	if req.Identity != "" {
-		id, ok := t.identities[req.Identity]
+		id, ok := t.lookupIdentity(req.Identity)
 		if !ok {
 			return nil, fmt.Errorf("unknown identity %q; available: %s", req.Identity, strings.Join(t.IdentityNames(), ", "))
 		}
@@ -301,6 +348,16 @@ func (t *Toolbox) HTTPProbe(ctx context.Context, req ProbeRequest) (*ProbeResult
 	// Capture the response so the agent can diff it later by id (§6.5 #3). The
 	// identity recorded is the one the probe was sent as (empty = anonymous).
 	result.ProbeID = t.captureProbe(req.Method, req.URL, req.Identity, result.Status, result.Body)
+
+	// Auto-register any session this response just handed us (a Set-Cookie
+	// session/auth cookie or a bearer token in the body) as a named identity, so a
+	// later probe can replay it instead of a finding stalling on "needs a login".
+	if name, src := t.autoCaptureFromResponse(req.Method, req.URL, resp.Header, result.Body); name != "" {
+		result.CapturedIdentity = name
+		result.CapturedFrom = src
+	}
+	// Always tell the agent which identities it may probe as right now.
+	result.AvailableIdentities = t.IdentityNames()
 	return result, nil
 }
 
