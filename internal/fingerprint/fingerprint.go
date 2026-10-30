@@ -2,12 +2,7 @@
 // framework, dependencies, routes, data stores, env var NAMES, auth libraries)
 // so Trojan can infer what the app handles without sending source code.
 // Env var values and file contents never enter a Fingerprint.
-//
-// CONTRACT (Wave 0): types and signatures are fixed; the implementation lands
-// in Wave 1.
 package fingerprint
-
-import "errors"
 
 // RouteSummary is one HTTP entrypoint.
 type RouteSummary struct {
@@ -38,9 +33,3 @@ type Fingerprint struct {
 	Outline       []string       `json:"outline,omitempty"` // capped list of notable project-relative paths
 	GraphSummary  *GraphSummary  `json:"graph_summary,omitempty"`
 }
-
-// ErrNotImplemented is returned until the Wave 1 implementation lands.
-var ErrNotImplemented = errors.New("fingerprint: not implemented")
-
-// Collect builds the fingerprint for the project at root.
-func Collect(root string) (Fingerprint, error) { return Fingerprint{}, ErrNotImplemented }
