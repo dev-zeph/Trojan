@@ -172,8 +172,15 @@ func Run(ctx context.Context, tb *Toolbox, tr Transport, opts RunOptions) (*RunR
 		}
 		cp.Messages = messages
 		cp.Usage = cum
-		cp.Findings = tb.Findings()
-		cp.Facts = tb.Facts()
+		// Scrub identity secrets from the structured findings/facts before they
+		// hit disk, matching checkpoint.go's rule of never persisting a credential
+		// in the clear. (The raw conversation is still relied on to stay under the
+		// 0600 ~/.trojan handling; it must be replayed byte-for-byte.) Captured
+		// identities themselves are deliberately NOT written to cp.Identities, so
+		// their secrets never reach disk — a resumed agent re-captures them, the
+		// way it re-probes for a fresh diff.
+		cp.Findings = tb.RedactCandidates(tb.Findings())
+		cp.Facts = tb.RedactFacts(tb.Facts())
 		if g := tb.Graph(); g != nil {
 			cp.GraphNodes, cp.GraphEdges = g.Snapshot()
 		}
@@ -388,7 +395,16 @@ func executeTool(ctx context.Context, tb *Toolbox, b blockPeek, step int, emit f
 		facts := tb.RememberFact(f)
 		onRememberFact(tb, f, step, emit)
 		emit(Event{Type: EventText, Step: step, Detail: "🧠 " + f.Summary})
-		return marshalResult(map[string]any{"ok": true, "facts": facts}), false, false
+		out := map[string]any{"ok": true, "facts": facts}
+		// If the fact is a reusable credential/token, register it as an identity so
+		// the agent can replay it by name on a later probe (authorization re-test).
+		if name, src := tb.CaptureFromFact(f); name != "" {
+			out["captured_identity"] = name
+			out["captured_identity_source"] = src
+			out["available_identities"] = tb.IdentityNames()
+			emit(Event{Type: EventText, Step: step, Detail: fmt.Sprintf("🔑 session saved as identity %q (%s). Reuse it with the \"identity\" field", name, src)})
+		}
+		return marshalResult(out), false, false
 
 	case toolDiffResponses:
 		var d struct {
@@ -684,7 +700,10 @@ func marshalResult(v any) string {
 
 // finish assembles the RunResult and emits the terminal event.
 func finish(r *RunResult, tb *Toolbox, cum Usage, ended EventType, reason StopReason, emit func(Event)) *RunResult {
-	r.Findings = tb.Findings()
+	// Scrub identity secrets before the findings leave the run: these are what
+	// persistScan writes and the memory learns, and that artifact can be shared
+	// or committed. The live tool results during the run kept the real values.
+	r.Findings = tb.RedactCandidates(tb.Findings())
 	_, r.Summary = tb.Finished()
 	r.Usage = cum
 	r.EndedBy = ended

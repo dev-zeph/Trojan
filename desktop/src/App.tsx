@@ -1831,12 +1831,13 @@ export default function App() {
 
                     {/* Identities — for authorization (IDOR/BOLA) testing */}
                     <div className="pt-idhead">
-                      <span className="scanner-grid-label" style={{ margin: 0 }}>IDENTITIES</span>
-                      <span className="pt-info" data-tip="Supply two or more logged-in sessions (name + an auth header like 'Authorization: Bearer ...'). The agent requests the same resource as each and compares, to catch broken object-level authorization.">i</span>
+                      <span className="scanner-grid-label" style={{ margin: 0 }}>TEST LOGINS</span>
+                      <span className="pt-info" data-tip="Supply two or more logged-in sessions (name + an auth header like 'Authorization: Bearer ...' or 'Cookie: session=...'). The agent requests the same resource as each and compares, to catch broken object-level authorization. These are kept in memory and passed to the scanner privately, never written to disk.">i</span>
                     </div>
                     <div className="pt-card">
+                      <p className="pt-idhint" style={{ marginTop: 0 }}>Lets Trojan check that one user can't see another user's data and that admin pages are locked.</p>
                       {agIdentities.length === 0 && (
-                        <p className="pt-idhint">Add two or more sessions to test whether one user can reach another's data.</p>
+                        <p className="pt-idhint">Add two or more sessions (for example a normal user and an admin). Each is a name plus a cookie value or a bearer token.</p>
                       )}
                       {agIdentities.map((id, i) => (
                         <div className="pt-id-row" key={i}>

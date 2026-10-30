@@ -335,7 +335,10 @@ async fn start_dast(app: AppHandle, url: String, owner_confirmed: bool) -> Resul
 }
 
 /// A named auth session supplied for authorization (IDOR/BOLA) testing.
-#[derive(serde::Deserialize)]
+/// Serialized (not pushed to argv) so the secret header is handed to the sidecar
+/// through its environment, which `ps` does not expose, instead of the command
+/// line, which it does.
+#[derive(serde::Deserialize, serde::Serialize)]
 struct PtIdentity {
     name: String,
     header: String,
@@ -405,14 +408,14 @@ async fn start_agentic_dast(
         args.push("--focus".into());
         args.push(focus);
     }
-    for id in &identities {
-        let name = id.name.trim();
-        let header = id.header.trim();
-        if !name.is_empty() && !header.is_empty() {
-            args.push("--identity".into());
-            args.push(format!("{name}={header}"));
-        }
-    }
+    // Test logins carry secrets (a cookie or bearer token), so they are passed to
+    // the sidecar through its environment, NOT argv — `ps` can read another
+    // process's command line but not its environment. Collect the non-empty ones;
+    // they are attached to the spawn below as TROJAN_DAST_IDENTITIES.
+    let id_specs: Vec<&PtIdentity> = identities
+        .iter()
+        .filter(|id| !id.name.trim().is_empty() && !id.header.trim().is_empty())
+        .collect();
     if !api_spec.trim().is_empty() {
         args.push("--api-spec".into());
         args.push(api_spec.trim().into());
@@ -449,11 +452,20 @@ async fn start_agentic_dast(
         }
     }
 
-    let (mut rx, child) = app
+    let mut command = app
         .shell()
         .sidecar("trojan")
         .map_err(|e| format!("sidecar not found: {e}"))?
-        .args(args)
+        .args(args);
+    // Hand the test logins to the sidecar via its environment, keeping the
+    // secrets out of argv (and therefore out of `ps`). The CLI reads this var and
+    // merges it with any --identity flags.
+    if !id_specs.is_empty() {
+        if let Ok(js) = serde_json::to_string(&id_specs) {
+            command = command.env("TROJAN_DAST_IDENTITIES", js);
+        }
+    }
+    let (mut rx, child) = command
         .spawn()
         .map_err(|e| format!("spawn failed: {e}"))?;
     // Track the child before awaiting READY so a mid-scan cancel can kill it.
