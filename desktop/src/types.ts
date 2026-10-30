@@ -20,6 +20,21 @@ export interface OrgContext {
   sensitive_data: SensitiveDataCategory[];
   trust_boundaries: TrustBoundary[];
   threat_actors: ThreatActor[];
+  // Inferred from a plain description plus the project fingerprint, then
+  // confirmed by the user. All optional so older contexts load unchanged.
+  data_stores?: string[];
+  auth_model?: AuthModel;
+  third_party_services?: string[];
+  learned?: LearnedFact[];
+}
+export interface AuthModel { who_logs_in?: string; roles?: string[]; admin_area?: boolean; }
+export interface LearnedFact { fact: string; evidence?: string; source?: string; }
+export interface ContextMismatch { said: string; found: string; question: string; }
+export interface InferResult { draft: OrgContext; questions: string[]; mismatches: ContextMismatch[]; free: boolean; }
+export interface ContextChanges {
+  routes_added: string[]; routes_removed: string[];
+  data_stores_added: string[]; data_stores_removed: string[];
+  services_added: string[]; services_removed: string[];
 }
 
 export interface PackageAdvisory { id: string; severity: string; summary: string; fix_version?: string; }

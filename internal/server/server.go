@@ -65,6 +65,11 @@ type Server struct {
 	// agent loop (the reverse channel). Set per-run by the CLI; nil = no HITL run
 	// active. Guarded by agenticMu.
 	approvalDecider func(id int, approve bool, note string)
+
+	// Context inference seams (see context_infer.go). Nil means the real
+	// implementations; tests inject fakes.
+	contextInferer ContextInferer
+	authSession    func() (accessToken, userID string, ok bool)
 }
 
 // New creates a new server with the given scan result and embedded UI assets.
@@ -106,6 +111,8 @@ func (s *Server) Start() (string, error) {
 	mux.HandleFunc("/api/events", s.handleSSE)
 	mux.HandleFunc("/api/install-progress", s.handleInstallProgress)
 	mux.HandleFunc("/api/context", s.handleContext)
+	mux.HandleFunc("/api/context/infer", s.handleContextInfer)
+	mux.HandleFunc("/api/context/changes", s.handleContextChanges)
 
 	// Agentic-DAST (Phase 5): consent gate + live run stream.
 	mux.HandleFunc("/api/dast/consent/status", s.handleConsentStatus)

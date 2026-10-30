@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/dev-zeph/trojan/internal/fingerprint"
 	"github.com/dev-zeph/trojan/internal/orgcontext"
 )
 
@@ -51,7 +52,7 @@ func (s *Server) handleContext(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleContextGet(w http.ResponseWriter, r *http.Request) {
-	root := s.activeProjectRoot()
+	root := s.projectRoot(r)
 	path := orgcontext.Path(root)
 
 	if !orgcontext.Exists(path) {
@@ -74,11 +75,16 @@ func (s *Server) handleContextPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	root := s.activeProjectRoot()
+	root := s.projectRoot(r)
 	path, err := orgcontext.Save(root, &ctx)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
+	}
+	// Remember what the project looked like when Trojan learned about it, so
+	// GET /api/context/changes can tell what is new later. Best effort.
+	if fp, err := fingerprint.Collect(root); err == nil {
+		_ = fingerprint.SaveSnapshot(root, fp)
 	}
 	writeJSON(w, http.StatusOK, contextPostResponse{OK: true, Path: path})
 }
