@@ -163,27 +163,6 @@ func TestGetDataflow(t *testing.T) {
 	}
 }
 
-func TestToolSpecs(t *testing.T) {
-	names := toolNames()
-	want := []string{"get_dataflow", "get_pii_nodes", "list_entrypoints", "neighbors", "read_context"}
-	if len(names) != len(want) {
-		t.Fatalf("want %d tools, got %v", len(want), names)
-	}
-	for i := range want {
-		if names[i] != want[i] {
-			t.Fatalf("tool %d: want %q, got %q", i, want[i], names[i])
-		}
-	}
-	// Every required field must be declared in that tool's properties.
-	for _, s := range ToolSpecs() {
-		for _, r := range s.Required {
-			if _, ok := s.Properties[r]; !ok {
-				t.Fatalf("tool %s requires %q but does not declare it", s.Name, r)
-			}
-		}
-	}
-}
-
 func TestDispatch(t *testing.T) {
 	tb := NewToolbox(fixtureGraph())
 
@@ -232,29 +211,5 @@ func TestDispatch(t *testing.T) {
 	}
 	if _, err := tb.Dispatch("get_dataflow", json.RawMessage(`{bad json`)); err == nil {
 		t.Fatal("want error for malformed input, got nil")
-	}
-}
-
-func TestParseFinding(t *testing.T) {
-	f, err := parseFinding(json.RawMessage(`{"hypothesis":"SQLi in login","severity":"high","path":["api.loginHandler","db.Query"],"rationale":"concatenated query","source_id":0,"sink_id":1}`))
-	if err != nil {
-		t.Fatalf("parseFinding: %v", err)
-	}
-	if f.Hypothesis == "" || f.Severity != "high" || len(f.Path) != 2 || f.SinkID != 1 {
-		t.Fatalf("parseFinding wrong result: %+v", f)
-	}
-
-	// Empty hypothesis is rejected.
-	if _, err := parseFinding(json.RawMessage(`{"hypothesis":"  ","severity":"high"}`)); err == nil {
-		t.Fatal("want error for empty hypothesis, got nil")
-	}
-
-	// Missing severity defaults to low.
-	f2, err := parseFinding(json.RawMessage(`{"hypothesis":"x"}`))
-	if err != nil {
-		t.Fatalf("parseFinding default severity: %v", err)
-	}
-	if f2.Severity != "low" {
-		t.Fatalf("want default severity low, got %q", f2.Severity)
 	}
 }

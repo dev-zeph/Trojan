@@ -26,7 +26,6 @@ import (
 	"gopkg.in/yaml.v3"
 
 	trojan "github.com/dev-zeph/trojan"
-	ctxagent "github.com/dev-zeph/trojan/internal/agent"
 	"github.com/dev-zeph/trojan/internal/ai"
 	"github.com/dev-zeph/trojan/internal/apispec"
 	"github.com/dev-zeph/trojan/internal/ci"
@@ -72,6 +71,7 @@ func main() {
 	rootCmd.AddCommand(depsCmd())
 	rootCmd.AddCommand(indexCmd())
 	rootCmd.AddCommand(contextCmd())
+	rootCmd.AddCommand(whiteboxCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -417,6 +417,7 @@ func dastCmd() *cobra.Command {
 	var acceptSideEffects bool
 	var maxRunTokens int
 	var greyBox bool
+	var noHypothesize bool
 	var projectPath string
 	var focus string
 	var identityFlags []string
@@ -541,6 +542,7 @@ func dastCmd() *cobra.Command {
 					acceptSideEffects: acceptSideEffects,
 					maxRunTokens:      maxRunTokens,
 					greyBox:           greyBox,
+					noHypothesize:     noHypothesize,
 					projectRoot:       projectPath,
 					focus:             focus,
 					apiSpec:           apiSpec,
@@ -805,6 +807,7 @@ func dastCmd() *cobra.Command {
 	cmd.Flags().IntVar(&maxRunTokens, "max-run-tokens", agent.DefaultMaxRunTokens, "Cumulative token ceiling for the agentic run. Default 0 = no ceiling (usage is metered by token-based pricing); the run is still bounded by step/request/time caps. Set a positive value to re-impose a hard cap.")
 	cmd.Flags().BoolVar(&greyBox, "grey-box", false, "Let the agent read this project's source (run from the source dir) to form grounded hypotheses. Handler snippets are sent to the AI. Run `trojan index` first to also enable semantic source search.")
 	cmd.Flags().StringVar(&projectPath, "project", "", "Source folder of the app under test (default: the current directory when --grey-box is set). Feeds the agent its org context, code graph and memory, and is where the grey-box reader looks.")
+	cmd.Flags().BoolVar(&noHypothesize, "no-hypothesize", false, "Skip the white-box hypothesis step that normally runs first in grey-box mode (saves the tokens that step would spend).")
 	cmd.Flags().StringVar(&focus, "focus", "", "Narrow the agent to a technique preset: api | web | llm (optional)")
 	cmd.Flags().StringArrayVar(&identityFlags, "identity", nil, "Auth session for authorization (IDOR/BOLA) testing, as 'name=Header: value'. Repeatable; repeat with the same name for multiple headers. Example: --identity 'alice=Authorization: Bearer <token>'")
 	cmd.Flags().StringVar(&apiSpec, "api-spec", "", "OpenAPI/Swagger spec (file path or URL) to expand the agent's attack surface beyond what the crawler finds. If omitted, common spec URLs on the target are auto-probed.")
@@ -952,8 +955,9 @@ type agenticParams struct {
 	acceptSideEffects bool
 	maxRunTokens      int
 	greyBox           bool
+	noHypothesize     bool   // skip the chained white-box hypothesis step
 	projectRoot       string // source folder (--project); "" = unknown
-	focus            string
+	focus             string
 	apiSpec           string
 	identities        []agent.Identity
 	requireApproval   bool
@@ -1066,6 +1070,10 @@ func runAgenticDast(p agenticParams) {
 	// Security brain: org context + code graph + memory go into the seed when a
 	// project folder is known; memory alone (kept per site) otherwise.
 	brainRoot := resolveBrainRoot(p.projectRoot, p.greyBox)
+	// White-box pass first (bounded): form hypotheses over the source and save
+	// them, so the brain seed below reads them into "HYPOTHESES TO PROVE".
+	// Skipped by --no-hypothesize or when there is no grey-box project root.
+	whiteboxHyps := runHypothesizeStep(brainRoot, p.accessToken, p.greyBox, p.noHypothesize)
 	brain := openBrain(brainRoot, p.targetURL)
 	defer brain.close()
 	if seed := brain.seed(); seed != "" {
@@ -1154,6 +1162,10 @@ func runAgenticDast(p agenticParams) {
 
 		// Memory: write what this run proved so the next one starts smarter.
 		brain.learn(all, res.Findings)
+		// Record what the pen test did with each white-box hypothesis: proven
+		// ones are captured by learn above; unproven ones become a dated
+		// "tested, not proven" fact so the next run does not keep chasing them.
+		brain.recordHypothesisOutcomes(whiteboxHyps, all)
 
 		// AI synthesis — plain-English explanation + fix actions per finding, the
 		// same pass the one-shot scan runs. Without it, Simply/Actions are empty
@@ -1895,10 +1907,9 @@ re-embedded).`,
 // the source->sink attack paths it finds.
 //
 // This is entirely local and free to run — the graph build and pattern
-// overlay need no account and no tokens. Only the optional AI hypothesis
-// loop in `scan` talks to a model, and only when ANTHROPIC_API_KEY is set
-// (the same gate cmd/agentdemo uses), so there is nothing to Pro-gate here
-// the way dastCmd gates a billed, server-metered run.
+// overlay need no account and no tokens. The AI hypothesis loop is a separate,
+// billed command (`trojan hypothesize`, hosted via the whitebox-agent edge
+// function), so there is nothing to gate here.
 func contextCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "context",
@@ -1975,9 +1986,8 @@ func contextScanCmd() *cobra.Command {
 before printing the source->sink attack paths it finds. This step is fully
 offline.
 
-If ANTHROPIC_API_KEY is set, it then runs the hypothesis-driven agent loop
-over the graph and prints the resulting finding. Without a key, it prints a
-clear message and exits cleanly.`,
+To have Trojan's hosted white-box reviewer form testable attack hypotheses
+over this graph, run ` + "`trojan hypothesize`" + ` (uses Trojan Tokens).`,
 		Args: cobra.MaximumNArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			path := "."
@@ -2046,36 +2056,10 @@ clear message and exits cleanly.`,
 				}
 			}
 
-			if strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")) == "" {
-				fmt.Println("ANTHROPIC_API_KEY is not set, so the AI hypothesis loop is disabled.")
-				fmt.Println("The graph above ran fully offline. Set ANTHROPIC_API_KEY to have Claude")
-				fmt.Println("form an attack hypothesis grounded in this graph.")
-				return
-			}
-
-			fmt.Println("== Running hypothesis loop (Claude) ==")
-			tb := ctxagent.NewToolbox(g)
-			loopCfg := ctxagent.Config{
-				Model:      os.Getenv("TROJAN_AGENT_MODEL"),
-				OrgContext: orgContextText(orgCtx),
-				Logf:       func(format string, args ...any) { fmt.Printf("  "+format+"\n", args...) },
-			}
-			finding, err := ctxagent.RunHypothesisLoop(context.Background(), tb, loopCfg)
-			if err != nil {
-				if errors.Is(err, ctxagent.ErrNoFinding) {
-					fmt.Println("The model finished without emitting a finding.")
-					return
-				}
-				color.Red("Error: %s\n", err)
-				os.Exit(1)
-			}
-
-			fmt.Println()
-			fmt.Println("== Finding ==")
-			fmt.Printf("Hypothesis: %s\n", finding.Hypothesis)
-			fmt.Printf("Severity:   %s\n", finding.Severity)
-			fmt.Printf("Path:       %s\n", strings.Join(finding.Path, " -> "))
-			fmt.Printf("Rationale:  %s\n", finding.Rationale)
+			fmt.Println("This step is fully offline. To have Trojan's hosted white-box")
+			fmt.Println("reviewer form concrete, testable attack hypotheses over this graph,")
+			fmt.Println("run `trojan hypothesize` (uses Trojan Tokens).")
+			_ = orgCtx
 		},
 	}
 }
