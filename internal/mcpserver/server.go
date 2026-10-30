@@ -42,7 +42,17 @@ const localInstructions = `Trojan is the user's security scanner. It holds findi
 - Many users aren't security experts. Explain findings in plain language: what could happen and to whom, before how to fix it.
 - After fixing a code finding, call verify_fix to prove it is gone instead of just marking it fixed.
 - start_website_test and generate_report spend the user's Trojan credits; say so when you use them. Never set owner_confirmed without the user's explicit yes.
-- Trojan's project context (get_project_context) describes what the app does, its sensitive data and trust boundaries, and makes Trojan's testing smarter. If it is missing, offer to draft it from the codebase. After significant changes (new features or routes, a new database or data type, auth changes, new third-party services), ask the user: "Want me to update Trojan's project context to match?" Always show the user what you will save before calling update_project_context.`
+- Trojan's project context (get_project_context) describes what the app does, its sensitive data and trust boundaries, and makes Trojan's testing smarter. If it is missing, offer to draft it from the codebase. After significant changes (new features or routes, a new database or data type, auth changes, new third-party services), ask the user: "Want me to update Trojan's project context to match?" Always show the user what you will save before calling update_project_context.
+
+` + brainInstructions
+
+// brainInstructions tells the AI tool when to use Trojan's code graph,
+// rules and memory. Sent by both the stdio and the desktop server.
+const brainInstructions = `Trojan keeps a code graph of the whole project (every route, what it calls across files, which tables it reads and writes, where login is checked), the project's security context, and a memory of past findings and decisions. Use it for what reading files one at a time can't show:
+- Call get_security_rules BEFORE writing auth, database or API code, and follow its rules.
+- Call get_attack_paths after finishing a feature, and when asked which routes are unprotected or write data without a login check.
+- Use trace_dataflow before changing a route or function, what_touches before changing a table or sensitive data, get_attack_surface for an overview, get_security_history before reworking a file with past findings.
+- After fixing a finding, run verify_fix to prove it is gone.`
 
 // newServer registers Trojan's tools. With perRequest, every tool takes a
 // project_path argument and `project` resolves it per call (one server serves
@@ -53,6 +63,8 @@ func newServer(project projectFunc, perRequest bool, opts ...server.ServerOption
 	}
 	if perRequest {
 		base = append(base, server.WithInstructions(localInstructions))
+	} else {
+		base = append(base, server.WithInstructions(brainInstructions))
 	}
 	opts = append(base, opts...)
 	s := server.NewMCPServer(
@@ -81,6 +93,7 @@ func newServer(project projectFunc, perRequest bool, opts ...server.ServerOption
 			mcp.WithString("min_severity", mcp.Description("Only include this severity and above: critical, high, medium, low or info.")),
 			mcp.WithString("status", mcp.Description(`"open" (default) or "all".`)),
 			mcp.WithBoolean("confirmed_only", mcp.Description("Only findings Trojan's triage confirmed as real (skips likely false alarms).")),
+			mcp.WithBoolean("include_false_positives", mcp.Description("Also show findings Trojan remembers as false alarms (hidden by default).")),
 		),
 		handleGetFindings(project),
 	)
@@ -115,8 +128,10 @@ func newServer(project projectFunc, perRequest bool, opts ...server.ServerOption
 	)
 	s.AddTool(
 		tool("suppress_finding",
-			mcp.WithDescription("Hide a finding from future results: for accepted risks or false alarms. Confirm with the user first."),
+			mcp.WithDescription("Hide a finding from future results: for accepted risks or false alarms. Confirm with the user first. "+
+				"Trojan remembers the decision, so the same rule in the same file stays hidden after later scans."),
 			idArg,
+			mcp.WithString("reason", mcp.Description(`Why: e.g. "false alarm: input is a constant", or "user accepts the risk". A reason that says the user accepts it is remembered as an accepted risk, anything else as a false alarm.`)),
 		),
 		handleUpdateStatus(project, normalizer.StatusSuppressed),
 	)
@@ -163,6 +178,9 @@ func newServer(project projectFunc, perRequest bool, opts ...server.ServerOption
 		),
 		handleUpdateProjectContext(project),
 	)
+
+	// ── Security brain (code graph, rules, memory) ──
+	registerGraphTools(s, tool, project)
 
 	// ── Reports (spend the user's Trojan credits) ──
 	s.AddTool(
@@ -229,6 +247,7 @@ func handleGetFindings(project projectFunc) server.ToolHandlerFunc {
 		minRank := severityRank[normalizer.Severity(strings.ToLower(req.GetString("min_severity", "info")))]
 		all := strings.EqualFold(req.GetString("status", "open"), "all")
 		confirmedOnly := req.GetBool("confirmed_only", false)
+		isFP := rememberedFalsePositives(projectPath, req.GetBool("include_false_positives", false))
 
 		type row struct {
 			ID       string `json:"id"`
@@ -237,8 +256,11 @@ func handleGetFindings(project projectFunc) server.ToolHandlerFunc {
 			Location string `json:"location,omitempty"`
 			Status   string `json:"status"`
 			Verdict  string `json:"verdict,omitempty"`
+			Exposure string `json:"exposure,omitempty"`
+			priority int
 		}
 		rows := []row{}
+		hiddenFP := 0
 		for _, f := range scan.Findings {
 			if (!all && f.Status != normalizer.StatusOpen) || severityRank[f.Severity] < minRank {
 				continue
@@ -246,22 +268,37 @@ func handleGetFindings(project projectFunc) server.ToolHandlerFunc {
 			if confirmedOnly && f.Verdict != "confirmed" {
 				continue
 			}
+			if isFP(f) {
+				hiddenFP++
+				continue
+			}
 			loc := f.FilePath
 			if f.LineNumber > 0 {
 				loc = fmt.Sprintf("%s:%d", f.FilePath, f.LineNumber)
 			}
-			rows = append(rows, row{f.ID, string(f.Severity), f.Title, loc, string(f.Status), f.Verdict})
+			r := row{ID: f.ID, Severity: string(f.Severity), Title: f.Title, Location: loc, Status: string(f.Status), Verdict: f.Verdict}
+			if f.Reach != nil {
+				r.Exposure, r.priority = exposureSummary(f.Reach), f.Reach.Priority
+			}
+			rows = append(rows, r)
 		}
+		// Severity first; within a severity, code a public route reaches
+		// without login (and sensitive code) comes first.
 		sort.SliceStable(rows, func(i, j int) bool {
-			return severityRank[normalizer.Severity(rows[i].Severity)] > severityRank[normalizer.Severity(rows[j].Severity)]
+			si, sj := severityRank[normalizer.Severity(rows[i].Severity)], severityRank[normalizer.Severity(rows[j].Severity)]
+			if si != sj {
+				return si > sj
+			}
+			return rows[i].priority > rows[j].priority
 		})
 
 		out, err := json.MarshalIndent(map[string]any{
-			"project":    projectPath,
-			"scanned_at": scan.Timestamp,
-			"total":      len(scan.Findings),
-			"shown":      len(rows),
-			"findings":   rows,
+			"project":                projectPath,
+			"scanned_at":             scan.Timestamp,
+			"total":                  len(scan.Findings),
+			"shown":                  len(rows),
+			"hidden_false_positives": hiddenFP,
+			"findings":               rows,
 		}, "", "  ")
 		if err != nil {
 			return mcp.NewToolResultError("failed to serialize findings"), nil
@@ -298,6 +335,11 @@ func handleUpdateStatus(project projectFunc, status normalizer.Status) server.To
 				scan.Findings[i].Status = status
 				if err := saveLatestScan(dir, scan); err != nil {
 					return mcp.NewToolResultError("failed to save updated scan: " + err.Error()), nil
+				}
+				// Code findings are remembered so later scans and agents know
+				// the decision (website findings have no project to hold it).
+				if perr == nil && dir == projectPath {
+					recordStatusMemory(projectPath, f, status, req.GetString("reason", ""))
 				}
 				return mcp.NewToolResultText(fmt.Sprintf("finding %s marked as %s", id, status)), nil
 			}
