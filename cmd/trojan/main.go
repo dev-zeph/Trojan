@@ -34,7 +34,6 @@ import (
 	"github.com/dev-zeph/trojan/internal/dast"
 	"github.com/dev-zeph/trojan/internal/dast/agent"
 	"github.com/dev-zeph/trojan/internal/graph"
-	"github.com/dev-zeph/trojan/internal/graphstore"
 	"github.com/dev-zeph/trojan/internal/greybox"
 	"github.com/dev-zeph/trojan/internal/hook"
 	"github.com/dev-zeph/trojan/internal/mcpserver"
@@ -240,6 +239,7 @@ func scanCmd() *cobra.Command {
 
 				// Enrich findings with compliance framework mappings.
 				normalizer.EnrichCompliance(findings)
+				enrichWithGraph(path, findings)
 
 				// Severity counts for results box.
 				counts := map[string]int{}
@@ -1980,7 +1980,7 @@ clear message and exits cleanly.`,
 				return
 			}
 
-			g, err := graph.BuildFromFiles(files)
+			g, err := refreshGraph(path)
 			if err != nil {
 				color.Red("Error building graph: %s\n", err)
 				os.Exit(1)
@@ -2004,16 +2004,9 @@ clear message and exits cleanly.`,
 				fmt.Println()
 			}
 
-			// Persist the overlaid graph locally so context accumulates across
-			// runs. This is the compounding local memory that is the point of
-			// the tool; the database never leaves the machine. A write failure
-			// is a warning, not a fatal, since the scan output is still useful.
-			dbPath := filepath.Join(path, graphstore.DefaultDBPath)
-			if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
-				color.Yellow("  Warning: could not create %s: %s\n", filepath.Dir(dbPath), err)
-			} else if err := graphstore.Save(dbPath, g); err != nil {
-				color.Yellow("  Warning: could not persist graph to %s: %s\n", dbPath, err)
-			}
+			// refreshGraph already persisted the graph to .trojan/graph.db
+			// (incrementally, with file hashes); the overlay is re-applied on
+			// every load, so it isn't saved.
 
 			fmt.Printf("Code Property Graph for %s\n", path)
 			fmt.Printf("  files scanned : %d\n", len(files))

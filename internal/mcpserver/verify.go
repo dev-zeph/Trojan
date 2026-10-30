@@ -15,6 +15,7 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 
 	"github.com/dev-zeph/trojan/internal/config"
+	"github.com/dev-zeph/trojan/internal/memory"
 	"github.com/dev-zeph/trojan/internal/normalizer"
 	"github.com/dev-zeph/trojan/internal/scanners"
 )
@@ -139,6 +140,8 @@ func handleVerifyFix(project projectFunc) server.ToolHandlerFunc {
 			for i := range scan.Findings {
 				if scan.Findings[i].ID == id {
 					scan.Findings[i].Status = normalizer.StatusResolved
+					recordMemory(projectPath, scan.Findings[i], memory.KindFixed,
+						fmt.Sprintf("verify_fix: %s no longer reports rule %s in this file", res.Scanner, res.RuleID))
 				}
 			}
 			saveLatestScan(projectPath, scan) //nolint:errcheck // the verification itself succeeded
