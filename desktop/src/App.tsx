@@ -50,6 +50,7 @@ import type {
   McpToolStatus,
   Toast,
 } from "./types";
+import NotificationSettings, { useScanNudges } from "./NotificationSettings";
 import "./App.css";
 
 
@@ -126,6 +127,7 @@ const SIMPLE_NAV: typeof NAV = ([
 
 // ── App ───────────────────────────────────────────────────────────────────
 export default function App() {
+  useScanNudges();
   const [profileLoaded, setProfileLoaded] = useState(false);
   const [profile, setProfile]             = useState<UserProfile | null>(null);
   const [view, setView]                   = useState<NavView>("overview");
@@ -3115,6 +3117,14 @@ export default function App() {
                           </button>
                         ))}
                       </div>
+                    </div>
+                  </div>
+
+                  {/* ── Scan reminders ── */}
+                  <div className="profile-section-group">
+                    <span className="profile-mono-label">REMINDERS</span>
+                    <div className="profile-card">
+                      <NotificationSettings />
                     </div>
                   </div>
 

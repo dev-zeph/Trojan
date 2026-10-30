@@ -27,10 +27,10 @@ export function useScanNudges() {
   }, []);
 }
 
-/** On/off toggle for scan reminders. Also runs the daily check while mounted. */
+/** On/off toggle for scan reminders. The daily check itself runs app-wide
+ *  via useScanNudges in App. */
 export default function NotificationSettings() {
   const [enabled, setEnabled] = useState(true);
-  useScanNudges();
 
   useEffect(() => {
     invoke<boolean>("get_nudge_enabled").then(setEnabled).catch(() => {});
