@@ -42,8 +42,17 @@ func (s Semgrep) Run(projectPath string) ([]normalizer.Finding, error) {
 		"--exclude", "*.min.js",
 		projectPath,
 	}
-	cmd := exec.Command(ManagedBinary("semgrep"), args...)
-	output, err := cmd.Output()
+	bin := ManagedBinary("semgrep")
+	output, err := exec.Command(bin, args...).Output()
+	if _, isExit := err.(*exec.ExitError); err != nil && !isExit {
+		// The managed binary could not start at all (e.g. ~/.trojan/bin/semgrep
+		// is a venv script whose python3 was removed: "fork/exec ...: no such
+		// file or directory"). Fall back to a semgrep on PATH rather than
+		// silently dropping SAST from the scan.
+		if sys, lerr := exec.LookPath("semgrep"); lerr == nil && sys != bin {
+			output, err = exec.Command(sys, args...).Output()
+		}
+	}
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
 			// exit code 1 means findings were found — not a crash
