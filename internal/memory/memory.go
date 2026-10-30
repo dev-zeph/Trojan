@@ -4,14 +4,12 @@
 // locally in .trojan/memory.db and is keyed by stable graph node keys
 // (graph.Node.Key) so knowledge carries across scans.
 //
-// CONTRACT (Wave 0): types and signatures are fixed; the implementation lands
-// in Wave 1.
+// Storage engine: modernc.org/sqlite (pure Go, CGO-free), in WAL mode with a
+// busy timeout so the MCP server process and a scan process can both write.
+// The implementation lives in store.go.
 package memory
 
-import (
-	"errors"
-	"time"
-)
+import "time"
 
 // DefaultDBPath is where the store lives, relative to the project root.
 const DefaultDBPath = ".trojan/memory.db"
@@ -49,29 +47,3 @@ type Event struct {
 	Source   Source    `json:"source"`
 	At       time.Time `json:"at"`
 }
-
-// ErrNotImplemented is returned until the Wave 1 implementation lands.
-var ErrNotImplemented = errors.New("memory: not implemented")
-
-// Store is an open project memory.
-type Store struct{}
-
-// Open opens (creating if needed) the memory store for a project.
-func Open(projectRoot string) (*Store, error) { return nil, ErrNotImplemented }
-
-// Record saves an event. The same Kind + NodeKey + File + RuleID is stored
-// once; recording it again refreshes At and Evidence.
-func (s *Store) Record(e Event) error { return ErrNotImplemented }
-
-// ForKey returns every event about one graph node.
-func (s *Store) ForKey(key string) ([]Event, error) { return nil, ErrNotImplemented }
-
-// ForFile returns every event about one project-relative file.
-func (s *Store) ForFile(relPath string) ([]Event, error) { return nil, ErrNotImplemented }
-
-// FalsePositives returns every false-positive event, so triage and tools can
-// stop re-raising them.
-func (s *Store) FalsePositives() ([]Event, error) { return nil, ErrNotImplemented }
-
-// Close releases the store.
-func (s *Store) Close() error { return nil }
