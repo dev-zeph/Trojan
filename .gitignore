@@ -46,6 +46,9 @@ supabase/functions/_shared/pricing.ts
 supabase/functions/_shared/pricing.test.ts
 supabase/functions/_shared/purchase_email.ts
 supabase/functions/_shared/purchase_email.test.ts
+# Agent prompts stay private (the repo is public).
+supabase/functions/whitebox-agent/
+supabase/functions/infer-context/
 
 # Internal / private
 Blueprint.md
