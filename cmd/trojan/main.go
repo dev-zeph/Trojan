@@ -824,6 +824,37 @@ func dastCmd() *cobra.Command {
 	cmd.Flags().MarkHidden("exit-when-done") //nolint:errcheck
 	cmd.Flags().BoolVar(&ownerConfirmed, "owner-confirmed", false, "Confirm you own or are authorized to test the target, instead of a DNS/file/meta proof")
 	cmd.AddCommand(dastVerifyCmd())
+	cmd.AddCommand(dastRetestCmd())
+	return cmd
+}
+
+// dastRetestCmd implements `trojan dast retest <site>` — a deterministic,
+// token-free re-check of a live website test's open findings. It replays the
+// request recorded in each finding's proof and reports fixed / still open /
+// inconclusive, marking fixed findings resolved. <site> is the tested URL or
+// host (omit to use the most recent test). --finding narrows to specific IDs.
+// Output is JSON for the desktop.
+func dastRetestCmd() *cobra.Command {
+	var findingIDs []string
+	cmd := &cobra.Command{
+		Use:   "retest [site]",
+		Short: "Re-check a website test's open findings by replaying their proof (no tokens, no credits)",
+		Args:  cobra.MaximumNArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			site := ""
+			if len(args) == 1 {
+				site = args[0]
+			}
+			sum, err := mcpserver.RetestWebsite(context.Background(), site, findingIDs)
+			if err != nil {
+				color.Red("%s\n", err)
+				os.Exit(1)
+			}
+			data, _ := json.MarshalIndent(sum, "", "  ")
+			fmt.Println(string(data))
+		},
+	}
+	cmd.Flags().StringArrayVar(&findingIDs, "finding", nil, "A specific finding ID to re-check (repeatable). Omit to re-check every open finding for the site.")
 	return cmd
 }
 
@@ -1403,6 +1434,7 @@ func agenticFindingsFromCandidates(cs []agent.Candidate) []normalizer.Finding {
 			CodeSnippet: c.Evidence,
 			RuleID:      "agentic",
 			Status:      normalizer.StatusOpen,
+			Proof:       c.Proof,
 		})
 	}
 	return out

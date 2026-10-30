@@ -75,6 +75,12 @@ type Finding struct {
 	// Set during the scan by internal/reach; nil when the finding has no
 	// enclosing function (dependencies, config files) or no graph was built.
 	Reach *ReachInfo `json:"reach,omitempty"`
+
+	// Proof is a replayable record of the request/response that made this a
+	// finding, so Trojan can re-check (retest) just this endpoint instead of
+	// rerunning a whole website test. Set for website / DAST findings captured
+	// with proof; nil for older findings and code findings.
+	Proof *Proof `json:"proof,omitempty"`
 }
 
 // ReachInfo is a finding's position in the code graph (see internal/reach).
