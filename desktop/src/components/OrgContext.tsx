@@ -14,6 +14,7 @@ import {
   saveContextDraft,
 } from "../lib/orgContext";
 import { CM } from "./CornerMarks";
+import { AppUnderstanding } from "../AppUnderstanding";
 
 // OrgContext.tsx renders the authored, project-local security-and-privacy
 // context: what the user is building, the sensitive data it handles, its trust
@@ -277,16 +278,20 @@ export function LocalPrivacyBadge({ compact }: { compact?: boolean }) {
 // ── Onboarding wizard ────────────────────────────────────────────────────────
 type WizardStep = { key: string; eyebrow: string; title: string; blurb: string; render: () => React.ReactNode };
 
-export function OrgContextWizard({ initial, onFinish, onSkip, simple = false }: {
+export function OrgContextWizard({ initial, onFinish, onSkip, simple = false, understand }: {
   initial?: OrgContext | null;
   onFinish: (ctx: OrgContext) => void;
   onSkip: () => void;
+  // When a project is open (founder mode), finishing the description step
+  // hands off to the "here's what we think your app handles" screen.
+  understand?: { serverUrl: string; projectPath: string; runsFree: boolean; onTopUp?: () => void };
   // Simple (founder) mode asks only for the plain-language description and
   // skips the sensitive-data, trust-boundary and attacker steps.
   simple?: boolean;
 }) {
   const [ctx, setCtx] = useState<OrgContext>(initial && orgContextHasContent(initial) ? initial : emptyOrgContext());
   const [step, setStep] = useState(0);
+  const [handoff, setHandoff] = useState(false);
 
   const allSteps: WizardStep[] = [
     { key: "app", eyebrow: "STEP 1 OF 4", title: "What are you building?", blurb: "Describe your app the way you would to a new teammate. This is the highest-value thing you can tell Trojan.", render: () => <AppSection value={ctx} onChange={setCtx} /> },
@@ -301,6 +306,21 @@ export function OrgContextWizard({ initial, onFinish, onSkip, simple = false }: 
   const isLast = step === steps.length - 1;
   const canAdvance = step > 0 || ctx.app.name.trim().length > 0 || ctx.app.description.trim().length > 0;
   const cur = steps[step];
+
+  if (handoff && understand) {
+    return (
+      <AppUnderstanding
+        serverUrl={understand.serverUrl}
+        projectPath={understand.projectPath}
+        initialDescription={ctx.app.description}
+        existing={ctx}
+        runsFree={understand.runsFree}
+        onTopUp={understand.onTopUp}
+        onCancel={() => onFinish(ctx)}
+        onDone={(saved) => onFinish(saved)}
+      />
+    );
+  }
 
   return (
     <div className="ob-split">
@@ -363,7 +383,7 @@ export function OrgContextWizard({ initial, onFinish, onSkip, simple = false }: 
               ? <button type="button" className="oc-nav-back" onClick={() => setStep((s) => s - 1)}>{"←"} Back</button>
               : <span />}
             {isLast
-              ? <button type="button" className="oc-nav-next" onClick={() => onFinish(ctx)}>{simple ? "Finish" : "Save context"} {"→"}</button>
+              ? <button type="button" className="oc-nav-next" onClick={() => (simple && understand ? setHandoff(true) : onFinish(ctx))}>{simple ? "Finish" : "Save context"} {"→"}</button>
               : <button type="button" className="oc-nav-next" disabled={!canAdvance} onClick={() => setStep((s) => s + 1)}>Continue {"→"}</button>}
           </div>
 
