@@ -54,7 +54,7 @@ def run(cmd):
 `,
 }
 
-func writeTree(t *testing.T, dir string, files map[string]string) []string {
+func writeKeyTree(t *testing.T, dir string, files map[string]string) []string {
 	t.Helper()
 	var paths []string
 	for rel, src := range files {
@@ -88,7 +88,7 @@ func keysOf(g *Graph, kinds ...NodeKind) []string {
 
 func TestKeys_IdenticalAcrossBuilds(t *testing.T) {
 	dir := t.TempDir()
-	files := writeTree(t, dir, keyFixture)
+	files := writeKeyTree(t, dir, keyFixture)
 
 	g1, err := BuildFromFilesRoot(dir, files)
 	if err != nil {
@@ -154,7 +154,7 @@ func TestKeys_IdenticalAcrossBuilds(t *testing.T) {
 
 func TestKeys_BlankLinesAboveFunctionDoNotMoveKeys(t *testing.T) {
 	dir := t.TempDir()
-	files := writeTree(t, dir, keyFixture)
+	files := writeKeyTree(t, dir, keyFixture)
 	before, err := BuildFromFilesRoot(dir, files)
 	if err != nil {
 		t.Fatal(err)
@@ -172,7 +172,7 @@ func TestKeys_BlankLinesAboveFunctionDoNotMoveKeys(t *testing.T) {
 			shifted[rel] = "\n\n\n\n" + src
 		}
 	}
-	writeTree(t, dir, shifted)
+	writeKeyTree(t, dir, shifted)
 	after, err := BuildFromFilesRoot(dir, files)
 	if err != nil {
 		t.Fatal(err)
@@ -206,7 +206,7 @@ func TestKeys_BlankLinesAboveFunctionDoNotMoveKeys(t *testing.T) {
 
 func TestKeys_AnonymousAndDuplicateFunctions(t *testing.T) {
 	dir := t.TempDir()
-	files := writeTree(t, dir, map[string]string{
+	files := writeKeyTree(t, dir, map[string]string{
 		"routes.js": `const app = require("express")();
 app.get("/a", function (req, res) { eval(req.query.a); });
 app.get("/b", function (req, res) { eval(req.query.b); });
@@ -229,8 +229,10 @@ class B { get() { return 2; } }
 			t.Errorf("anonymous func key leaks line/path: %q", k)
 		}
 	}
-	if len(keys) != 4 {
-		t.Errorf("expected 4 func keys (2 callbacks, 2 methods), got %v", keys)
+	// 2 route callbacks, 2 methods, plus the module-level `app` binding the JS
+	// builder records as its own node.
+	if len(keys) != 5 {
+		t.Errorf("expected 5 func keys (2 callbacks, 2 methods, 1 binding), got %v", keys)
 	}
 	t.Logf("func keys: %v", keys)
 }

@@ -185,7 +185,7 @@ function search(q) { db.query("SELECT * FROM t WHERE q = " + q); db.query("SELEC
 	if !reflect.DeepEqual(ei, ef) {
 		t.Errorf("edges differ:\nincremental %v\nfull        %v", ei, ef)
 	}
-	if len(ei) == 0 || !contains(ei, "server.js#route_handler -calls-> server.js#clean") {
+	if len(ei) == 0 || !contains(ei, "server.js#GET /search -calls-> server.js#clean") {
 		t.Errorf("expected the new call edge, got %v", ei)
 	}
 	t.Logf("incremental == full: %d nodes, %d edges", len(ki), len(ei))
@@ -352,4 +352,30 @@ func contains(xs []string, x string) bool {
 		}
 	}
 	return false
+}
+
+func TestRefresh_TSConfigChangeRebuildsJSBatch(t *testing.T) {
+	dir := t.TempDir()
+	writeProject(t, dir, map[string]string{
+		"tsconfig.json":      `{"compilerOptions":{"baseUrl":".","paths":{"@/*":["./*"]}}}`,
+		"app/api/x/route.ts": `import { h } from "@/lib/h"; export async function POST() { h(); }`,
+		"lib/h.ts":           `export function h() { eval("1"); }`,
+		"main.go":            "package main\nfunc main() {}\n",
+	})
+	if _, _, err := Refresh(dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, st, err := Refresh(dir); err != nil || st.FilesReparsed != 0 {
+		t.Fatalf("no-change refresh: %+v, %v", st, err)
+	}
+	writeProject(t, dir, map[string]string{
+		"tsconfig.json": `{"compilerOptions":{"baseUrl":".","paths":{"~/*":["./*"]}}}`,
+	})
+	_, st, err := Refresh(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.FilesReparsed != 2 {
+		t.Fatalf("tsconfig edit should re-parse the 2 TS files (not Go), got %+v", st)
+	}
 }

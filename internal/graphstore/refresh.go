@@ -77,6 +77,10 @@ func Refresh(projectRoot string) (*graph.Graph, RefreshStats, error) {
 		byBatch[batch] = append(byBatch[batch], f)
 	}
 	stats := RefreshStats{FilesTotal: len(cur)}
+	// The JS builder also reads tsconfig/jsconfig (path aliases) and uses
+	// package.json locations to find the Next.js root, so editing one of those
+	// must invalidate the JS batch even though no source file changed.
+	cur = append(cur, jsConfigHashes(root, byBatch[graph.BatchJS])...)
 
 	dbPath := filepath.Join(root, DefaultDBPath)
 	db, err := open(dbPath)
@@ -211,4 +215,38 @@ func writeHashes(tx *sql.Tx, hashes []fileHash, root string) error {
 		}
 	}
 	return nil
+}
+
+// jsConfigFiles are the non-source files the JS builder reads.
+var jsConfigFiles = []string{"tsconfig.json", "jsconfig.json", "package.json"}
+
+// jsConfigHashes hashes every jsConfigFiles entry in the directories holding
+// JS/TS files and their ancestors up to root, tagged with the JS batch.
+func jsConfigHashes(root string, jsFiles []string) []fileHash {
+	dirs := make(map[string]bool)
+	for _, f := range jsFiles {
+		for d := filepath.Dir(f); !dirs[d]; d = filepath.Dir(d) {
+			dirs[d] = true
+			if d == root || d == filepath.Dir(d) {
+				break
+			}
+		}
+	}
+	var out []fileHash
+	for d := range dirs {
+		for _, name := range jsConfigFiles {
+			p := filepath.Join(d, name)
+			src, err := os.ReadFile(p)
+			if err != nil {
+				continue
+			}
+			sum := sha256.Sum256(src)
+			rel, err := filepath.Rel(root, p)
+			if err != nil {
+				rel = p
+			}
+			out = append(out, fileHash{RelPath: filepath.ToSlash(rel), Language: graph.BatchJS, SHA256: hex.EncodeToString(sum[:])})
+		}
+	}
+	return out
 }
