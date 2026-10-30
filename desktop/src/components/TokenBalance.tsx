@@ -80,11 +80,11 @@ export function RunCostHint({ balance, model }: { balance: number | null; model:
     }}>
       <div style={{ display: "flex", justifyContent: "space-between" }}>
         <span>Typical cost</span>
-        <span style={{ color: "rgba(255,255,255,0.85)" }}>{range} tokens</span>
+        <span style={{ fontWeight: 600 }}>{range} tokens</span>
       </div>
       <div style={{ opacity: 0.7, lineHeight: 1.5 }}>
         Charged per step as the agent works, not upfront. If you run out
-        mid-engagement the run pauses and can be resumed after a top-up —
+        mid-engagement the run pauses and can be resumed after a top-up, so
         nothing is lost.
       </div>
       {balance !== null && !affordable && (

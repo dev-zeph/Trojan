@@ -144,6 +144,9 @@ export default function App() {
   // The most recently scanned code project: grey-box pen tests read it, and the
   // founder home checks whether it changed since Trojan last learned about it.
   const latestCodeProject = recent.find((r) => r.type !== "dast")?.path ?? "";
+  // A folder the user picked for grey-box wins over the latest scan.
+  const [greyBoxFolder, setGreyBoxFolder] = useState("");
+  const greyBoxProject = greyBoxFolder || latestCodeProject;
   const [scanDoneCount, setScanDoneCount] = useState(0);
   const [dastUrl, setDastUrl]             = useState("");
   const [agenticMode, setAgenticMode]     = useState(false);
@@ -799,7 +802,7 @@ export default function App() {
         ? { title: agTemplate.title, technique: agTemplate.technique, body: agTemplate.prompt_body }
         : null,
       ownerConfirmed,
-      projectPath: agGreyBox ? latestCodeProject : null,
+      projectPath: agGreyBox ? greyBoxProject : null,
     })
       .then(async ({ url: rUrl, cachePath }) => {
         updateToastDone(id, rUrl, cachePath);
@@ -1787,9 +1790,21 @@ export default function App() {
                           </div>
                           {agGreyBox && (
                             <div style={{ fontSize: "0.85em", opacity: 0.7, marginTop: 8 }}>
-                              {latestCodeProject
-                                ? `Reading code from ${latestCodeProject.split("/").pop()}, your most recently scanned project.`
-                                : "Scan your codebase first so Trojan knows which project to read."}
+                              {greyBoxProject
+                                ? `Reading code from ${greyBoxProject.split("/").pop()}.`
+                                : "Choose the folder of the app you're testing so Trojan can read its code."}
+                              <button
+                                type="button"
+                                className="pt-chip"
+                                style={{ marginLeft: 8 }}
+                                disabled={isScanning}
+                                onClick={async () => {
+                                  const picked = await invoke<string | null>("pick_folder");
+                                  if (picked) setGreyBoxFolder(picked);
+                                }}
+                              >
+                                {greyBoxProject ? "Change" : "Choose folder"}
+                              </button>
                             </div>
                           )}
                         </div>
