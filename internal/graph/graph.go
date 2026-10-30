@@ -25,6 +25,9 @@ const (
 	// KindSink is a call to a dangerous API (SQL exec, os/exec, file write,
 	// log write, …) — where tainted data does damage.
 	KindSink NodeKind = "sink"
+	// KindDataStore is a place data lives that code reads or writes, e.g. a
+	// Supabase table. Name is the store's identifier ("orders").
+	KindDataStore NodeKind = "datastore"
 )
 
 // EdgeKind classifies a graph edge.
@@ -35,18 +38,29 @@ const (
 	EdgeCalls EdgeKind = "calls"
 	// EdgeContains connects a function to a sink that appears in its body.
 	EdgeContains EdgeKind = "contains"
+	// EdgeReads connects a function to a datastore it reads from.
+	EdgeReads EdgeKind = "reads"
+	// EdgeWrites connects a function to a datastore it inserts, updates or
+	// deletes in.
+	EdgeWrites EdgeKind = "writes"
 )
 
 // Node is one element of the graph, anchored back to source so findings can
 // cite file:line.
 type Node struct {
-	ID     int      `json:"id"`
-	Kind   NodeKind `json:"kind"`
-	Name   string   `json:"name"` // func: package-qualified symbol; sink: the callee, e.g. "exec.Command"
-	File   string   `json:"file"`
-	Line   int      `json:"line"`
-	Source bool     `json:"source,omitempty"` // func reached from untrusted input (HTTP handler)
-	PII    bool     `json:"pii,omitempty"`    // func touches data that looks like PII/PHI
+	ID   int      `json:"id"`
+	Kind NodeKind `json:"kind"`
+	// Key identifies the node stably across rebuilds, so tools and memory can
+	// refer to it from one scan to the next. Never contains line numbers.
+	// func: "<relpath>#<qualified symbol>"; sink: "<func key>@<callee>#<n>"
+	// (n = ordinal of that callee inside the function); datastore:
+	// "datastore:<name>".
+	Key    string `json:"key,omitempty"`
+	Name   string `json:"name"` // func: package-qualified symbol; sink: the callee, e.g. "exec.Command"
+	File   string `json:"file"`
+	Line   int    `json:"line"`
+	Source bool   `json:"source,omitempty"` // func reached from untrusted input (HTTP handler)
+	PII    bool   `json:"pii,omitempty"`    // func touches data that looks like PII/PHI
 	// SinkRule names why a sink node is dangerous (for report copy).
 	SinkRule string `json:"sink_rule,omitempty"`
 	// Severity is a coarse rank for sinks: "high" | "medium".
@@ -57,6 +71,12 @@ type Node struct {
 	// additive so generic heuristics above are never overwritten, only
 	// corrected or extended by what the user actually told Trojan.
 	Tags map[string]string `json:"tags,omitempty"`
+	// Guarded is true when the function checks auth itself, or every route
+	// reaching it sits behind auth middleware.
+	Guarded bool `json:"guarded,omitempty"`
+	// ClientSide is true for code that runs in the browser (e.g. a "use client"
+	// file), where secrets and privileged clients must never appear.
+	ClientSide bool `json:"client_side,omitempty"`
 }
 
 // Edge is a directed relationship between two nodes.
