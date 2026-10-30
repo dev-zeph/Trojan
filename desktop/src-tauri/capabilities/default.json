@@ -17,6 +17,7 @@
     "store:allow-load",
     "store:allow-clear",
     "deep-link:default",
+    "notification:default",
     "opener:allow-open-url",
     "core:webview:allow-print"
   ]
