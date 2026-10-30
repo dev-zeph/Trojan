@@ -366,6 +366,7 @@ async fn start_agentic_dast(
     allow_dangerous: bool,
     attack_template: Option<AttackTemplateArg>,
     owner_confirmed: bool,
+    project_path: Option<String>,
 ) -> Result<ScanReturn, String> {
     kill_old_scans(&app);
     let _ = app.emit(
@@ -385,6 +386,12 @@ async fn start_agentic_dast(
     }
     if grey_box {
         args.push("--grey-box".into());
+    }
+    // The sidecar runs from the app's own folder, so grey-box and the project
+    // brain (context, graph, memory) need the project path passed explicitly.
+    if let Some(p) = project_path.filter(|p| !p.is_empty()) {
+        args.push("--project".into());
+        args.push(p);
     }
     if !focus.is_empty() {
         args.push("--focus".into());

@@ -140,6 +140,8 @@ export default function App() {
   const [iframeOffOrigin, setIframeOffOrigin] = useState(false);
   const [isDragOver, setIsDragOver]       = useState(false);
   const [recent, setRecent]               = useState<RecentProject[]>([]);
+  // Grey-box pen tests read the most recently scanned code project.
+  const greyBoxProject = recent.find((r) => r.type !== "dast")?.path ?? "";
   const [dastUrl, setDastUrl]             = useState("");
   const [agenticMode, setAgenticMode]     = useState(false);
   const [agTier, setAgTier]               = useState<"passive" | "safe-active" | "aggressive">("passive");
@@ -793,6 +795,7 @@ export default function App() {
         ? { title: agTemplate.title, technique: agTemplate.technique, body: agTemplate.prompt_body }
         : null,
       ownerConfirmed,
+      projectPath: agGreyBox ? greyBoxProject : null,
     })
       .then(async ({ url: rUrl, cachePath }) => {
         updateToastDone(id, rUrl, cachePath);
@@ -1770,6 +1773,13 @@ export default function App() {
                               disabled={isScanning}
                             />
                           </div>
+                          {agGreyBox && (
+                            <div style={{ fontSize: "0.85em", opacity: 0.7, marginTop: 8 }}>
+                              {greyBoxProject
+                                ? `Reading code from ${greyBoxProject.split("/").pop()}, your most recently scanned project.`
+                                : "Scan your codebase first so Trojan knows which project to read."}
+                            </div>
+                          )}
                         </div>
 
                         <div className="pt-card">
