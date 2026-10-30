@@ -417,6 +417,7 @@ func dastCmd() *cobra.Command {
 	var acceptSideEffects bool
 	var maxRunTokens int
 	var greyBox bool
+	var projectPath string
 	var focus string
 	var identityFlags []string
 	var apiSpec string
@@ -540,6 +541,7 @@ func dastCmd() *cobra.Command {
 					acceptSideEffects: acceptSideEffects,
 					maxRunTokens:      maxRunTokens,
 					greyBox:           greyBox,
+					projectRoot:       projectPath,
 					focus:             focus,
 					apiSpec:           apiSpec,
 					requireApproval:   requireApproval,
@@ -802,6 +804,7 @@ func dastCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&acceptSideEffects, "accept-side-effects", false, "Acknowledge possible side effects (required for safe-active POST on production)")
 	cmd.Flags().IntVar(&maxRunTokens, "max-run-tokens", agent.DefaultMaxRunTokens, "Cumulative token ceiling for the agentic run. Default 0 = no ceiling (usage is metered by token-based pricing); the run is still bounded by step/request/time caps. Set a positive value to re-impose a hard cap.")
 	cmd.Flags().BoolVar(&greyBox, "grey-box", false, "Let the agent read this project's source (run from the source dir) to form grounded hypotheses. Handler snippets are sent to the AI. Run `trojan index` first to also enable semantic source search.")
+	cmd.Flags().StringVar(&projectPath, "project", "", "Source folder of the app under test (default: the current directory when --grey-box is set). Feeds the agent its org context, code graph and memory, and is where the grey-box reader looks.")
 	cmd.Flags().StringVar(&focus, "focus", "", "Narrow the agent to a technique preset: api | web | llm (optional)")
 	cmd.Flags().StringArrayVar(&identityFlags, "identity", nil, "Auth session for authorization (IDOR/BOLA) testing, as 'name=Header: value'. Repeatable; repeat with the same name for multiple headers. Example: --identity 'alice=Authorization: Bearer <token>'")
 	cmd.Flags().StringVar(&apiSpec, "api-spec", "", "OpenAPI/Swagger spec (file path or URL) to expand the agent's attack surface beyond what the crawler finds. If omitted, common spec URLs on the target are auto-probed.")
@@ -949,7 +952,8 @@ type agenticParams struct {
 	acceptSideEffects bool
 	maxRunTokens      int
 	greyBox           bool
-	focus             string
+	projectRoot       string // source folder (--project); "" = unknown
+	focus            string
 	apiSpec           string
 	identities        []agent.Identity
 	requireApproval   bool
@@ -1059,9 +1063,17 @@ func runAgenticDast(p agenticParams) {
 		task += "\n\nIDENTITIES available for http_probe (attach with the \"identity\" field): " + strings.Join(names, ", ") +
 			".\nTest authorization by requesting the same resource as different identities and comparing the responses (IDOR/BOLA)."
 	}
+	// Security brain: org context + code graph + memory go into the seed when a
+	// project folder is known; memory alone (kept per site) otherwise.
+	brainRoot := resolveBrainRoot(p.projectRoot, p.greyBox)
+	brain := openBrain(brainRoot, p.targetURL)
+	defer brain.close()
+	if seed := brain.seed(); seed != "" {
+		task += "\n\n" + seed
+	}
 	var source agent.SourceReader
 	if p.greyBox {
-		if gb := buildGreyBox(".", p.accessToken); gb != nil {
+		if gb := buildGreyBox(greyBoxRoot(brainRoot), p.accessToken); gb != nil {
 			source = gb
 			if table := gb.EndpointTable(); len(table) > 0 {
 				fmt.Printf("  → Grey-box: mapped %d endpoint(s) to source handlers\n\n", len(table))
@@ -1129,7 +1141,7 @@ func runAgenticDast(p agenticParams) {
 		// then run everything through adversarial triage (Phase 1).
 		all := append(baseline, agenticFindingsFromCandidates(res.Findings)...) //nolint:gocritic
 		if len(all) > 0 {
-			if verdicts, terr := ai.TriageWithContext(all, p.accessToken, loadRetriever(".", p.accessToken)); terr == nil {
+			if verdicts, terr := brain.triage(all, p.accessToken, loadRetriever(greyBoxRoot(brainRoot), p.accessToken)); terr == nil {
 				for i := range all {
 					if v, ok := verdicts[all[i].ID]; ok {
 						all[i].Verdict = v.Verdict
@@ -1139,6 +1151,9 @@ func runAgenticDast(p agenticParams) {
 				}
 			}
 		}
+
+		// Memory: write what this run proved so the next one starts smarter.
+		brain.learn(all, res.Findings)
 
 		// AI synthesis — plain-English explanation + fix actions per finding, the
 		// same pass the one-shot scan runs. Without it, Simply/Actions are empty
