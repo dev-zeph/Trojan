@@ -31,6 +31,24 @@ Third party: supabase, stripe. Framework: nextjs.
 
 lib/db.js creates a service-role Supabase client on the server (fine on the server; only a problem if reached from client code).
 
+## storeapp (Next.js + better-sqlite3, end-to-end code flaws)
+
+Exercises graph.Detect / the `trojan` scanner (scanners.GraphChecks) and get_attack_paths `code_flaws`. Modeled on a real miss: login SQL built with a template literal, and a public contact form rendered as raw HTML on the admin page.
+
+| ID | File | Expectation |
+|---|---|---|
+| S1 | app/api/auth/login/route.ts POST | FLAG (critical, `trojan.sql-injection`): `prepare(\`... '${email}' ...\`)` with email from `req.json()`, no auth. |
+| S2 | app/api/auth/login-safe/route.ts POST | SAFE: bound `?` parameter. Not concat, not request-input SQL. |
+| S3 | app/api/search/route.ts GET | SAFE: postgres.js tagged template `sql\`... ${q}\``. No SQL sink flagged. |
+| S4 | app/api/stats/route.ts GET | SAFE: @vercel/postgres `sql\`\`` and `db.execute(sql\`...\`)`. Plain "SQL query execution" sink only. |
+| S5 | app/api/report/route.ts GET | SAFE as a finding: interpolates a constant column list. Kept as a concat sink (graph fact), never request-input SQL. |
+| S6 | app/admin/page.tsx | FLAG (high, `trojan.stored-xss`): fetches `/api/admin/messages` (guarded GET reading `messages`) and renders `m.body` with dangerouslySetInnerHTML; `messages` is written by the public POST /api/contact. |
+| S7 | app/notes/page.tsx | SAFE as a finding: raw-HTML sink, but `notes` is only written by a logged-in route. |
+| S8 | app/inbox/page.tsx | SAFE: value passed through DOMPurify.sanitize, so not a sink. |
+| - | lib/db.ts seed() | getDb() seeds users/notes/messages on first use; these writes must not count as public routes writing those tables. |
+
+Exactly 2 findings: S1 and S6. Fixing S1 (bound parameters) and S6 (render as text) leaves 0. vibeapp #5 (export) is also reported as `trojan.sql-injection`; no other fixture produces code flaws.
+
 ## pyapp (FastAPI + Flask + Supabase + psycopg2)
 
 | ID | File | Expectation |

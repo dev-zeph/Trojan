@@ -79,6 +79,7 @@ func DefaultScanners() []Scanner {
 		Gitleaks{},
 		Checkov{},
 		&Syft{},
+		GraphChecks{},
 	}
 
 	available := []Scanner{}

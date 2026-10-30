@@ -68,6 +68,8 @@ func RelevantScanners(all []Scanner, p ProjectType) []Scanner {
 			}
 		case "syft":
 			relevant = append(relevant, s) // always generate SBOM
+		case "trojan":
+			relevant = append(relevant, s) // Trojan's own code-graph checks, no binary needed
 		}
 	}
 	return relevant

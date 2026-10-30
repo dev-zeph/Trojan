@@ -33,6 +33,10 @@ type fileHash struct {
 // and file paths were computed against.
 const metaRootKey = "root"
 
+// metaBuilderKey records graph.BuilderVersion for the cached graph; a
+// different (or missing) value forces a full rebuild.
+const metaBuilderKey = "builder"
+
 // Refresh brings the project's persisted graph up to date and returns it.
 //
 // It hashes every source file and compares against the hashes stored with the
@@ -95,7 +99,7 @@ func Refresh(projectRoot string) (*graph.Graph, RefreshStats, error) {
 
 	// The root row is written only alongside a complete hash set, so its
 	// absence (or a different root) means there's no cache to trust.
-	full := prevRoot != root
+	full := prevRoot != root || readBuilder(db) != graph.BuilderVersion
 	changed := make(map[string]bool)
 	if !full {
 		seen := make(map[string]bool, len(cur))
@@ -189,19 +193,29 @@ func readHashes(db *sql.DB) (map[string]fileHash, string, error) {
 	return out, root, nil
 }
 
+// readBuilder returns the graph.BuilderVersion the cached graph was built
+// with, or "" when none was recorded.
+func readBuilder(db *sql.DB) string {
+	var v string
+	if err := db.QueryRow(`SELECT value FROM meta WHERE key = ?`, metaBuilderKey).Scan(&v); err != nil {
+		return ""
+	}
+	return v
+}
+
 // writeHashes replaces the file_hashes table and the recorded root inside tx.
 // A nil hashes clears both, invalidating the Refresh cache.
 func writeHashes(tx *sql.Tx, hashes []fileHash, root string) error {
 	if _, err := tx.Exec(`DELETE FROM file_hashes`); err != nil {
 		return fmt.Errorf("graphstore: clear file hashes: %w", err)
 	}
-	if _, err := tx.Exec(`DELETE FROM meta WHERE key = ?`, metaRootKey); err != nil {
+	if _, err := tx.Exec(`DELETE FROM meta WHERE key IN (?, ?)`, metaRootKey, metaBuilderKey); err != nil {
 		return fmt.Errorf("graphstore: clear meta: %w", err)
 	}
 	if hashes == nil {
 		return nil
 	}
-	if _, err := tx.Exec(`INSERT INTO meta (key, value) VALUES (?, ?)`, metaRootKey, root); err != nil {
+	if _, err := tx.Exec(`INSERT INTO meta (key, value) VALUES (?, ?), (?, ?)`, metaRootKey, root, metaBuilderKey, graph.BuilderVersion); err != nil {
 		return fmt.Errorf("graphstore: write meta: %w", err)
 	}
 	stmt, err := tx.Prepare(`INSERT INTO file_hashes (relpath, language, sha256) VALUES (?, ?, ?)`)
