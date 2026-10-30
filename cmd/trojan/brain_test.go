@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	whitebox "github.com/dev-zeph/trojan/internal/agent"
 	"github.com/dev-zeph/trojan/internal/dast/agent"
 	"github.com/dev-zeph/trojan/internal/memory"
 )
@@ -166,6 +167,111 @@ func TestBrainLearn_RecordsConfirmed(t *testing.T) {
 	}
 	if confirmed != 1 || steps != 1 {
 		t.Errorf("confirmed=%d steps=%d, want 1/1 (%+v)", confirmed, steps, all)
+	}
+}
+
+// A saved hypotheses.json adds a capped "HYPOTHESES TO PROVE" section to the
+// seed, with the stable node keys the pen test needs.
+func TestBrainSeed_HypothesesSection(t *testing.T) {
+	root := t.TempDir()
+	if err := whitebox.SaveHypotheses(root, whitebox.HypothesisFile{
+		Hypotheses: []whitebox.Hypothesis{{
+			ID: "H1", Title: "Public order write",
+			NodeKeys: []string{"app/api/orders/route.ts#POST", "datastore:orders"},
+			Class:    "missing-auth", Method: "POST", Path: "/api/orders",
+			ExpectedEvidence: "unauth POST returns 200 and a row appears in orders",
+			Confidence:       "high",
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	seed := buildBrainSeed(root)
+	for _, want := range []string{
+		"HYPOTHESES TO PROVE", "Public order write",
+		"POST /api/orders", "app/api/orders/route.ts#POST", "datastore:orders",
+	} {
+		if !strings.Contains(seed, want) {
+			t.Errorf("seed missing %q\n---\n%s", want, seed)
+		}
+	}
+	if len(seed) > brainSeedCap {
+		t.Errorf("seed is %d chars, over cap %d", len(seed), brainSeedCap)
+	}
+}
+
+// The section stays bounded even with many long hypotheses (overflow marker).
+func TestHypothesesSection_Capped(t *testing.T) {
+	var hyps []whitebox.Hypothesis
+	for i := 0; i < 30; i++ {
+		hyps = append(hyps, whitebox.Hypothesis{
+			ID: "H", Title: strings.Repeat("long title ", 20),
+			NodeKeys: []string{"app/api/x/route.ts#POST"}, Class: "missing-auth",
+			Method: "POST", Path: "/api/x", ExpectedEvidence: strings.Repeat("evidence ", 20),
+			Confidence: "medium",
+		})
+	}
+	s := hypothesesSectionFrom(hyps)
+	if !strings.Contains(s, "more") {
+		t.Errorf("want an overflow marker when over brainMaxHyps, got:\n%s", s)
+	}
+}
+
+// Unproven hypotheses are recorded as a dated "tested, not proven" fact;
+// proven ones are left to learn (so recordHypothesisOutcomes skips them).
+func TestRecordHypothesisOutcomes(t *testing.T) {
+	root := t.TempDir()
+	b := openBrain(root, "http://localhost:3000")
+	defer b.close()
+
+	hyps := []whitebox.Hypothesis{
+		{ID: "H1", Title: "Public order write", Class: "missing-auth", Method: "POST", Path: "/api/orders", NodeKeys: []string{"datastore:orders"}},
+		{ID: "H2", Title: "SQLi in export", Class: "sql-injection", Method: "GET", Path: "/api/export", NodeKeys: []string{"datastore:invoices"}},
+	}
+	cands := []agent.Candidate{
+		{Title: "Public order write", Severity: "high", URL: "http://localhost:3000/api/orders", Evidence: "200 unauth"},
+	}
+	findings := agenticFindingsFromCandidates(cands)
+	findings[0].Verdict = "confirmed" // proves H1 by path
+
+	b.recordHypothesisOutcomes(hyps, findings)
+
+	all, err := b.store.All()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var facts int
+	for _, e := range all {
+		if e.Kind == memory.KindFact && strings.HasPrefix(e.Title, "Tested, not proven") {
+			facts++
+			if !strings.Contains(e.Title, "SQLi in export") {
+				t.Errorf("wrong unproven hypothesis recorded: %+v", e)
+			}
+		}
+	}
+	if facts != 1 {
+		t.Errorf("want exactly 1 unproven fact (H2), got %d: %+v", facts, all)
+	}
+}
+
+// --no-hypothesize (and black-box / no project root) must skip the white-box
+// step before any graph build or network call: no hypotheses file appears.
+// The access token is junk, so reaching the transport would fail loudly.
+func TestRunHypothesizeStep_Skips(t *testing.T) {
+	root := copyVibeapp(t)
+	for name, c := range map[string]struct {
+		root            string
+		greyBox, noHypo bool
+	}{
+		"no-hypothesize": {root, true, true},
+		"black-box":      {root, false, false},
+		"no-root":        {"", true, false},
+	} {
+		if got := runHypothesizeStep(c.root, "junk-token", c.greyBox, c.noHypo); got != nil {
+			t.Errorf("%s: want skip (nil), got %+v", name, got)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, ".trojan", "hypotheses.json")); err == nil {
+		t.Error("skipped step must not write .trojan/hypotheses.json")
 	}
 }
 

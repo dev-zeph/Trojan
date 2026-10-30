@@ -1,47 +1,91 @@
-// Package agent exposes Trojan's local Code Property Graph (internal/graph) to
-// an AI model as a small set of pentester-style tools, and drives a
-// hypothesis-driven reasoning loop on top of them.
+// Package agent is Trojan's white-box reviewer: a hypothesis loop that reasons
+// over the project's local Code Property Graph (internal/graph) and emits
+// concrete, testable hypotheses for the pen-test agent to prove.
 //
 // The design splits cleanly in two:
 //
-//   - The TOOL LAYER (this file). A Toolbox binds to a built *graph.Graph and
-//     answers typed queries a model can call, the way a pen-tester queries their
-//     notes: list the entrypoints, follow a data flow, look up a symbol, find
-//     the PII, walk a node's neighbours. Each tool has a typed Go signature, a
-//     JSON schema for tool-calling, and a name-addressed Dispatch. This layer is
-//     pure and deterministic (no network, no SDK), so it is fully unit-tested
-//     offline (tools_test.go).
+//   - The TOOL LAYER (this file). A Toolbox binds to a built *graph.Graph (plus,
+//     optionally, a grey-box source reader and the project's memory) and
+//     answers typed, name-addressed queries: list the entrypoints, follow a
+//     data flow, summarise unguarded routes and client exposures, read a
+//     handler, recall past results. It is pure and local, and fully
+//     unit-tested offline (tools_test.go).
 //
-//   - The LOOP (loop.go). It hands those tools to Claude via the Anthropic Go
-//     SDK and asks the model to form one grounded attack hypothesis. The live
-//     call is gated behind ANTHROPIC_API_KEY, so nothing here needs a key (or
-//     spends money) to build or to test.
+//   - The LOOP (loop.go). Each reasoning turn is one stateless call through a
+//     Transport to the hosted whitebox-agent edge function, which holds the
+//     model key, the system prompt and the tool definitions (none of which
+//     ship in this binary: the repo is public). Tool calls the model requests
+//     are executed HERE and their compact results sent back next turn.
 //
-// Privacy note: the graph and these tools run entirely locally. Only the minimal
-// slices a tool returns (symbol names, file:line anchors, a severity) ever reach
-// the model, and only when the loop is actually run with a key. Nothing is
-// persisted on Trojan servers.
+// Privacy note: the graph is built and queried locally. Only the capped slices
+// a tool returns (node keys, file:line anchors, short handler snippets) reach
+// the model, and only during a run the user started.
 package agent
 
 import (
 	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/dev-zeph/trojan/internal/graph"
+	"github.com/dev-zeph/trojan/internal/greybox"
+	"github.com/dev-zeph/trojan/internal/memory"
 )
 
-// Toolbox binds the tool layer to one built graph. It holds no other state, so
-// it is safe to construct per run and cheap to reuse across tool calls.
+// Caps that keep every tool result small: a result is resent on every later
+// turn of the run, so its size is paid for repeatedly.
+const (
+	maxToolResult   = 6000 // characters of JSON per tool result
+	maxListItems    = 25   // nodes / paths per list result
+	maxChunkCode    = 1500 // characters of source per read_source chunk
+	maxSourceChunks = 3
+	maxHistory      = 20
+)
+
+// SourceReader reads the project's own source by endpoint, symbol or query
+// (implemented by *greybox.Source). Optional.
+type SourceReader interface {
+	ReadSource(req greybox.ReadSourceRequest) (greybox.ReadSourceResult, error)
+}
+
+// HistorySource is the project's security memory (implemented by
+// *memory.Store). Optional.
+type HistorySource interface {
+	All() ([]memory.Event, error)
+}
+
+// Toolbox binds the tool layer to one built graph, plus the optional source
+// reader and memory. Safe to construct per run.
 type Toolbox struct {
-	g *graph.Graph
+	g       *graph.Graph
+	source  SourceReader
+	history HistorySource
+	keys    map[string]bool
 }
 
 // NewToolbox wraps a built graph so the tools can query it.
 func NewToolbox(g *graph.Graph) *Toolbox {
-	return &Toolbox{g: g}
+	keys := make(map[string]bool, len(g.Nodes))
+	for _, n := range g.Nodes {
+		if n.Key != "" {
+			keys[n.Key] = true
+		}
+	}
+	return &Toolbox{g: g, keys: keys}
 }
+
+// WithSource enables read_source. Without one it answers with a note.
+func (t *Toolbox) WithSource(s SourceReader) *Toolbox { t.source = s; return t }
+
+// WithHistory enables get_security_history.
+func (t *Toolbox) WithHistory(h HistorySource) *Toolbox { t.history = h; return t }
+
+// HasKey reports whether the graph contains a node with this stable key. The
+// loop uses it to reject hypotheses that name nodes the model invented.
+func (t *Toolbox) HasKey(key string) bool { return t.keys[key] }
+
+// Graph returns the graph the toolbox queries.
+func (t *Toolbox) Graph() *graph.Graph { return t.g }
 
 // NodeView is the model-facing projection of a graph node: the same fields plus
 // a precomputed "file:line" Location, which is what the model cites in a
@@ -58,11 +102,17 @@ type NodeView struct {
 	PII      bool   `json:"pii"`
 	SinkRule string `json:"sink_rule,omitempty"`
 	Severity string `json:"severity,omitempty"`
+	Key      string `json:"key,omitempty"`
+	Guarded  bool   `json:"guarded,omitempty"`
+	Client   bool   `json:"client_side,omitempty"`
 }
 
 func viewOf(n graph.Node) NodeView {
 	return NodeView{
 		ID:       n.ID,
+		Key:      n.Key,
+		Guarded:  n.Guarded,
+		Client:   n.ClientSide,
 		Kind:     string(n.Kind),
 		Name:     n.Name,
 		File:     n.File,
@@ -232,64 +282,6 @@ func (t *Toolbox) Neighbors(nodeID int, edgeKind string) ([]NodeView, error) {
 	return out, nil
 }
 
-// ---- Tool-calling contract ------------------------------------------------
-
-// ToolSpec is one tool advertised to the model: its name, a description the
-// model reads to decide when to call it, and the JSON schema of its input. It is
-// deliberately SDK-agnostic (plain maps), so the tool layer carries no
-// dependency on the Anthropic SDK; the loop translates these into SDK tool
-// params.
-type ToolSpec struct {
-	Name        string
-	Description string
-	Properties  map[string]any
-	Required    []string
-}
-
-// ToolSpecs returns the JSON-schema definitions for the five graph tools, in a
-// stable order. emit_finding (the loop's terminal tool) is defined by the loop,
-// not here, because it is a control-flow concern rather than a graph query.
-func ToolSpecs() []ToolSpec {
-	return []ToolSpec{
-		{
-			Name:        "list_entrypoints",
-			Description: "List the untrusted entrypoints (HTTP handler functions) where attacker-controlled input enters the code. Start here. Returns node ids you pass to the other tools.",
-			Properties:  map[string]any{},
-		},
-		{
-			Name:        "get_dataflow",
-			Description: "Return the call chain from a source entrypoint to a dangerous sink, if the graph connects them. Use it to confirm tainted input can actually reach the sink before forming a hypothesis.",
-			Properties: map[string]any{
-				"source_id": map[string]any{"type": "integer", "description": "node id of a source entrypoint (from list_entrypoints)"},
-				"sink_id":   map[string]any{"type": "integer", "description": "node id of a sink (from neighbors with edge_kind=contains)"},
-			},
-			Required: []string{"source_id", "sink_id"},
-		},
-		{
-			Name:        "read_context",
-			Description: "Look up graph node(s) by symbol name and get each one's file:line. Use it to resolve a function or callee name you saw in another result to a concrete location.",
-			Properties: map[string]any{
-				"symbol": map[string]any{"type": "string", "description": "a function or callee name, exact or partial (e.g. 'loginHandler' or 'login')"},
-			},
-			Required: []string{"symbol"},
-		},
-		{
-			Name:        "get_pii_nodes",
-			Description: "List the functions flagged as touching PII/PHI (passwords, tokens, emails, medical data). A data flow that crosses one of these is more severe.",
-			Properties:  map[string]any{},
-		},
-		{
-			Name:        "neighbors",
-			Description: "List the nodes directly reachable from a node along outgoing edges. edge_kind 'calls' gives functions it calls, 'contains' gives sinks in its body, 'any' gives both. Use 'contains' to find the sinks inside an entrypoint.",
-			Properties: map[string]any{
-				"node_id":   map[string]any{"type": "integer", "description": "the node id to expand"},
-				"edge_kind": map[string]any{"type": "string", "enum": []string{"calls", "contains", "any"}, "description": "which relationship to follow"},
-			},
-			Required: []string{"node_id"},
-		},
-	}
-}
-
 // Dispatch runs a graph tool by name against the given JSON input and returns
 // the result marshalled as a JSON string, ready to hand back as a tool_result.
 // It is the single choke point the loop calls, and it is also directly
@@ -297,13 +289,13 @@ func ToolSpecs() []ToolSpec {
 // as an error rather than a panic, so a model mistake never takes down the run.
 func (t *Toolbox) Dispatch(name string, input json.RawMessage) (string, error) {
 	switch name {
-	case "list_entrypoints":
-		return toJSON(t.ListEntrypoints())
+	case toolListEntrypoints:
+		return toJSON(capViews(t.ListEntrypoints()))
 
-	case "get_pii_nodes":
-		return toJSON(t.GetPIINodes())
+	case toolGetPIINodes:
+		return toJSON(capViews(t.GetPIINodes()))
 
-	case "get_dataflow":
+	case toolGetDataflow:
 		var in struct {
 			SourceID int `json:"source_id"`
 			SinkID   int `json:"sink_id"`
@@ -317,16 +309,16 @@ func (t *Toolbox) Dispatch(name string, input json.RawMessage) (string, error) {
 		}
 		return toJSON(res)
 
-	case "read_context":
+	case toolReadContext:
 		var in struct {
 			Symbol string `json:"symbol"`
 		}
 		if err := json.Unmarshal(input, &in); err != nil {
 			return "", fmt.Errorf("read_context: bad input: %w", err)
 		}
-		return toJSON(t.ReadContext(in.Symbol))
+		return toJSON(capViews(t.ReadContext(in.Symbol)))
 
-	case "neighbors":
+	case toolNeighbors:
 		var in struct {
 			NodeID   int    `json:"node_id"`
 			EdgeKind string `json:"edge_kind"`
@@ -340,26 +332,54 @@ func (t *Toolbox) Dispatch(name string, input json.RawMessage) (string, error) {
 		}
 		return toJSON(res)
 
+	case toolUnguardedPaths:
+		return toJSON(t.UnguardedPaths())
+
+	case toolClientExposures:
+		return toJSON(t.ClientExposures())
+
+	case toolReadSource:
+		var req greybox.ReadSourceRequest
+		if err := json.Unmarshal(input, &req); err != nil {
+			return "", fmt.Errorf("read_source: bad input: %w", err)
+		}
+		return t.ReadSource(req)
+
+	case toolSecurityHistory:
+		var in struct {
+			NodeKey string `json:"node_key"`
+			File    string `json:"file"`
+		}
+		if len(input) > 0 {
+			if err := json.Unmarshal(input, &in); err != nil {
+				return "", fmt.Errorf("get_security_history: bad input: %w", err)
+			}
+		}
+		return t.SecurityHistory(in.NodeKey, in.File)
+
 	default:
 		return "", fmt.Errorf("unknown tool %q", name)
 	}
 }
 
-// toolNames returns the graph tool names, sorted, for validation and tests.
-func toolNames() []string {
-	specs := ToolSpecs()
-	names := make([]string, 0, len(specs))
-	for _, s := range specs {
-		names = append(names, s.Name)
-	}
-	sort.Strings(names)
-	return names
-}
-
+// toJSON marshals a tool result, capped at maxToolResult characters. A cut
+// result says so, so the model narrows its query instead of assuming it saw
+// everything.
 func toJSON(v any) (string, error) {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return "", err
 	}
+	if len(b) > maxToolResult {
+		return strings.ToValidUTF8(string(b[:maxToolResult]), "") + " ...[truncated: narrow the query]", nil
+	}
 	return string(b), nil
+}
+
+// capViews cuts a node list to maxListItems.
+func capViews(v []NodeView) []NodeView {
+	if len(v) > maxListItems {
+		return v[:maxListItems]
+	}
+	return v
 }

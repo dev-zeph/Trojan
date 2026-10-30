@@ -6,7 +6,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
+	whitebox "github.com/dev-zeph/trojan/internal/agent"
 	"github.com/dev-zeph/trojan/internal/ai"
 	"github.com/dev-zeph/trojan/internal/dast/agent"
 	"github.com/dev-zeph/trojan/internal/graph"
@@ -34,6 +36,7 @@ const (
 	brainMaxMemory   = 8
 	brainMaxFPs      = 8
 	brainEvidenceLen = 160
+	brainMaxHyps     = 8
 )
 
 // buildBrainSeed returns a compact "what we already know" block for the
@@ -60,6 +63,11 @@ func brainSeed(projectRoot, memRoot string) string {
 	}
 	if memRoot != "" {
 		if s := memorySection(memRoot); s != "" {
+			sections = append(sections, s)
+		}
+	}
+	if projectRoot != "" {
+		if s := hypothesesSection(projectRoot); s != "" {
 			sections = append(sections, s)
 		}
 	}
@@ -257,6 +265,46 @@ func memorySection(memRoot string) string {
 	return "MEMORY FROM PAST RUNS\n" + strings.Join(parts, "\n")
 }
 
+// hypothesesSection renders the white-box reviewer's saved hypotheses as a
+// "HYPOTHESES TO PROVE" block for the pen-test seed, capped. Returns "" when
+// there is no .trojan/hypotheses.json or it is empty.
+func hypothesesSection(root string) string {
+	return hypothesesSectionFrom(loadHypotheses(root))
+}
+
+// hypothesesSectionFrom renders an already-loaded set so the dast path can use
+// a fresh in-memory run without re-reading the file.
+func hypothesesSectionFrom(hyps []whitebox.Hypothesis) string {
+	if len(hyps) == 0 {
+		return ""
+	}
+	var lines []string
+	for i, h := range hyps {
+		if i >= brainMaxHyps {
+			lines = append(lines, fmt.Sprintf("- …and %d more", len(hyps)-i))
+			break
+		}
+		line := fmt.Sprintf("- [%s] %s, test %s", h.Confidence, oneLine(h.Title, 100), h.Endpoint())
+		if len(h.NodeKeys) > 0 {
+			line += " (" + strings.Join(h.NodeKeys, ", ") + ")"
+		}
+		if h.ExpectedEvidence != "" {
+			line += "; proof: " + oneLine(h.ExpectedEvidence, 160)
+		}
+		lines = append(lines, line)
+	}
+	return "HYPOTHESES TO PROVE (from Trojan's white-box review of the source; prioritize confirming or refuting each, then report the outcome):\n" + strings.Join(lines, "\n")
+}
+
+// loadHypotheses reads .trojan/hypotheses.json, returning nil on any problem.
+func loadHypotheses(root string) []whitebox.Hypothesis {
+	f, err := whitebox.LoadHypotheses(root)
+	if err != nil || f == nil {
+		return nil
+	}
+	return f.Hypotheses
+}
+
 // nodeLabel renders a graph node as "file#symbol" for the agent.
 func nodeLabel(n graph.Node) string {
 	if n.Key != "" {
@@ -384,6 +432,54 @@ func (b *brainSession) learn(findings []normalizer.Finding, cands []agent.Candid
 		}
 	}
 	return n
+}
+
+// recordHypothesisOutcomes writes what the pen test did with each white-box
+// hypothesis: a proven one is already captured by learn (confirmed finding +
+// replayable attack_step), so here we record only the unproven ones as a fact
+// ("tested, not proven", dated), so the next run does not keep chasing a
+// hypothesis the live probes could not confirm. No-op without memory.
+func (b *brainSession) recordHypothesisOutcomes(hyps []whitebox.Hypothesis, findings []normalizer.Finding) {
+	if b == nil || b.store == nil || len(hyps) == 0 {
+		return
+	}
+	date := time.Now().Format("2006-01-02")
+	for _, h := range hyps {
+		if hypothesisProven(h, findings) {
+			continue
+		}
+		ev := memory.Event{
+			Kind:     memory.KindFact,
+			Title:    "Tested, not proven: " + oneLine(h.Title, 120),
+			Evidence: fmt.Sprintf("White-box %s hypothesis at %s was tested by the pen test on %s and not confirmed.", h.Class, h.Endpoint(), date),
+			Source:   memory.SourceAgent,
+			RuleID:   "whitebox:" + slug(h.Title),
+		}
+		if len(h.NodeKeys) > 0 {
+			ev.NodeKey = h.NodeKeys[0]
+		}
+		b.store.Record(ev) //nolint:errcheck
+	}
+}
+
+// hypothesisProven reports whether a confirmed finding corresponds to the
+// hypothesis: same live endpoint path, or a confirmed finding anchored on one
+// of the hypothesis's node keys / files.
+func hypothesisProven(h whitebox.Hypothesis, findings []normalizer.Finding) bool {
+	for _, f := range findings {
+		if f.Verdict != "confirmed" {
+			continue
+		}
+		if h.Path != "" && (strings.Contains(f.FilePath, h.Path) || strings.Contains(f.RawMessage, h.Path)) {
+			return true
+		}
+		for _, k := range h.NodeKeys {
+			if k != "" && (strings.Contains(f.FilePath, k) || strings.Contains(f.CodeSnippet, k)) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func firstNonEmpty(ss ...string) string {

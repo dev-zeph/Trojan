@@ -1,25 +1,17 @@
 // Command agentdemo builds Trojan's local Code Property Graph for a path and
-// runs the hypothesis-driven agent loop over it.
+// prints the deterministic graph summary (entrypoints, PII, attack paths),
+// which is fully offline and needs no key or token.
 //
-// It always prints the deterministic graph summary (entrypoints, PII, attack
-// paths), which needs no API key. It then runs the live Claude reasoning loop
-// ONLY when ANTHROPIC_API_KEY is set; without a key it prints a clear message
-// and exits cleanly, so the demo is safe to build and run offline.
+// The live white-box reasoning loop is now hosted (the model key and the
+// system prompt live in the whitebox-agent edge function, not in this binary):
+// to run it, use `trojan hypothesize <path>`.
 //
 // Usage:
 //
 //	go run ./cmd/agentdemo [path]        # path defaults to "."
-//
-// Env:
-//
-//	ANTHROPIC_API_KEY    required to run the live loop; absent => graph only
-//	TROJAN_AGENT_MODEL   override the Claude model id (default agent.DefaultModel)
-//	TROJAN_ORG_CONTEXT   free-form org context folded into the model's reasoning
 package main
 
 import (
-	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -55,39 +47,10 @@ func main() {
 	tb := agent.NewToolbox(g)
 	printSummary(root, len(files), g, tb)
 
-	// Gate: no key means no live call. Clear message, clean exit.
-	if strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")) == "" {
-		fmt.Println()
-		fmt.Println("ANTHROPIC_API_KEY is not set, so the live reasoning loop is disabled.")
-		fmt.Println("The graph and tool layer above ran fully offline. Set ANTHROPIC_API_KEY to")
-		fmt.Println("have Claude form an attack hypothesis over this graph.")
-		return
-	}
-
 	fmt.Println()
-	fmt.Println("== Running hypothesis loop (Claude) ==")
-	cfg := agent.Config{
-		Model:      os.Getenv("TROJAN_AGENT_MODEL"),
-		OrgContext: os.Getenv("TROJAN_ORG_CONTEXT"),
-		Logf:       func(format string, args ...any) { fmt.Printf("  "+format+"\n", args...) },
-	}
-
-	finding, err := agent.RunHypothesisLoop(context.Background(), tb, cfg)
-	if err != nil {
-		if errors.Is(err, agent.ErrNoFinding) {
-			fmt.Println("The model finished without emitting a finding.")
-			return
-		}
-		fmt.Fprintln(os.Stderr, "hypothesis loop:", err)
-		os.Exit(1)
-	}
-
-	fmt.Println()
-	fmt.Println("== Finding ==")
-	fmt.Printf("Hypothesis: %s\n", finding.Hypothesis)
-	fmt.Printf("Severity:   %s\n", finding.Severity)
-	fmt.Printf("Path:       %s\n", strings.Join(finding.Path, " -> "))
-	fmt.Printf("Rationale:  %s\n", finding.Rationale)
+	fmt.Println("The graph and tool layer above ran fully offline. To have Trojan's")
+	fmt.Println("hosted white-box reviewer form attack hypotheses over this graph,")
+	fmt.Println("run `trojan hypothesize " + root + "` (uses Trojan Tokens).")
 }
 
 // goFiles returns the Go source files under root, reusing rag.WalkSource's
