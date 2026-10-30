@@ -63,6 +63,17 @@ export function FindingDetail({ finding, onBack, onAction }: Props) {
         </a>
       </div>
 
+      {/* Source location (grey-box runs) */}
+      {finding.source_file && (
+        <div className="space-y-2 border-t border-border pt-8">
+          <p className="text-xs uppercase tracking-widest text-muted-foreground">Code</p>
+          <p className="text-sm font-mono break-all text-foreground">
+            {finding.source_file}
+            {finding.source_line ? `:${finding.source_line}` : ''}
+          </p>
+        </div>
+      )}
+
       {/* HTTP request snippet */}
       {finding.CodeSnippet && (
         <div className="space-y-2 border-t border-border pt-8">

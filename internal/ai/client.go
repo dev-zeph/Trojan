@@ -3,6 +3,8 @@ package ai
 import (
 	"bytes"
 	"crypto/md5"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -118,7 +120,7 @@ func SynthesizeFinding(finding normalizer.Finding, accessToken string, familiari
 	}
 
 	payload := map[string]any{
-		"ruleId":          finding.RuleID,
+		"ruleId":          synthesisRuleID(finding),
 		"scanner":         finding.Scanner,
 		"category":        finding.Category,
 		"severity":        string(finding.Severity),
@@ -179,6 +181,27 @@ func SynthesizeFinding(finding normalizer.Finding, accessToken string, familiari
 	return &synthesis, nil
 }
 
+// synthesisRuleID is the rule id sent to the synthesize edge function, which
+// caches explanations server-side by (rule id, scanner, familiarity). For a
+// real scanner rule that is right: every hit of one Semgrep rule shares an
+// explanation. But every agent-reported finding has RuleID "agentic" (and some
+// findings have none), so they all collided on one cache row and every agentic
+// finding got the first one's explanation (a login-bypass explanation on a
+// health-endpoint leak). Those findings get a per-finding id derived from
+// their own content instead, so each gets its own explanation. The local cache
+// key uses it too, which also retires entries poisoned by the shared row.
+func synthesisRuleID(f normalizer.Finding) string {
+	if f.RuleID != "" && f.RuleID != agenticRuleID {
+		return f.RuleID
+	}
+	prefix := f.RuleID
+	if prefix == "" {
+		prefix = "finding"
+	}
+	h := sha256.Sum256([]byte(f.Scanner + "\x00" + f.Title + "\x00" + f.FilePath + "\x00" + f.CodeSnippet + "\x00" + f.RawMessage))
+	return prefix + ":" + hex.EncodeToString(h[:8])
+}
+
 // cachePath returns the local cache file path for a finding.
 // The key includes a 4-byte hash of the code snippet + file path + familiarity
 // so that the same rule at different tone levels gets its own cached explanation.
@@ -188,7 +211,7 @@ func SynthesizeFinding(finding normalizer.Finding, accessToken string, familiari
 func cachePath(f normalizer.Finding, familiarity int) string {
 	home, _ := os.UserHomeDir()
 	h := md5.Sum([]byte(f.CodeSnippet + f.FilePath + fmt.Sprintf("%d", familiarity)))
-	key := fmt.Sprintf("%s-%s-%x.json", sanitize(f.RuleID), sanitize(f.Scanner), h[:4])
+	key := fmt.Sprintf("%s-%s-%x.json", sanitize(synthesisRuleID(f)), sanitize(f.Scanner), h[:4])
 	return filepath.Join(home, ".trojan", "cache", key)
 }
 

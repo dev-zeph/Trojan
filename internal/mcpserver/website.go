@@ -78,15 +78,48 @@ func handleGetWebsiteFindings(ctx context.Context, req mcp.CallToolRequest) (*mc
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 	result := struct {
-		URL      string               `json:"url"`
-		TestedAt time.Time            `json:"tested_at"`
-		Findings []normalizer.Finding `json:"findings"`
-	}{scan.ProjectPath, scan.Timestamp, scan.Findings}
+		URL      string           `json:"url"`
+		TestedAt time.Time        `json:"tested_at"`
+		Findings []websiteFinding `json:"findings"`
+	}{scan.ProjectPath, scan.Timestamp, toWebsiteFindings(scan.Findings)}
 	data, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
 		return mcp.NewToolResultError("failed to serialize findings"), nil
 	}
 	return mcp.NewToolResultText(string(data)), nil
+}
+
+// websiteFinding is a stored website finding as get_website_findings returns
+// it: every Finding field (FilePath stays the probed URL for older clients;
+// url, source_file and source_line are on Finding) plus a ready-to-use
+// "location" ("app/api/admin/customers/route.ts:12") when Trojan placed the
+// finding in the project's source.
+type websiteFinding struct {
+	normalizer.Finding
+	Location string `json:"location,omitempty"`
+}
+
+func toWebsiteFindings(fs []normalizer.Finding) []websiteFinding {
+	out := make([]websiteFinding, len(fs))
+	for i, f := range fs {
+		if f.URL == "" && f.Category == "dast" {
+			f.URL = f.FilePath // results saved before url existed
+		}
+		out[i] = websiteFinding{Finding: f, Location: sourceLocation(f)}
+	}
+	return out
+}
+
+// sourceLocation renders a website finding's source anchor as "file:line"
+// (or just "file" when the line is unknown); "" when there is none.
+func sourceLocation(f normalizer.Finding) string {
+	if f.SourceFile == "" {
+		return ""
+	}
+	if f.SourceLine > 0 {
+		return fmt.Sprintf("%s:%d", f.SourceFile, f.SourceLine)
+	}
+	return f.SourceFile
 }
 
 // ── Starting website tests from an AI tool ───────────────────────────────────

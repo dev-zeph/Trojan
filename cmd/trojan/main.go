@@ -700,6 +700,7 @@ func dastCmd() *cobra.Command {
 			// Adversarially verify each finding against its own evidence so real
 			// issues are separated from scanner noise (agentic DAST Phase 1).
 			if len(findings) > 0 {
+				normalizer.EnsureUniqueIDs(findings)
 				fmt.Printf("  → Triaging %d finding(s) for false positives...\n", len(findings))
 				if verdicts, terr := ai.TriageWithContext(findings, accessToken, loadRetriever(".", accessToken)); terr != nil {
 					color.Yellow("  Triage skipped (%s)\n\n", terr)
@@ -1089,8 +1090,9 @@ func runAgenticDast(p agenticParams) {
 		task += "\n\n" + seed
 	}
 	var source agent.SourceReader
+	var gb *greybox.Source // kept to anchor findings on source after the run
 	if p.greyBox {
-		if gb := buildGreyBox(greyBoxRoot(brainRoot), p.accessToken); gb != nil {
+		if gb = buildGreyBox(greyBoxRoot(brainRoot), p.accessToken); gb != nil {
 			source = gb
 			if table := gb.EndpointTable(); len(table) > 0 {
 				fmt.Printf("  → Grey-box: mapped %d endpoint(s) to source handlers\n\n", len(table))
@@ -1160,6 +1162,15 @@ func runAgenticDast(p agenticParams) {
 		// Merge the agent's evidence-anchored candidates with the Nuclei baseline,
 		// then run everything through adversarial triage (Phase 1).
 		all := append(baseline, agenticFindingsFromCandidates(res.Findings)...) //nolint:gocritic
+		// Grey-box: anchor each finding on its handler (file + line) and give
+		// triage/synthesis that code. Then make IDs unique, since verdicts are
+		// keyed by ID.
+		var loc sourceLocator
+		if gb != nil {
+			loc = gb
+		}
+		locateWebsiteFindings(all, loc)
+		normalizer.EnsureUniqueIDs(all)
 		if len(all) > 0 {
 			if verdicts, terr := brain.triage(all, p.accessToken, loadRetriever(greyBoxRoot(brainRoot), p.accessToken)); terr == nil {
 				for i := range all {
@@ -1415,13 +1426,61 @@ func agenticFindingsFromCandidates(cs []agent.Candidate) []normalizer.Finding {
 			Severity:    parseAgentSeverity(c.Severity),
 			Title:       c.Title,
 			RawMessage:  c.Rationale,
-			FilePath:    c.URL,
+			FilePath:    c.URL, // kept as the URL: UIs link it, memory matches on it
+			URL:         c.URL,
+			SourceFile:  c.File,
+			SourceLine:  c.Line,
 			CodeSnippet: c.Evidence,
 			RuleID:      "agentic",
 			Status:      normalizer.StatusOpen,
 		})
 	}
 	return out
+}
+
+// sourceLocator is the slice of *greybox.Source that locateWebsiteFindings
+// needs; an interface so it can be faked in tests.
+type sourceLocator interface {
+	Locate(method, rawURL string) (string, int, bool)
+	ProjectFile(file string) (string, bool)
+	HandlerSource(file string, line int) string
+}
+
+// locateWebsiteFindings fills URL on website findings and, in grey-box runs,
+// anchors them on project source. A file the agent reported is kept only if it
+// is a real file inside the project; otherwise (or when the agent named none)
+// the finding's URL is resolved through the route table to its handler's file
+// and line. When a location is known and the finding has no code context, the
+// handler's code is attached as SurroundingCode so triage and the explanation
+// can tie the live evidence to the code. loc is nil in black-box runs.
+func locateWebsiteFindings(findings []normalizer.Finding, loc sourceLocator) {
+	for i := range findings {
+		f := &findings[i]
+		if f.Category != "dast" {
+			continue
+		}
+		if f.URL == "" {
+			f.URL = f.FilePath
+		}
+		if loc == nil {
+			continue
+		}
+		if f.SourceFile != "" {
+			if rel, ok := loc.ProjectFile(f.SourceFile); ok {
+				f.SourceFile = rel
+			} else {
+				f.SourceFile, f.SourceLine = "", 0
+			}
+		}
+		if f.SourceFile == "" {
+			if file, line, ok := loc.Locate("", f.URL); ok {
+				f.SourceFile, f.SourceLine = file, line
+			}
+		}
+		if f.SourceFile != "" && f.SurroundingCode == "" {
+			f.SurroundingCode = loc.HandlerSource(f.SourceFile, f.SourceLine)
+		}
+	}
 }
 
 // synthesizeFindings populates Simply/Actions/etc. on each finding via the AI

@@ -10,6 +10,9 @@ export interface Finding {
   RawMessage: string
   FilePath: string      // matched-at URL for DAST findings
   LineNumber: number
+  url?: string          // probed URL (same as FilePath for website findings)
+  source_file?: string  // grey-box: project file of the handler, when known
+  source_line?: number  // grey-box: line in source_file, 0/absent if unknown
   CodeSnippet: string   // HTTP request snippet
   RuleID: string
   Status: Status
