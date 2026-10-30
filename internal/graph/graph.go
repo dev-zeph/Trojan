@@ -77,6 +77,12 @@ type Node struct {
 	// ClientSide is true for code that runs in the browser (e.g. a "use client"
 	// file), where secrets and privileged clients must never appear.
 	ClientSide bool `json:"client_side,omitempty"`
+	// Batches records which language batches (BatchGo, BatchJS, BatchPython)
+	// produced this node. Funcs and sinks have exactly one; a datastore that
+	// several languages touch has one per language. Set by the build, kept by
+	// graphstore, and used by incremental Refresh to drop a batch's nodes
+	// before rebuilding it. Internal bookkeeping, so not part of the JSON.
+	Batches []string `json:"-"`
 }
 
 // Edge is a directed relationship between two nodes.
