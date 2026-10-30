@@ -161,6 +161,13 @@ type AttackPath struct {
 	Via      []Node // function chain from source to the function holding the sink (inclusive)
 	Severity string
 	TouchPII bool // any function along the path touches PII/PHI
+	// Guarded is true when any function on the chain is Guarded (checks
+	// auth itself or sits behind auth middleware).
+	Guarded bool
+	// Access says how the path ends: EdgeContains for a sink, EdgeReads or
+	// EdgeWrites when Sink is a KindDataStore node. Empty from Paths() on
+	// graphs built before datastores existed is treated as EdgeContains.
+	Access EdgeKind
 }
 
 // Paths returns every source->sink route in the graph, discovered by walking the
@@ -200,6 +207,8 @@ func (g *Graph) Paths() []AttackPath {
 					Via:      chain,
 					Severity: sink.Severity,
 					TouchPII: g.chainTouchesPII(chain),
+					Guarded:  chainGuarded(chain),
+					Access:   EdgeContains,
 				})
 			}
 			for _, next := range calls[cur] {
@@ -235,4 +244,117 @@ func (g *Graph) chainTouchesPII(chain []Node) bool {
 		}
 	}
 	return false
+}
+
+func chainGuarded(chain []Node) bool {
+	for _, n := range chain {
+		if n.Guarded {
+			return true
+		}
+	}
+	return false
+}
+
+// UnguardedPaths answers "which public entrypoints reach data or a dangerous
+// call with no auth in the way?": from every Source function that is not
+// Guarded, walk call edges (never through a Guarded function) and report
+// each sink and each datastore read or write reached. Datastore writes rank
+// "high", reads "medium"; sinks keep their own severity. Client-side code is
+// not an entrypoint here; see ClientExposures.
+func (g *Graph) UnguardedPaths() []AttackPath {
+	calls := make(map[int][]int)
+	reach := make(map[int][]Edge) // func -> contains/reads/writes edges
+	for _, e := range g.Edges {
+		switch e.Kind {
+		case EdgeCalls:
+			calls[e.Src] = append(calls[e.Src], e.Dst)
+		case EdgeContains, EdgeReads, EdgeWrites:
+			reach[e.Src] = append(reach[e.Src], e)
+		}
+	}
+	var paths []AttackPath
+	for _, n := range g.Nodes {
+		if n.Kind != KindFunc || !n.Source || n.Guarded {
+			continue
+		}
+		prev := map[int]int{n.ID: -1}
+		queue := []int{n.ID}
+		for len(queue) > 0 {
+			cur := queue[0]
+			queue = queue[1:]
+			for _, e := range reach[cur] {
+				target := g.Nodes[e.Dst]
+				sev := target.Severity
+				switch e.Kind {
+				case EdgeWrites:
+					sev = "high"
+				case EdgeReads:
+					sev = "medium"
+				}
+				chain := g.rebuild(prev, cur)
+				paths = append(paths, AttackPath{
+					Source: n, Sink: target, Via: chain, Severity: sev,
+					TouchPII: g.chainTouchesPII(chain), Access: e.Kind,
+				})
+			}
+			for _, next := range calls[cur] {
+				if _, seen := prev[next]; seen || g.Nodes[next].Guarded {
+					continue
+				}
+				prev[next] = cur
+				queue = append(queue, next)
+			}
+		}
+	}
+	return paths
+}
+
+// ClientExposure is browser code that reaches something only servers may
+// hold: the service-role client, a server-only module, or another
+// high-severity sink.
+type ClientExposure struct {
+	Client  Node   // the ClientSide function
+	Reached Node   // the sink reached
+	Via     []Node // call chain from Client to the function holding Reached
+}
+
+// ClientExposures reports, for every ClientSide function, the service-role
+// clients, server-only imports and high-severity sinks it reaches through
+// call edges. Each is a secret or privilege shipped to the browser.
+func (g *Graph) ClientExposures() []ClientExposure {
+	calls := make(map[int][]int)
+	contains := make(map[int][]int)
+	for _, e := range g.Edges {
+		switch e.Kind {
+		case EdgeCalls:
+			calls[e.Src] = append(calls[e.Src], e.Dst)
+		case EdgeContains:
+			contains[e.Src] = append(contains[e.Src], e.Dst)
+		}
+	}
+	var out []ClientExposure
+	for _, n := range g.Nodes {
+		if n.Kind != KindFunc || !n.ClientSide {
+			continue
+		}
+		prev := map[int]int{n.ID: -1}
+		queue := []int{n.ID}
+		for len(queue) > 0 {
+			cur := queue[0]
+			queue = queue[1:]
+			for _, s := range contains[cur] {
+				sink := g.Nodes[s]
+				if sink.SinkRule == ruleServiceRole || sink.SinkRule == ruleServerOnly || sink.Severity == "high" {
+					out = append(out, ClientExposure{Client: n, Reached: sink, Via: g.rebuild(prev, cur)})
+				}
+			}
+			for _, next := range calls[cur] {
+				if _, seen := prev[next]; !seen {
+					prev[next] = cur
+					queue = append(queue, next)
+				}
+			}
+		}
+	}
+	return out
 }
