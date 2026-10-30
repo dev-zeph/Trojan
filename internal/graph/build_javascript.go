@@ -132,6 +132,7 @@ func buildFromJSFiles(ctx context.Context, rt *tswasm.Runtime, lang tswasm.Langu
 		if err := b.walk(ctx, root, -1); err != nil {
 			continue
 		}
+		b.scanRawHTML()
 		p.add(b)
 	}
 
@@ -500,11 +501,17 @@ func (b *jsBuilder) descendChildren(ctx context.Context, nc []tswasm.Node, curFn
 // text) and links it to the function containing it.
 func (b *jsBuilder) addSink(ctx context.Context, n tswasm.Node, callerID int, callee, rule, sev string) {
 	start, _ := n.StartByte(ctx)
+	b.addSinkAt(b.f.line(start), callerID, callee, rule, sev)
+}
+
+// addSinkAt is addSink for a sink found by position rather than by syntax
+// node (see scanRawHTML).
+func (b *jsBuilder) addSinkAt(line, callerID int, callee, rule, sev string) {
 	sinkID := b.g.addNode(Node{
 		Kind:       KindSink,
 		Name:       sinkName(callee),
 		File:       b.f.path,
-		Line:       b.f.line(start),
+		Line:       line,
 		SinkRule:   rule,
 		Severity:   sev,
 		ClientSide: b.directive == "use client",
@@ -686,7 +693,11 @@ func (b *jsBuilder) detectSinks(ctx context.Context, n tswasm.Node, curFn int, c
 			}
 		}
 		if concat {
-			b.addSink(ctx, n, curFn, calleeText, "SQL query built with string concatenation (injection)", "high")
+			rule := RuleSQLConcat
+			if b.sqlFromRequest(ctx, curFn, argNodes) {
+				rule = RuleSQLFromInput
+			}
+			b.addSink(ctx, n, curFn, calleeText, rule, "high")
 		} else if method != "raw" {
 			b.addSink(ctx, n, curFn, calleeText, "SQL query execution", "medium")
 		}

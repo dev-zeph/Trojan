@@ -60,6 +60,9 @@ func mustCall(t *testing.T, h func(context.Context, mcp.CallToolRequest) (*mcp.C
 }
 
 type attackPathsOut struct {
+	Flaws []struct {
+		Rule, Severity, Title, At, Entry, Store string
+	} `json:"code_flaws"`
 	Paths []struct {
 		Route, Entry, Reaches, At, Severity string
 	} `json:"unprotected_paths"`
@@ -440,5 +443,28 @@ func TestFitJSONShrinksToCap(t *testing.T) {
 	text := res.Content[0].(mcp.TextContent).Text
 	if len(text) > maxResponseBytes || !strings.Contains(text, `"truncated":true`) {
 		t.Errorf("fitJSON: %d bytes, %s", len(text), text[:80])
+	}
+}
+
+// get_attack_paths lists the graph's end-to-end code flaws first: the
+// storeapp login SQL injection and the contact -> messages -> admin page
+// stored XSS (internal/testdata/ANSWERS.md, storeapp).
+func TestAttackPathsCodeFlaws(t *testing.T) {
+	out := attackPaths(t, "storeapp")
+	got := map[string]string{}
+	for _, f := range out.Flaws {
+		got[f.Rule] = f.At + " | " + f.Entry + " | " + f.Store + " | " + f.Severity
+	}
+	if len(out.Flaws) != 2 {
+		t.Fatalf("want 2 code flaws, got %+v", out.Flaws)
+	}
+	if v := got["trojan.sql-injection"]; !strings.HasPrefix(v, "app/api/auth/login/route.ts:") || !strings.Contains(v, "POST /api/auth/login") || !strings.HasSuffix(v, "critical") {
+		t.Errorf("sql injection flaw: %q", v)
+	}
+	if v := got["trojan.stored-xss"]; !strings.HasPrefix(v, "app/admin/page.tsx:") || !strings.Contains(v, "POST /api/contact") || !strings.Contains(v, "| messages |") {
+		t.Errorf("stored xss flaw: %q", v)
+	}
+	if fl := attackPaths(t, "vibeapp").Flaws; len(fl) != 1 || fl[0].Rule != "trojan.sql-injection" {
+		t.Errorf("vibeapp: want only the export SQL injection (#5), got %+v", fl)
 	}
 }

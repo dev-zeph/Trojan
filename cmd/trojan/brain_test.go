@@ -289,3 +289,21 @@ func TestOpenBrain_SiteMemory(t *testing.T) {
 		t.Errorf("memRoot %q not under HOME", b.memRoot)
 	}
 }
+
+// The seed leads its graph section with the end-to-end code flaws and names
+// the rule on high-severity sinks, so the agent is pointed at the injectable
+// export query rather than a generic "calls pool.query".
+func TestBrainSeed_CodeFlawsFirst(t *testing.T) {
+	root := copyVibeapp(t)
+	seed := buildBrainSeed(root)
+	flaws := strings.Index(seed, "Code flaws the graph traced end to end")
+	unguarded := strings.Index(seed, "Unguarded entrypoints")
+	if flaws < 0 || unguarded < 0 || flaws > unguarded {
+		t.Fatalf("code flaws section missing or not first:\n%s", seed)
+	}
+	for _, want := range []string{"SQL injection: request input is built into a SQL query", "app/api/export/route.ts", "[SQL query built from request input (SQL injection)]"} {
+		if !strings.Contains(seed, want) {
+			t.Errorf("seed missing %q\n---\n%s", want, seed)
+		}
+	}
+}

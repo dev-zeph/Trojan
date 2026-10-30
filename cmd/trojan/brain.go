@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -161,6 +162,17 @@ func graphSection(root string) string {
 		}
 		reached[src] = appendUnique(reached[src], accessLabel(p))
 	}
+	// Routes reaching a high-severity sink (SQL from request input, ...) go
+	// first, and within a row those sinks are listed before plain reads and
+	// writes, so the per-row and per-list caps never hide them.
+	for _, src := range order {
+		sort.SliceStable(reached[src], func(i, j int) bool {
+			return strings.Contains(reached[src][i], " [") && !strings.Contains(reached[src][j], " [")
+		})
+	}
+	sort.SliceStable(order, func(i, j int) bool {
+		return hasFlagged(reached[order[i]]) && !hasFlagged(reached[order[j]])
+	})
 	var lines []string
 	for i, src := range order {
 		if i >= brainMaxExposed {
@@ -174,7 +186,28 @@ func graphSection(root string) string {
 		lines = append(lines, fmt.Sprintf("- %s [no auth] %s", src, strings.Join(r, ", ")))
 	}
 	var b strings.Builder
+	if ds := graph.Detect(g, root); len(ds) > 0 {
+		var dl []string
+		for i, d := range ds {
+			if i >= brainMaxPaths {
+				dl = append(dl, fmt.Sprintf("- …and %d more", len(ds)-i))
+				break
+			}
+			line := fmt.Sprintf("- [%s] %s at %s:%d", d.Severity, d.Title, nodeLabel(d.Sink), d.Sink.Line)
+			if d.Entry.Key != "" || d.Entry.Name != "" {
+				line += ", via " + nodeLabel(d.Entry)
+			}
+			if d.Store != "" {
+				line += " (stored in " + d.Store + ")"
+			}
+			dl = append(dl, line)
+		}
+		b.WriteString("Code flaws the graph traced end to end (prove these first):\n" + strings.Join(dl, "\n"))
+	}
 	if len(lines) > 0 {
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
 		b.WriteString("Unguarded entrypoints (no auth check on the way to data; test these first):\n" + strings.Join(lines, "\n"))
 	}
 
@@ -193,15 +226,29 @@ func graphSection(root string) string {
 		b.WriteString("Client exposures (privileged code reachable from the browser; look for leaked keys in served JS):\n" + strings.Join(cl, "\n"))
 	}
 
+	// High-severity paths first; identical lines (the same helper reached
+	// through several call chains) once.
+	all := g.Paths()
+	sort.SliceStable(all, func(i, j int) bool { return all[i].Severity == "high" && all[j].Severity != "high" })
 	var pl []string
-	for _, p := range g.Paths() {
+	seenPath := map[string]bool{}
+	for _, p := range all {
 		if len(pl) >= brainMaxPaths {
 			break
 		}
 		if p.Guarded {
 			continue
 		}
-		pl = append(pl, fmt.Sprintf("- %s → %s (%s)", nodeLabel(p.Source), p.Sink.Name, p.Severity))
+		what := p.Severity
+		if p.Severity == "high" && p.Sink.SinkRule != "" {
+			what += ": " + p.Sink.SinkRule
+		}
+		line := fmt.Sprintf("- %s → %s (%s)", nodeLabel(p.Source), p.Sink.Name, what)
+		if seenPath[line] {
+			continue
+		}
+		seenPath[line] = true
+		pl = append(pl, line)
 	}
 	if len(pl) > 0 {
 		if b.Len() > 0 {
@@ -325,7 +372,20 @@ func accessLabel(p graph.AttackPath) string {
 	case graph.EdgeReads:
 		return "reads " + p.Sink.Name
 	}
+	if p.Sink.Severity == "high" && p.Sink.SinkRule != "" {
+		return "calls " + p.Sink.Name + " [" + p.Sink.SinkRule + "]"
+	}
 	return "calls " + p.Sink.Name
+}
+
+// hasFlagged reports whether any access label names a high-severity rule.
+func hasFlagged(labels []string) bool {
+	for _, l := range labels {
+		if strings.Contains(l, " [") {
+			return true
+		}
+	}
+	return false
 }
 
 // oneLine collapses whitespace and trims s to max characters.

@@ -16,6 +16,12 @@
 // graph to SQLite + sqlite-vec instead of holding it in memory.
 package graph
 
+// BuilderVersion identifies what the builders detect. Bump it whenever a
+// builder starts producing different nodes or edges for the same source (a
+// new sink, a changed rule), so graphstore.Refresh rebuilds cached graphs
+// instead of serving ones built by older detection logic.
+const BuilderVersion = "3"
+
 // NodeKind classifies a graph node.
 type NodeKind string
 

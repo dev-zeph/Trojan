@@ -379,3 +379,35 @@ func TestRefresh_TSConfigChangeRebuildsJSBatch(t *testing.T) {
 		t.Fatalf("tsconfig edit should re-parse the 2 TS files (not Go), got %+v", st)
 	}
 }
+
+// A graph cached by an older builder (different graph.BuilderVersion) is
+// rebuilt in full, so new sinks and rules reach projects whose files did not
+// change.
+func TestRefresh_BuilderVersionChangeRebuilds(t *testing.T) {
+	dir := t.TempDir()
+	writeProject(t, dir, refreshFixture)
+	if _, _, err := Refresh(dir); err != nil {
+		t.Fatal(err)
+	}
+	db, err := open(filepath.Join(dir, DefaultDBPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := readBuilder(db); got != graph.BuilderVersion {
+		t.Fatalf("builder version recorded as %q, want %q", got, graph.BuilderVersion)
+	}
+	if _, err := db.Exec(`UPDATE meta SET value = 'old' WHERE key = ?`, metaBuilderKey); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	_, st, err := Refresh(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.FilesReparsed != st.FilesTotal {
+		t.Fatalf("want full rebuild after a builder change, got %+v", st)
+	}
+	if _, st, err := Refresh(dir); err != nil || st.FilesReparsed != 0 {
+		t.Fatalf("second refresh should hit the cache: %+v, %v", st, err)
+	}
+}

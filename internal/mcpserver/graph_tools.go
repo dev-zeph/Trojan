@@ -306,12 +306,14 @@ type exposureView struct {
 func handleAttackPaths(project projectFunc) server.ToolHandlerFunc {
 	return withBrain(project, func(b *brain, req mcp.CallToolRequest) *mcp.CallToolResult {
 		paths, exposures := b.attackPaths()
+		flaws := b.codeFlaws()
 		return fitJSON(25, func(n int) any {
 			out := map[string]any{
+				"code_flaws":        capN(flaws, n),
 				"unprotected_paths": capN(paths, n),
 				"browser_exposures": capN(exposures, n),
-				"total":             len(paths) + len(exposures),
-				"meaning":           "Each unprotected path is a public route that reaches the listed data or call with no login check on the way. Each browser exposure ships a secret or privileged client to users' browsers.",
+				"total":             len(flaws) + len(paths) + len(exposures),
+				"meaning":           "Each code flaw is a vulnerability the code graph traced end to end (request input built into SQL, public input stored and rendered as raw HTML). Each unprotected path is a public route that reaches the listed data or call with no login check on the way. Each browser exposure ships a secret or privileged client to users' browsers.",
 				"next":              "Fix by checking the signed-in user at the route (see get_security_rules), then run_scan or verify_fix.",
 			}
 			if len(paths) > n || len(exposures) > n {
@@ -368,6 +370,33 @@ func (b *brain) attackPaths() ([]pathView, []exposureView) {
 		})
 	}
 	return paths, exposures
+}
+
+type flawView struct {
+	Rule     string `json:"rule"`
+	Severity string `json:"severity"`
+	Title    string `json:"title"`
+	At       string `json:"at"`
+	Entry    string `json:"entry,omitempty"`
+	Store    string `json:"store,omitempty"`
+	Detail   string `json:"detail"`
+	Key      string `json:"node_key"`
+}
+
+// codeFlaws returns the graph's end-to-end detections (graph.Detect).
+func (b *brain) codeFlaws() []flawView {
+	out := []flawView{}
+	for _, d := range graph.Detect(b.a.G, b.a.Root) {
+		v := flawView{
+			Rule: d.Rule, Severity: d.Severity, Title: d.Title, At: b.a.Loc(d.Sink),
+			Store: d.Store, Detail: d.Message, Key: d.Sink.Key,
+		}
+		if d.Entry.Kind != "" {
+			v.Entry = b.a.Label(d.Entry)
+		}
+		out = append(out, v)
+	}
+	return out
 }
 
 // --- trace_dataflow ---

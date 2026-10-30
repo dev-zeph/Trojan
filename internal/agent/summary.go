@@ -34,7 +34,11 @@ func (t *Toolbox) UnguardedPaths() []RouteExposure {
 			rows[k] = r
 			order = append(order, k)
 		}
-		r.Reaches = appendOnce(r.Reaches, accessOf(p)+" "+nodeKey(p.Sink))
+		reach := accessOf(p) + " " + nodeKey(p.Sink)
+		if p.Access == graph.EdgeContains && p.Sink.Severity == "high" && p.Sink.SinkRule != "" {
+			reach += " [" + p.Sink.SinkRule + "]"
+		}
+		r.Reaches = appendOnce(r.Reaches, reach)
 		r.TouchesPII = r.TouchesPII || p.TouchPII
 	}
 	out := make([]RouteExposure, 0, len(order))

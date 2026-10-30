@@ -136,6 +136,12 @@ func hasUnsafeConcat(ctx context.Context, f *tsFile, n tswasm.Node) bool {
 	if err != nil {
 		return false
 	}
+	// sql`SELECT ... ${id}` is a tagged template (postgres.js, @vercel/postgres,
+	// slonik, drizzle's sql``): the tag receives the values separately and
+	// binds them as parameters, so its ${} are not string building.
+	if kind == "call_expression" && isTaggedTemplate(ctx, n) {
+		return false
+	}
 	// `SELECT ... ${id}` (JS template) and f"SELECT ... {id}" (Python
 	// f-string) interpolate just like "+" does.
 	if (kind == "template_string" || kind == "string") && hasInterpolation(ctx, n) {
@@ -203,6 +209,18 @@ func hasUnsafeConcat(ctx context.Context, f *tsFile, n tswasm.Node) bool {
 		}
 	}
 	return false
+}
+
+// isTaggedTemplate reports whether a JS call_expression is a tagged template
+// literal (tag`...`): its last named child is the template_string itself
+// rather than an arguments list.
+func isTaggedTemplate(ctx context.Context, call tswasm.Node) bool {
+	nc, err := namedChildren(ctx, call)
+	if err != nil || len(nc) < 2 {
+		return false
+	}
+	k, _ := nc[len(nc)-1].Kind(ctx)
+	return k == "template_string"
 }
 
 // hasInterpolation reports whether a string node embeds expressions: a JS
