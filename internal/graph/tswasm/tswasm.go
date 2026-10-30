@@ -72,12 +72,19 @@ type Runtime struct {
 	languageTypeScript api.Function
 }
 
-// NewRuntime compiles and instantiates the embedded tree-sitter WASM module.
-// This does real work (compiling ~6MB of WASM) so callers should reuse one
+// compileCache keeps wazero's compiled form of the embedded module for the
+// life of the process. Compiling ~6MB of WASM is the expensive part of
+// NewRuntime; with the cache, every Runtime after the first in a process
+// (e.g. repeated builds from the desktop app or MCP server) skips it. It is
+// in-memory only, so nothing is written to disk.
+var compileCache = wazero.NewCompilationCache()
+
+// NewRuntime compiles (first call only, see compileCache) and instantiates
+// the embedded tree-sitter WASM module. Callers should still reuse one
 // Runtime across every non-Go file in a build rather than creating one per
-// file.
+// file, since instantiation isn't free either.
 func NewRuntime(ctx context.Context) (*Runtime, error) {
-	rt := wazero.NewRuntime(ctx)
+	rt := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfig().WithCompilationCache(compileCache))
 
 	if _, err := wasi_snapshot_preview1.Instantiate(ctx, rt); err != nil {
 		rt.Close(ctx)
