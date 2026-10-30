@@ -33,12 +33,13 @@ type Limits struct {
 	MaxRedirects     int           // per-probe redirect cap
 }
 
-// DefaultLimits are the shipping defaults from §8 (all configurable).
+// DefaultLimits are the shipping defaults (all configurable). There is no step,
+// request or wall-clock cap: an engagement runs until the agent has covered the
+// surface and finishes, the user's token balance pauses it (resumable), or it
+// stops making progress (see StallSteps in the loop). Rate and size limits stay,
+// since those protect the target, not the budget.
 func DefaultLimits() Limits {
 	return Limits{
-		MaxSteps:         15,
-		MaxRequests:      500,
-		WallClock:        5 * time.Minute,
 		RequestsPerSec:   10,
 		MaxResponseBytes: 256 * 1024,
 		ProbeTimeout:     15 * time.Second,

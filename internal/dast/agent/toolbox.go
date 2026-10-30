@@ -134,6 +134,7 @@ type Toolbox struct {
 	facts    []Fact
 	finished bool
 	summary  string
+	covered  map[string]bool // distinct method+URL pairs probed, for stall detection
 
 	// probe capture store for diff_responses (§6.5 #3). Bounded to the most
 	// recent maxRetainedProbes; probeOrder is the eviction queue (oldest first).
@@ -353,6 +354,25 @@ func (t *Toolbox) NoteFinding(c Candidate) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.findings = append(t.findings, c)
+}
+
+// markCovered records a probed method+URL so the loop can tell new ground from
+// repetition.
+func (t *Toolbox) markCovered(method, url string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.covered == nil {
+		t.covered = make(map[string]bool)
+	}
+	t.covered[strings.ToUpper(method)+" "+url] = true
+}
+
+// Progress is a monotonic count of what the run has learned: distinct probes,
+// findings and facts. If it stops growing, the agent is going in circles.
+func (t *Toolbox) Progress() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.covered) + len(t.findings) + len(t.facts)
 }
 
 // Findings returns a copy of everything recorded so far.

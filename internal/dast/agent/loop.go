@@ -115,6 +115,14 @@ type RunResult struct {
 	Usage      Usage // cumulative across all turns
 }
 
+// StopStalled ends a run that has gone StallSteps turns without probing anything
+// new, recording a finding or learning a fact. It replaces fixed step caps: a
+// thorough engagement keeps going as long as it is still discovering things.
+const StopStalled StopReason = "no new ground covered"
+
+// StallSteps is how many consecutive turns without progress end a run.
+const StallSteps = 6
+
 // StopTokenBudget is the reason surfaced when the cumulative token ceiling trips.
 const StopTokenBudget StopReason = "token budget reached"
 
@@ -189,6 +197,7 @@ func Run(ctx context.Context, tb *Toolbox, tr Transport, opts RunOptions) (*RunR
 		}
 	}
 
+	lastProgress, idle := tb.Progress(), 0
 	for {
 		// Reserve a reasoning turn. A tripped cap ends the run — visibly.
 		if err := tb.Budget().BeginStep(); err != nil {
@@ -253,6 +262,15 @@ func Run(ctx context.Context, tb *Toolbox, tr Transport, opts RunOptions) (*RunR
 
 		if len(toolResults) > 0 || len(outcomes) > 0 {
 			messages = append(messages, followupMessage(toolResults, outcomes))
+		}
+
+		// Stall guard: count turns that added nothing (no new probe, finding or
+		// fact). Pending approvals don't count as idle, the agent is waiting.
+		if p := tb.Progress(); p > lastProgress || len(outcomes) > 0 {
+			lastProgress, idle = p, 0
+		} else if idle++; idle >= StallSteps && !wantEnd {
+			save(StopStalled, false)
+			return finish(result, tb, cum, EventStopped, StopStalled, emit), nil
 		}
 
 		// End only when the agent is done AND nothing was just resolved that it
@@ -335,6 +353,7 @@ func executeTool(ctx context.Context, tb *Toolbox, b blockPeek, step int, emit f
 			return err.Error(), true, false
 		}
 		emit(Event{Type: EventToolResult, Step: step, Tool: toolHTTPProbe, Detail: fmt.Sprintf("%d %s", res.Status, pr.URL)})
+		tb.markCovered(pr.Method, pr.URL)
 		onProbe(tb, pr.Method, pr.URL, step, emit)
 		return marshalResult(res), false, false
 
