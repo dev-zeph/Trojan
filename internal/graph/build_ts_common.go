@@ -131,10 +131,41 @@ func isStringLiteralKind(kind string) bool {
 // or binary_operator "+" (Python) where at least one operand is not a plain
 // string literal (the shape of an interpolated query or command). It mirrors
 // build.go's hasStringConcat/isBasicLit check for the Go path.
-func hasUnsafeConcat(ctx context.Context, n tswasm.Node) bool {
+func hasUnsafeConcat(ctx context.Context, f *tsFile, n tswasm.Node) bool {
 	kind, err := n.Kind(ctx)
 	if err != nil {
 		return false
+	}
+	// `SELECT ... ${id}` (JS template) and f"SELECT ... {id}" (Python
+	// f-string) interpolate just like "+" does.
+	if (kind == "template_string" || kind == "string") && hasInterpolation(ctx, n) {
+		return true
+	}
+	// Python "%"-formatting of a string literal: "... %s" % user_input.
+	if kind == "binary_operator" {
+		if kids, err := allChildren(ctx, n); err == nil && len(kids) >= 3 {
+			lk, _ := kids[0].Kind(ctx)
+			ok, _ := kids[1].Kind(ctx)
+			rk, _ := kids[len(kids)-1].Kind(ctx)
+			if ok == "%" && isStringLiteralKind(lk) && !isStringLiteralKind(rk) {
+				return true
+			}
+		}
+	}
+	// Python str.format on a literal: "... {}".format(user_input).
+	if kind == "call" {
+		if nc, err := namedChildren(ctx, n); err == nil && len(nc) > 1 {
+			if ck, _ := nc[0].Kind(ctx); ck == "attribute" {
+				if cc, err := namedChildren(ctx, nc[0]); err == nil && len(cc) == 2 {
+					ok, _ := cc[0].Kind(ctx)
+					if ok == "string" && f.text(ctx, cc[1]) == "format" {
+						if args, err := namedChildren(ctx, nc[1]); err == nil && len(args) > 0 {
+							return true
+						}
+					}
+				}
+			}
+		}
 	}
 	if kind == "binary_expression" || kind == "binary_operator" {
 		kids, err := allChildren(ctx, n)
@@ -167,7 +198,24 @@ func hasUnsafeConcat(ctx context.Context, n tswasm.Node) bool {
 		return false
 	}
 	for _, k := range kids {
-		if hasUnsafeConcat(ctx, k) {
+		if hasUnsafeConcat(ctx, f, k) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasInterpolation reports whether a string node embeds expressions: a JS
+// template_string with a ${...} template_substitution, or a Python f-string
+// with an {...} interpolation.
+func hasInterpolation(ctx context.Context, n tswasm.Node) bool {
+	kids, err := namedChildren(ctx, n)
+	if err != nil {
+		return false
+	}
+	for _, k := range kids {
+		kk, _ := k.Kind(ctx)
+		if kk == "template_substitution" || kk == "interpolation" {
 			return true
 		}
 	}
