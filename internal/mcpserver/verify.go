@@ -93,13 +93,21 @@ func relPath(root, p string) string {
 
 func handleVerifyFix(project projectFunc) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		projectPath, err := project(ctx, req)
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
 		id, err := req.RequireString("id")
 		if err != nil {
 			return mcp.NewToolResultError("missing required parameter: id"), nil
+		}
+
+		// A website / pen-test finding is verified by replaying its recorded
+		// proof against the live endpoint (seconds), not by re-running the code
+		// scanner. Route those IDs to the targeted retest.
+		if siteDir, _, ok := findWebsiteFinding(id); ok {
+			return verifyFixWebsite(ctx, siteDir, id), nil
+		}
+
+		projectPath, err := project(ctx, req)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
 		}
 
 		exe, err := os.Executable()

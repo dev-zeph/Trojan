@@ -40,7 +40,8 @@ const localInstructions = `Trojan is the user's security scanner. It holds findi
 
 - For code tools, always pass project_path: the absolute path of the project folder you are working in.
 - Many users aren't security experts. Explain findings in plain language: what could happen and to whom, before how to fix it.
-- After fixing a code finding, call verify_fix to prove it is gone instead of just marking it fixed.
+- After fixing a finding, call verify_fix with its id to prove it is gone instead of just marking it fixed. verify_fix handles both kinds: for a code finding it re-runs the scanner; for a website / pen-test finding it replays the request that proved it (seconds, no credits) and marks it fixed only if the problem is really gone.
+- get_all_findings shows code and website findings in one list, each with a source and an id. To re-check several website findings at once (or a whole test) after a fix, use retest_website_findings instead of rerunning start_website_test.
 - start_website_test and generate_report spend the user's Trojan credits; say so when you use them. Never set owner_confirmed without the user's explicit yes.
 - Trojan's project context (get_project_context) describes what the app does, its sensitive data and trust boundaries, and makes Trojan's testing smarter. If it is missing, offer to draft it from the codebase. After significant changes (new features or routes, a new database or data type, auth changes, new third-party services), ask the user: "Want me to update Trojan's project context to match?" Always show the user what you will save before calling update_project_context.
 
@@ -227,6 +228,26 @@ func newServer(project projectFunc, perRequest bool, opts ...server.ServerOption
 		),
 		handleWebsiteTestStatus,
 	)
+	s.AddTool(
+		mcp.NewTool("retest_website_findings",
+			mcp.WithDescription("Re-check website / pen-test findings in seconds by replaying the exact request that proved each one — no credits, no full rerun. "+
+				"Reports each as fixed, still open, or inconclusive, and marks fixed ones resolved. Use after changing code behind a live finding. "+
+				"Without ids, re-checks every open finding for the site; pass ids to re-check only those. A finding with no recorded proof (older tests) is inconclusive: run start_website_test instead."),
+			mcp.WithString("url", mcp.Description("The tested site (or its host). Defaults to the site holding the given ids, else the most recently tested site.")),
+			mcp.WithArray("ids", mcp.Description("Specific website finding IDs to re-check. Omit to re-check all open findings for the site."),
+				mcp.Items(map[string]any{"type": "string"})),
+		),
+		handleRetestWebsiteFindings,
+	)
+	s.AddTool(
+		tool("get_all_findings",
+			mcp.WithDescription("One list of every open finding, code and website together, each with a source (\"code\" or \"website\") and a stable id you can pass to verify_fix. "+
+				"Use this to see the whole picture: the website test's findings are included alongside the code scan's, so you don't have to check two places."),
+			mcp.WithString("min_severity", mcp.Description("Only include this severity and above: critical, high, medium, low or info.")),
+			mcp.WithString("status", mcp.Description(`"open" (default) or "all".`)),
+		),
+		handleGetAllFindings(project),
+	)
 
 	return s
 }
@@ -251,6 +272,7 @@ func handleGetFindings(project projectFunc) server.ToolHandlerFunc {
 
 		type row struct {
 			ID       string `json:"id"`
+			Source   string `json:"source"`
 			Severity string `json:"severity"`
 			Title    string `json:"title"`
 			Location string `json:"location,omitempty"`
@@ -276,7 +298,7 @@ func handleGetFindings(project projectFunc) server.ToolHandlerFunc {
 			if f.LineNumber > 0 {
 				loc = fmt.Sprintf("%s:%d", f.FilePath, f.LineNumber)
 			}
-			r := row{ID: f.ID, Severity: string(f.Severity), Title: f.Title, Location: loc, Status: string(f.Status), Verdict: f.Verdict}
+			r := row{ID: f.ID, Source: "code", Severity: string(f.Severity), Title: f.Title, Location: loc, Status: string(f.Status), Verdict: f.Verdict}
 			if f.Reach != nil {
 				r.Exposure, r.priority = exposureSummary(f.Reach), f.Reach.Priority
 			}
