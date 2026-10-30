@@ -51,6 +51,7 @@ import type {
   Toast,
 } from "./types";
 import NotificationSettings, { useScanNudges } from "./NotificationSettings";
+import { PenTestNotify } from "./components/PenTestNotify";
 import { ContextChangeBanner } from "./ContextChangeBanner";
 import "./App.css";
 
@@ -3157,9 +3158,9 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* ── Scan reminders ── */}
+                  {/* ── Scan reminders + pen-test notifications ── */}
                   <div className="profile-section-group">
-                    <span className="profile-mono-label">REMINDERS</span>
+                    <span className="profile-mono-label">NOTIFICATIONS</span>
                     <div className="profile-card">
                       <NotificationSettings />
                     </div>
@@ -3260,6 +3261,13 @@ export default function App() {
               </button>
             </div>
           )}
+
+          {/* ── Pen test: "we'll notify you" banner + end toast ── */}
+          <PenTestNotify
+            currentReportUrl={reportUrl}
+            visible={view === "report"}
+            onOpen={(url, target) => openReport(url, target, "dast")}
+          />
 
           {/* ── Scan report iframe ── */}
           {/* Always mounted when reportUrl is set so switching tabs doesn't trigger a reload */}

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { loadRecent } from "./lib/store";
+import { PenTestNotifyToggle } from "./components/PenTestNotify";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -27,7 +28,7 @@ export function useScanNudges() {
   }, []);
 }
 
-/** On/off toggle for scan reminders. The daily check itself runs app-wide
+/** On/off toggles for scan reminders and pen-test-finished notifications. The daily check itself runs app-wide
  *  via useScanNudges in App. */
 export default function NotificationSettings() {
   const [enabled, setEnabled] = useState(true);
@@ -42,6 +43,7 @@ export default function NotificationSettings() {
   };
 
   return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
     <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
       <input type="checkbox" checked={enabled} onChange={(e) => toggle(e.target.checked)} />
       <span>
@@ -51,5 +53,7 @@ export default function NotificationSettings() {
         </span>
       </span>
     </label>
+    <PenTestNotifyToggle />
+    </div>
   );
 }

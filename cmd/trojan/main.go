@@ -1144,6 +1144,9 @@ func runAgenticDast(p agenticParams) {
 	if rerr != nil {
 		srv.BroadcastAgentEvent(server.AgentEvent{Type: "run", Status: "error", Detail: rerr.Error()})
 		color.Red("\n  Agentic run failed: %s\n", rerr)
+		if p.desktop {
+			fmt.Printf("\n%s\n", pentestEndLine(nil, rerr, nil))
+		}
 	} else {
 		// Merge the agent's evidence-anchored candidates with the Nuclei baseline,
 		// then run everything through adversarial triage (Phase 1).
@@ -1183,6 +1186,10 @@ func runAgenticDast(p agenticParams) {
 		}
 		srv.BroadcastAgentEvent(server.AgentEvent{Type: "run", Status: "complete", Detail: res.Summary})
 		fmt.Printf("\n  → Agentic pen-test complete — %d candidate finding(s); %s\n", len(res.Findings), stopLabel(res))
+		if p.desktop {
+			// Read by the desktop app to send the "pen test is done" notification.
+			fmt.Printf("\n%s\n", pentestEndLine(res, nil, all))
+		}
 	}
 
 	if p.exitWhenDone {
