@@ -1,4 +1,5 @@
 mod notifications;
+mod pentest_notify;
 use tauri::{AppHandle, Emitter, Manager, async_runtime::Receiver};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_shell::ShellExt;
@@ -100,6 +101,12 @@ struct ScanReturn {
 /// Every output line is forwarded to the frontend terminal panel as a
 /// `terminal-output` Tauri event so the user sees live scan progress.
 async fn await_ready(app: &AppHandle, mut rx: Receiver<CommandEvent>) -> Result<(String, String), String> {
+    await_ready_mut(app, &mut rx).await
+}
+
+/// Same as `await_ready` but borrows the receiver, so a caller can keep
+/// reading the sidecar after READY (see pentest_notify::watch_run).
+async fn await_ready_mut(app: &AppHandle, rx: &mut Receiver<CommandEvent>) -> Result<(String, String), String> {
     let mut last_stdout: Vec<String> = Vec::new();
     let mut last_stderr: Vec<String> = Vec::new();
     let mut cache_path = String::new();
@@ -235,6 +242,7 @@ fn signal_terminate(pid: u32) {
 
 /// Kill all previously tracked scan children, freeing their HTTP server ports.
 fn kill_old_scans(app: &AppHandle) {
+    pentest_notify::bump_generation();
     if let Ok(mut children) = app.state::<ActiveScans>().0.lock() {
         for child in children.drain(..) {
             let _ = child.kill();
@@ -441,7 +449,7 @@ async fn start_agentic_dast(
         }
     }
 
-    let (rx, child) = app
+    let (mut rx, child) = app
         .shell()
         .sidecar("trojan")
         .map_err(|e| format!("sidecar not found: {e}"))?
@@ -452,9 +460,11 @@ async fn start_agentic_dast(
     if let Ok(mut children) = app.state::<ActiveScans>().0.lock() {
         children.push(child);
     }
-    let result = await_ready(&app, rx).await;
+    let result = await_ready_mut(&app, &mut rx).await;
     let _ = app.emit("terminal-scan-done", ());
     let (report_url, cache_path) = result?;
+    // READY is the start of the run; keep listening for its end to notify.
+    pentest_notify::watch_run(app.clone(), rx, url.clone(), report_url.clone());
     Ok(ScanReturn { url: report_url, cache_path })
 }
 
@@ -886,6 +896,9 @@ pub fn run() {
             notifications::nudge_check,
             notifications::get_nudge_enabled,
             notifications::set_nudge_enabled,
+            pentest_notify::get_pentest_notify_enabled,
+            pentest_notify::set_pentest_notify_enabled,
+            pentest_notify::enable_pentest_notify,
             pick_folder,
             check_cache_exists,
             start_scan,

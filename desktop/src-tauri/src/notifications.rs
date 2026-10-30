@@ -22,6 +22,9 @@ pub struct NudgeState {
     /// project path -> unix seconds of the last nudge
     #[serde(default)]
     pub last_notified: HashMap<String, i64>,
+    /// "Notify me when a pen test finishes". Separate from scan reminders.
+    #[serde(default = "default_true")]
+    pub pentest_done: bool,
 }
 
 fn default_true() -> bool {
@@ -30,7 +33,7 @@ fn default_true() -> bool {
 
 impl Default for NudgeState {
     fn default() -> Self {
-        NudgeState { enabled: true, last_notified: HashMap::new() }
+        NudgeState { enabled: true, last_notified: HashMap::new(), pentest_done: true }
     }
 }
 
@@ -76,14 +79,14 @@ fn state_path() -> Option<PathBuf> {
     Some(PathBuf::from(home).join(".trojan").join("notifications.json"))
 }
 
-fn load_state() -> NudgeState {
+pub(crate) fn load_state() -> NudgeState {
     state_path()
         .and_then(|p| std::fs::read_to_string(p).ok())
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default()
 }
 
-fn save_state(s: &NudgeState) {
+pub(crate) fn save_state(s: &NudgeState) {
     if let Some(p) = state_path() {
         if let Some(dir) = p.parent() {
             let _ = std::fs::create_dir_all(dir);
@@ -183,5 +186,9 @@ mod tests {
     fn missing_fields_default_to_enabled() {
         let s: NudgeState = serde_json::from_str("{}").unwrap();
         assert!(s.enabled);
+        assert!(s.pentest_done);
+        // Files written before the pen-test toggle existed keep it on.
+        let old: NudgeState = serde_json::from_str(r#"{"enabled":false,"last_notified":{}}"#).unwrap();
+        assert!(!old.enabled && old.pentest_done);
     }
 }
