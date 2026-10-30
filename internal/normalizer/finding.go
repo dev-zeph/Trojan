@@ -42,6 +42,16 @@ type Finding struct {
 	RuleID      string   // The scanner rule that triggered this
 	Status      Status   // open, resolved, suppressed
 
+	// Website (DAST) findings keep the probed URL in FilePath for backward
+	// compatibility (UIs link it, memory matches on it). The fields below say
+	// so explicitly and, when Trojan could place the finding in the project's
+	// source (grey-box: the agent named the file, or the URL resolved to a
+	// route handler), carry that source location. LineNumber stays 0 for these
+	// findings because FilePath is a URL, not a file.
+	URL        string `json:"url,omitempty"`         // probed URL (website findings)
+	SourceFile string `json:"source_file,omitempty"` // project-relative handler file, when known
+	SourceLine int    `json:"source_line,omitempty"` // 1-indexed line in SourceFile, 0 if unknown
+
 	// CWE and compliance fields
 	CWEIDs     []string            `json:"cwe_ids,omitempty"`    // e.g. ["CWE-79", "CWE-89"]
 	OWASP      []string            `json:"owasp,omitempty"`      // e.g. ["A03:2021 - Injection"]

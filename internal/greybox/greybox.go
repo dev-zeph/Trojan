@@ -199,6 +199,110 @@ func (s *Source) EndpointTable() []string {
 	return rows
 }
 
+// locateMethods is the order Locate tries when a finding doesn't say which
+// HTTP method it used.
+var locateMethods = []string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
+
+// Locate maps a live URL (or bare path, optionally prefixed "POST ") to the
+// source handler that serves it, via the route table. Used to anchor website
+// findings on project code (file + line) when the agent didn't name a file.
+// line is 0 when the route is known but its handler line isn't (e.g. a
+// Next.js page). ok is false with no resolver or no matching route.
+func (s *Source) Locate(method, rawURL string) (file string, line int, ok bool) {
+	if s == nil || s.resolver == nil {
+		return "", 0, false
+	}
+	path := strings.TrimSpace(rawURL)
+	if sp := strings.IndexByte(path, ' '); sp > 0 && isHTTPMethod(path[:sp]) {
+		if method == "" {
+			method = path[:sp]
+		}
+		path = strings.TrimSpace(path[sp+1:])
+	}
+	if i := strings.Index(path, "://"); i >= 0 {
+		path = path[i+3:]
+		if j := strings.IndexByte(path, '/'); j >= 0 {
+			path = path[j:]
+		} else {
+			path = "/"
+		}
+	}
+	if i := strings.IndexAny(path, "?#"); i >= 0 {
+		path = path[:i]
+	}
+	if path == "" {
+		path = "/"
+	}
+	tries := locateMethods
+	if method != "" {
+		tries = append([]string{strings.ToUpper(method)}, locateMethods...)
+	}
+	for _, m := range tries {
+		if r, found := s.resolver.Resolve(m, path); found && r.HandlerFile != "" {
+			return filepath.ToSlash(r.HandlerFile), r.HandlerLine, true
+		}
+	}
+	return "", 0, false
+}
+
+// ProjectFile validates a source path reported for a finding (by the agent,
+// whose input can be steered by the target's responses) and returns it
+// project-relative with forward slashes. It refuses anything outside the
+// project, including via "..", absolute paths elsewhere, or symlinks, and
+// anything that isn't an existing regular file.
+func (s *Source) ProjectFile(file string) (string, bool) {
+	if s == nil || strings.TrimSpace(file) == "" {
+		return "", false
+	}
+	root, err := filepath.Abs(s.projectPath)
+	if err != nil {
+		return "", false
+	}
+	if r, err := filepath.EvalSymlinks(root); err == nil {
+		root = r
+	}
+	p := filepath.FromSlash(strings.TrimSpace(file))
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(root, p)
+	}
+	real, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		return "", false
+	}
+	rel, err := filepath.Rel(root, real)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return "", false
+	}
+	if info, err := os.Stat(real); err != nil || !info.Mode().IsRegular() {
+		return "", false
+	}
+	return filepath.ToSlash(rel), true
+}
+
+// HandlerSource returns the code at a project-relative file:line (the
+// enclosing function when line is known, else the top of the file), for
+// grounding triage and explanations in the handler's code. Returns "" when the
+// path is outside the project or can't be read.
+func (s *Source) HandlerSource(file string, line int) string {
+	rel, ok := s.ProjectFile(file)
+	if !ok {
+		return ""
+	}
+	abs := filepath.Join(s.projectPath, filepath.FromSlash(rel))
+	if line > 0 {
+		return ai.ExtractEnclosingContext(abs, line)
+	}
+	return ai.ExtractSurroundingCode(abs, 1, 40)
+}
+
+func isHTTPMethod(s string) bool {
+	switch strings.ToUpper(s) {
+	case "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS":
+		return true
+	}
+	return false
+}
+
 // readEnclosing reads the enclosing function/block at a project-relative
 // file:line using the CGO-free extractor.
 func (s *Source) readEnclosing(relFile string, line int) string {

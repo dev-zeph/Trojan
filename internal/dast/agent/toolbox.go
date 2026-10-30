@@ -41,6 +41,13 @@ type Candidate struct {
 	URL       string `json:"url"`
 	Evidence  string `json:"evidence"`
 	Rationale string `json:"rationale"`
+	// File and Line optionally place the finding in the target's source
+	// (grey-box): the handler file the agent read via read_source, and the
+	// 1-indexed line of the flaw. Both optional; an older edge function that
+	// doesn't offer them in the note_finding schema simply leaves them empty,
+	// and the loop then fills them from the endpoint's read_source handler.
+	File string `json:"file,omitempty"`
+	Line int    `json:"line,omitempty"`
 }
 
 // Fact is something the agent learned during the run and may reuse to chain

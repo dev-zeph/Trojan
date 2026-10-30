@@ -82,6 +82,11 @@ func TriageWithContext(findings []normalizer.Finding, accessToken string, retrie
 		return verdicts, nil // escalation failed — first-pass verdicts still stand
 	}
 	for id, v := range reVerdicts {
+		// A placeholder ("no verdict returned") never replaces a real
+		// first-pass verdict.
+		if prev, ok := verdicts[id]; v.Missing && ok && !prev.Missing {
+			continue
+		}
 		verdicts[id] = v
 	}
 	return verdicts, nil
@@ -96,6 +101,9 @@ func shouldEscalate(v Verdict) bool {
 // retrievalQuery turns a finding into a semantic search query.
 func retrievalQuery(f normalizer.Finding) string {
 	q := f.Title
+	if f.SourceFile != "" {
+		q += "\n" + f.SourceFile
+	}
 	if f.CodeSnippet != "" {
 		q += "\n" + f.CodeSnippet
 	}
@@ -107,7 +115,7 @@ func retrievalQuery(f normalizer.Finding) string {
 func augmentContext(existing string, chunks []RetrievedChunk) string {
 	var b strings.Builder
 	b.WriteString(existing)
-	b.WriteString("\n\n// ── Related code retrieved from the repository ──\n")
+	b.WriteString("\n\n// ── Related code retrieved from the repository (semantic search; may belong to a different route, judge only this finding) ──\n")
 	for _, c := range chunks {
 		fmt.Fprintf(&b, "// %s:%d-%d\n%s\n\n", c.FilePath, c.StartLine, c.EndLine, c.Text)
 	}

@@ -362,8 +362,11 @@ func executeTool(ctx context.Context, tb *Toolbox, b blockPeek, step int, emit f
 		if err := json.Unmarshal(b.Input, &c); err != nil {
 			return fmt.Sprintf("invalid note_finding input: %v", err), true, false
 		}
-		tb.NoteFinding(c)
 		handler := onFinding(tb, c, step, emit)
+		// Grey-box: if the agent read this endpoint's handler but didn't say
+		// where the flaw is, anchor the finding on that handler.
+		c = c.withHandler(handler)
+		tb.NoteFinding(c)
 		emit(Event{Type: EventFinding, Step: step, Detail: c.Title, Payload: &EventPayload{Source: handler}})
 		return `{"ok":true}`, false, false
 
