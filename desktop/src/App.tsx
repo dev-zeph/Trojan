@@ -51,6 +51,7 @@ import type {
   Toast,
 } from "./types";
 import NotificationSettings, { useScanNudges } from "./NotificationSettings";
+import { ContextChangeBanner } from "./ContextChangeBanner";
 import "./App.css";
 
 
@@ -140,8 +141,10 @@ export default function App() {
   const [iframeOffOrigin, setIframeOffOrigin] = useState(false);
   const [isDragOver, setIsDragOver]       = useState(false);
   const [recent, setRecent]               = useState<RecentProject[]>([]);
-  // Grey-box pen tests read the most recently scanned code project.
-  const greyBoxProject = recent.find((r) => r.type !== "dast")?.path ?? "";
+  // The most recently scanned code project: grey-box pen tests read it, and the
+  // founder home checks whether it changed since Trojan last learned about it.
+  const latestCodeProject = recent.find((r) => r.type !== "dast")?.path ?? "";
+  const [scanDoneCount, setScanDoneCount] = useState(0);
   const [dastUrl, setDastUrl]             = useState("");
   const [agenticMode, setAgenticMode]     = useState(false);
   const [agTier, setAgTier]               = useState<"passive" | "safe-active" | "aggressive">("passive");
@@ -555,6 +558,7 @@ export default function App() {
     // than leave a stale number sitting in the sidebar.
     void refreshTokenBalance();
     setToasts((prev) => prev.map((t) => t.id === id ? { ...t, status: "done", reportUrl, cachePath } : t));
+    setScanDoneCount((n) => n + 1);
   }
   function updateToastError(id: string, error: string): void {
     setToasts((prev) => prev.map((t) => t.id === id ? { ...t, status: "error", error } : t));
@@ -795,7 +799,7 @@ export default function App() {
         ? { title: agTemplate.title, technique: agTemplate.technique, body: agTemplate.prompt_body }
         : null,
       ownerConfirmed,
-      projectPath: agGreyBox ? greyBoxProject : null,
+      projectPath: agGreyBox ? latestCodeProject : null,
     })
       .then(async ({ url: rUrl, cachePath }) => {
         updateToastDone(id, rUrl, cachePath);
@@ -1247,6 +1251,14 @@ export default function App() {
         <main className={`content-area${view === "report" ? " content-area--report" : ""}`}>
 
           {/* ── Overview ── */}
+          {view === "overview" && simple && latestCodeProject && (
+            <ContextChangeBanner
+              serverUrl={currentServerUrl}
+              projectPath={latestCodeProject}
+              refreshKey={scanDoneCount}
+              onTopUp={handleTopUp}
+            />
+          )}
           {view === "overview" && simple && (
             <FounderHome
               name={profile.name}
@@ -1775,8 +1787,8 @@ export default function App() {
                           </div>
                           {agGreyBox && (
                             <div style={{ fontSize: "0.85em", opacity: 0.7, marginTop: 8 }}>
-                              {greyBoxProject
-                                ? `Reading code from ${greyBoxProject.split("/").pop()}, your most recently scanned project.`
+                              {latestCodeProject
+                                ? `Reading code from ${latestCodeProject.split("/").pop()}, your most recently scanned project.`
                                 : "Scan your codebase first so Trojan knows which project to read."}
                             </div>
                           )}
