@@ -1,3 +1,4 @@
+mod notifications;
 use tauri::{AppHandle, Emitter, Manager, async_runtime::Receiver};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_shell::ShellExt;
@@ -850,6 +851,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             // Store for keeping Go sidecar child processes alive.
             app.manage(ActiveScans(Mutex::new(Vec::new())));
@@ -874,6 +876,9 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            notifications::nudge_check,
+            notifications::get_nudge_enabled,
+            notifications::set_nudge_enabled,
             pick_folder,
             check_cache_exists,
             start_scan,
