@@ -1,0 +1,32 @@
+rules:
+  - id: trojan-php-unserialize-request
+    languages: [php]
+    severity: ERROR
+    message: >-
+      Data from the web request is passed to unserialize(). An attacker can
+      craft this data to create PHP objects your code did not expect, which
+      can lead to running their own code on your server. Use json_decode()
+      instead, or pass ['allowed_classes' => false].
+    metadata:
+      trojan-title: Visitor data turned back into PHP objects (unsafe unserialize)
+      cwe:
+        - "CWE-502: Deserialization of Untrusted Data"
+      owasp:
+        - "A08:2021 - Software and Data Integrity Failures"
+      category: security
+      confidence: HIGH
+    mode: taint
+    pattern-sources:
+      - pattern-either:
+          - pattern: $_GET
+          - pattern: $_POST
+          - pattern: $_REQUEST
+          - pattern: $_COOKIE
+          - pattern: file_get_contents("php://input")
+          - pattern: file_get_contents('php://input')
+    pattern-sinks:
+      - patterns:
+          - pattern: unserialize($X, ...)
+          - pattern-not: "unserialize($X, ['allowed_classes' => false])"
+          - pattern-not: "unserialize($X, array('allowed_classes' => false))"
+          - focus-metavariable: $X

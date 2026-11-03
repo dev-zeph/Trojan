@@ -1,0 +1,75 @@
+rules:
+  - id: trojan-php-include-from-request
+    languages: [php]
+    severity: ERROR
+    message: >-
+      This page loads a PHP file whose name comes from the web request. An
+      attacker can change it to read private files on your server or run code
+      from another site. Only load files from a fixed list you control.
+    metadata:
+      trojan-title: File loaded from a name in the web request
+      cwe:
+        - "CWE-98: Improper Control of Filename for Include/Require Statement in PHP Program ('PHP Remote File Inclusion')"
+      owasp:
+        - "A03:2021 - Injection"
+      category: security
+      confidence: HIGH
+    mode: taint
+    pattern-sources:
+      - pattern-either:
+          - pattern: $_GET
+          - pattern: $_POST
+          - pattern: $_REQUEST
+          - pattern: $_COOKIE
+    pattern-sanitizers:
+      - pattern-either:
+          - pattern: basename(...)
+          - pattern: intval(...)
+          - pattern: (int) $X
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: include $X;
+              - pattern: include_once $X;
+              - pattern: require $X;
+              - pattern: require_once $X;
+          - focus-metavariable: $X
+
+  - id: trojan-php-include-variable-path
+    languages: [php]
+    severity: WARNING
+    message: >-
+      This page loads a PHP file using a path held in a variable. If any part
+      of that path can come from a visitor (for example a ?page= link), an
+      attacker can read private files or run their own code. Check that the
+      path is picked from a fixed list.
+    metadata:
+      trojan-title: File loaded from a path that may come from a visitor
+      cwe:
+        - "CWE-98: Improper Control of Filename for Include/Require Statement in PHP Program ('PHP Remote File Inclusion')"
+      owasp:
+        - "A03:2021 - Injection"
+      category: security
+      confidence: LOW
+    patterns:
+      - pattern-either:
+          - pattern: include $X;
+          - pattern: include_once $X;
+          - pattern: require $X;
+          - pattern: require_once $X;
+      - metavariable-regex:
+          metavariable: $X
+          regex: ^\(?\s*\$[A-Za-z_][A-Za-z0-9_]*\s*\)?$
+      # Loops over a known directory listing are plugin/template loaders.
+      - pattern-not-inside: |
+          foreach (glob(...) as $X) { ... }
+      - pattern-not-inside: |
+          foreach (scandir(...) as $X) { ... }
+      - pattern-not-inside: |
+          foreach ($ARR as $X) { ... }
+      - pattern-not-inside: |
+          foreach ($ARR as $K => $X) { ... }
+      - pattern-not-inside: |
+          if (in_array($X, ...)) { ... }
+      - pattern-not-inside: |
+          if (in_array($X, ...)) $S;

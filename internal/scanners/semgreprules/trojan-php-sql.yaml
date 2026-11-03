@@ -1,0 +1,76 @@
+rules:
+  - id: trojan-php-sql-from-function-input
+    languages: [php]
+    severity: WARNING
+    message: >-
+      A database query is built by pasting a function's input straight into
+      the SQL text. If that input can come from a visitor anywhere in the app,
+      an attacker can change the query to read or delete your data (SQL
+      injection). Use prepared statements with placeholders (? or :name) and
+      pass the values separately.
+    metadata:
+      trojan-title: Database query built by pasting in function input
+      cwe:
+        - "CWE-89: Improper Neutralization of Special Elements used in an SQL Command ('SQL Injection')"
+      owasp:
+        - "A03:2021 - Injection"
+      category: security
+      confidence: LOW
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern-inside: function $F(..., $P, ...) { ... }
+          - pattern: $P
+          # Typed int/float/bool parameters can't carry SQL text.
+          - pattern-not-inside: function $F(..., int $P, ...) { ... }
+          - pattern-not-inside: function $F(..., float $P, ...) { ... }
+          - pattern-not-inside: function $F(..., bool $P, ...) { ... }
+    pattern-sanitizers:
+      - pattern-either:
+          - pattern: intval(...)
+          - pattern: floatval(...)
+          - pattern: count(...)
+          - pattern: mysqli_real_escape_string(...)
+          - pattern: mysql_real_escape_string(...)
+          - pattern: pg_escape_string(...)
+          - pattern: pg_escape_literal(...)
+          - pattern: $DB->real_escape_string(...)
+          - pattern: $DB->quote(...)
+          - pattern: $DB->escape(...)
+          - pattern: $DB->escape_string(...)
+          - pattern: esc_sql(...)
+    pattern-sinks:
+      # The SQL text itself: a string that reads like a query and has the
+      # input pasted in, wherever it is built (assignment, append, call arg).
+      - patterns:
+          - pattern-either:
+              - pattern: $V = $E
+              - pattern: $V .= $E
+              - pattern: $FN(..., $E, ...)
+              - pattern: $OBJ->$M(..., $E, ...)
+          # Taint passes through PHP casts, so a value cast to a number at the
+          # end of the query (the common "... WHERE id = " . (int) $id) is
+          # excluded here instead of as a sanitizer.
+          - pattern-not: $V = $S . (int) $X
+          - pattern-not: $V = $S . (float) $X
+          - pattern-not: $V .= (int) $X
+          - pattern-not: $V .= (float) $X
+          # Output and error messages are not queries.
+          - pattern-not-inside: echo $...ARGS;
+          - pattern-not: print(...)
+          - pattern-not: die(...)
+          - pattern-not: exit(...)
+          - pattern-not: error_log(...)
+          - pattern-not: trigger_error(...)
+          - pattern-not: new $EXC(...)
+          - metavariable-pattern:
+              metavariable: $E
+              pattern-either:
+                - pattern: $A . $B
+                - pattern: '"...$X..."'
+                - pattern: '"...{$X}..."'
+                - pattern: sprintf(...)
+          - metavariable-regex:
+              metavariable: $E
+              regex: (?is).*(\bselect\s+(\*|distinct\b|count\s*\(|[\w.`]+\s*(,|\bfrom\b))|\binsert\s+into\s|\bupdate\s+[\w.`]+\s+set\s|\bdelete\s+from\s|\bwhere\s+[\w.`]+\s*(=|like\b|in\s*\(|<|>)|\bvalues\s*\()
+          - focus-metavariable: $E
