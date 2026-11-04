@@ -76,3 +76,17 @@ function intvalInline($id) {
     // ok: trojan-php-sql-from-function-input
     $q = "SELECT * FROM t WHERE id = " . intval($id);
 }
+
+function intCastAssigned($raw) {
+    $id = (int) $raw;
+    // ok: trojan-php-sql-from-function-input
+    $q = "SELECT * FROM t WHERE id = " . $id;
+    return $q;
+}
+
+function boolCastAssigned($raw) {
+    $active = (bool) $raw;
+    // ok: trojan-php-sql-from-function-input
+    $q = "SELECT * FROM t WHERE active = " . $active;
+    return $q;
+}

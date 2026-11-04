@@ -187,19 +187,22 @@ type semgrepResult struct {
 		Severity string `json:"severity"`
 		Lines    string `json:"lines"`
 		Metadata struct {
-			CWE   cweList  `json:"cwe"`
-			OWASP []string `json:"owasp"`
+			CWE   stringOrList `json:"cwe"`
+			OWASP stringOrList `json:"owasp"`
 			// TrojanTitle is the plain-English title on Trojan's own rules.
 			TrojanTitle string `json:"trojan-title"`
 		} `json:"metadata"`
 	} `json:"extra"`
 }
 
-// cweList accepts Semgrep's cwe metadata as either a list or a single string
-// (both appear across registry rules).
-type cweList []string
+// stringOrList accepts a Semgrep metadata field as either a JSON list or a
+// single JSON string — both forms appear across registry rules, for cwe and
+// owasp alike (e.g. the "debug-enabled" rule emits owasp as a bare string).
+// Without this, one scalar value fails json.Unmarshal of the whole document
+// and the entire Semgrep pass is silently dropped.
+type stringOrList []string
 
-func (c *cweList) UnmarshalJSON(b []byte) error {
+func (c *stringOrList) UnmarshalJSON(b []byte) error {
 	var list []string
 	if err := json.Unmarshal(b, &list); err == nil {
 		*c = list

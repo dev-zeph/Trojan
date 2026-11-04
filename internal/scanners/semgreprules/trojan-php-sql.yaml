@@ -27,6 +27,15 @@ rules:
           - pattern-not-inside: function $F(..., bool $P, ...) { ... }
     pattern-sanitizers:
       - pattern-either:
+          # A cast to a number or bool can't carry SQL text, wherever it lands
+          # (standalone `$id = (int) $raw;` then interpolated, not only the
+          # inline `... . (int) $x` form the sinks already exclude).
+          - pattern: (int) $X
+          - pattern: (integer) $X
+          - pattern: (float) $X
+          - pattern: (double) $X
+          - pattern: (bool) $X
+          - pattern: (boolean) $X
           - pattern: intval(...)
           - pattern: floatval(...)
           - pattern: count(...)
