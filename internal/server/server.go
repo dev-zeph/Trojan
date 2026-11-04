@@ -31,6 +31,10 @@ type scanResponse struct {
 	LockedCount int                       `json:"locked_count"`
 	Packages    []normalizer.Package      `json:"packages,omitempty"`
 	Privacy     *normalizer.PrivacyReport `json:"privacy,omitempty"`
+	// CoverageNote explains that source in a language the code-graph checks
+	// don't parse (e.g. PHP) was covered by the rule scanners instead (see
+	// normalizer.ScanResult.CoverageNote).
+	CoverageNote string `json:"coverage_note,omitempty"`
 }
 
 // Server holds the scan results and serves the UI + API.
@@ -227,6 +231,7 @@ func (s *Server) handleLatestScan(w http.ResponseWriter, r *http.Request) {
 	resp.Timestamp = scan.Timestamp
 	resp.ProjectPath = scan.ProjectPath
 	resp.Findings = scan.Findings
+	resp.CoverageNote = scan.CoverageNote
 	resp.LockedCount = 0
 	resp.Packages = scan.Packages
 	resp.Privacy = scan.Privacy

@@ -22,6 +22,13 @@ type ScanResult struct {
 	// per-scanner results so a dashboard/report can distinguish "clean" from
 	// "this scanner didn't run" — e.g. Trivy hitting a fatal DB-download error.
 	ScannerErrors []ScannerError `json:"scanner_errors,omitempty"`
+	// CoverageNote is a plain-English note set when the project contains
+	// source in a language Trojan's code-graph checks don't parse (e.g. PHP):
+	// those files are still covered by the rule scanners (Semgrep, Bearer),
+	// and this note says so, so a rule-only result doesn't read as a shallow
+	// or misleading "clean". Built by scanners.CoverageNote. Empty when every
+	// language in the project is graph-covered.
+	CoverageNote string `json:"coverage_note,omitempty"`
 }
 
 // ScannerError records that a scanner failed to run, and why.
