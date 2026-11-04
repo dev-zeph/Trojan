@@ -372,6 +372,14 @@ func handleStartWebsiteTest(ctx context.Context, req mcp.CallToolRequest) (*mcp.
 	if !allowed {
 		args = append(args, "--owner-confirmed")
 	}
+	// If the dashboard saved test logins for this site, hand them to the engine
+	// so it can authenticate and reach the logged-in attack surface (IDOR, etc.).
+	// The file holds the credentials; the agent/model only ever sees the captured
+	// session, never the password.
+	idf := filepath.Join(siteDir, "identities.json")
+	if _, e := os.Stat(idf); e == nil {
+		args = append(args, "--identities-file", idf)
+	}
 
 	exe, err := os.Executable()
 	if err != nil {

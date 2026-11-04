@@ -433,6 +433,7 @@ func dastCmd() *cobra.Command {
 	var projectPath string
 	var focus string
 	var identityFlags []string
+	var identitiesFile string
 	var apiSpec string
 	var requireApproval bool
 	var allowEndpoints, denyEndpoints []string
@@ -545,6 +546,34 @@ func dastCmd() *cobra.Command {
 					os.Exit(1)
 				}
 				identities = append(identities, envIdentities...)
+				// --identities-file adds identities that may carry an email+password
+				// login recipe (the shape the dashboard writes). ResolveIdentities
+				// then performs each login locally and swaps in the session cookie,
+				// so the agent only ever sees/replays the cookie, never the password.
+				if identitiesFile != "" {
+					fileIdents, ferr := loadIdentitiesFile(identitiesFile)
+					if ferr != nil {
+						color.Red("Error: %s\n", ferr)
+						os.Exit(1)
+					}
+					identities = append(identities, fileIdents...)
+				} else if sd, derr := normalizer.WebsiteDir(targetURL); derr == nil {
+					// No explicit file: auto-load the logins the dashboard saved for
+					// this site (via /api/dast/identities), so the desktop GUI and a
+					// plain `trojan dast <url>` both pick them up with no extra wiring.
+					auto := filepath.Join(sd, "identities.json")
+					if _, serr := os.Stat(auto); serr == nil {
+						if autoIdents, aerr := loadIdentitiesFile(auto); aerr == nil {
+							identities = append(identities, autoIdents...)
+						}
+					}
+				}
+				if resolved, rerr := agent.ResolveIdentities(cmd.Context(), identities, nil); rerr != nil {
+					color.Red("Error: %s\n", rerr)
+					os.Exit(1)
+				} else {
+					identities = resolved
+				}
 				var attackTemplate *agent.AttackTemplate
 				if attackTemplateJSON != "" {
 					var at agent.AttackTemplate
@@ -832,6 +861,7 @@ func dastCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&noHypothesize, "no-hypothesize", false, "Skip the white-box hypothesis step that normally runs first in grey-box mode (saves the tokens that step would spend).")
 	cmd.Flags().StringVar(&focus, "focus", "", "Narrow the agent to a technique preset: api | web | llm (optional)")
 	cmd.Flags().StringArrayVar(&identityFlags, "identity", nil, "Auth session for authorization (IDOR/BOLA) testing, as 'name=Header: value'. Repeatable; repeat with the same name for multiple headers. Example: --identity 'alice=Authorization: Bearer <token>'")
+	cmd.Flags().StringVar(&identitiesFile, "identities-file", "", `JSON file of auth identities for authenticated/IDOR testing: {"identities":[{"name":"client-a","login":{"url":"http://host/login","fields":{"email":"…","password":"…"}}}]}. Logins run locally; only the captured session cookie is used. Identities with a "headers" map instead of "login" are used as-is.`)
 	cmd.Flags().StringVar(&apiSpec, "api-spec", "", "OpenAPI/Swagger spec (file path or URL) to expand the agent's attack surface beyond what the crawler finds. If omitted, common spec URLs on the target are auto-probed.")
 	cmd.Flags().BoolVar(&requireApproval, "require-approval", false, "Human-in-the-loop: pause for operator approval before every state-changing action (§8). Approve/deny in the run view; read-only probes still run automatically.")
 	cmd.Flags().StringArrayVar(&allowEndpoints, "allow-endpoint", nil, "Rules of engagement: an endpoint path the agent may target (repeatable; trailing * = prefix, e.g. /api/*). Outside the list is gated for approval unless --limit-to-allowlist.")
@@ -2278,6 +2308,24 @@ func parseIdentities(specs []string) ([]agent.Identity, error) {
 		out = append(out, agent.Identity{Name: n, Headers: byName[n]})
 	}
 	return out, nil
+}
+
+// loadIdentitiesFile reads a --identities-file JSON document
+// ({"identities":[{name, login{url,method,fields}, headers}]}) into agent
+// identities. Login recipes are resolved later (ResolveIdentities); header
+// identities are used as-is.
+func loadIdentitiesFile(path string) ([]agent.Identity, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("could not read --identities-file: %w", err)
+	}
+	var doc struct {
+		Identities []agent.Identity `json:"identities"`
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return nil, fmt.Errorf("invalid --identities-file JSON: %w", err)
+	}
+	return doc.Identities, nil
 }
 
 // envDASTIdentities is the env var the desktop sets to hand test logins to the

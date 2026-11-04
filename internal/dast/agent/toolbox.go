@@ -88,11 +88,27 @@ type Fact struct {
 // finding stalling as "needs a logged-in session".
 type Identity struct {
 	Name    string            `json:"name"`
-	Headers map[string]string `json:"headers"`
+	Headers map[string]string `json:"headers,omitempty"`
+	// Login, when set, is a recipe for obtaining this identity's session by
+	// logging in (email+password). ResolveIdentities runs it before the test,
+	// locally, and replaces it with the captured session cookie in Headers. The
+	// credentials in a recipe are never attached to probes, never sent to the
+	// model, and never logged — only the resulting cookie is used.
+	Login *LoginRecipe `json:"login,omitempty"`
 	// Source is empty for user-supplied identities and a short human label for
 	// auto-captured ones ("session cookie from POST /rest/user/login"). It is
 	// shown to the agent; it must never contain the secret itself.
 	Source string `json:"source,omitempty"`
+}
+
+// LoginRecipe tells ResolveIdentities how to obtain an identity's session: it
+// submits Fields (form-encoded) to URL and captures the resulting session
+// cookie. Used so a user can supply an email+password test login instead of a
+// raw cookie/header. The credentials live only on this machine.
+type LoginRecipe struct {
+	URL    string            `json:"url"`              // login endpoint, e.g. http://host/login
+	Method string            `json:"method,omitempty"` // default POST
+	Fields map[string]string `json:"fields"`           // form fields, e.g. {"email":"…","password":"…"}
 }
 
 // ProbeRequest is a single constrained HTTP request the agent wants to send.
