@@ -121,6 +121,7 @@ func (s *Server) Start() (string, error) {
 	mux.HandleFunc("/api/dast/agentic/status", s.handleAgenticStatus)
 	mux.HandleFunc("/api/dast/agentic/events", s.handleAgenticEvents)
 	mux.HandleFunc("/api/dast/approval", s.handleApproval)
+	mux.HandleFunc("/api/dast/identities", s.handleIdentities)
 
 	// Serve embedded UI assets (caller passes an already-subbed fs.FS)
 	mux.Handle("/", http.FileServer(http.FS(s.uiAssets)))
