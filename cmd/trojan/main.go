@@ -545,6 +545,16 @@ func dastCmd() *cobra.Command {
 						os.Exit(1)
 					}
 					identities = append(identities, fileIdents...)
+				} else if sd, derr := normalizer.WebsiteDir(targetURL); derr == nil {
+					// No explicit file: auto-load the logins the dashboard saved for
+					// this site (via /api/dast/identities), so the desktop GUI and a
+					// plain `trojan dast <url>` both pick them up with no extra wiring.
+					auto := filepath.Join(sd, "identities.json")
+					if _, serr := os.Stat(auto); serr == nil {
+						if autoIdents, aerr := loadIdentitiesFile(auto); aerr == nil {
+							identities = append(identities, autoIdents...)
+						}
+					}
 				}
 				if resolved, rerr := agent.ResolveIdentities(cmd.Context(), identities, nil); rerr != nil {
 					color.Red("Error: %s\n", rerr)

@@ -159,6 +159,11 @@ export default function App() {
   const [agGreyBox, setAgGreyBox]         = useState(false);
   const [agFocus, setAgFocus]             = useState<"" | "api" | "web" | "llm">("");
   const [agIdentities, setAgIdentities]   = useState<{ name: string; header: string }[]>([]);
+  // Simple-dashboard test accounts: email+password logins Trojan uses to test
+  // the signed-in parts of the app (and, with two, whether one account can see
+  // another's data). Saved to <site>/identities.json via /api/dast/identities
+  // before the run; the engine logs in and only its session cookie is used.
+  const [simpleAccounts, setSimpleAccounts] = useState<{ email: string; password: string }[]>([{ email: "", password: "" }, { email: "", password: "" }]);
   const [agApiSpec, setAgApiSpec]         = useState("");
   const [agRequireApproval, setAgRequireApproval] = useState(false);
   const [agAllowEndpoints, setAgAllowEndpoints]   = useState("");
@@ -776,6 +781,42 @@ export default function App() {
         openReport(rUrl, url, "dast");
       })
       .catch((e) => { if (!String(e).includes("__cancelled__")) updateToastError(id, friendlyError(String(e))); });
+  }
+
+  // loadTestAccounts prefills the simple-mode account emails from what was saved
+  // for this site (passwords come back blank; a saved one is kept on re-save).
+  async function loadTestAccounts(url: string): Promise<void> {
+    if (!currentServerUrl || !url.trim()) return;
+    try {
+      const res = await fetch(`${currentServerUrl}/api/dast/identities?url=${encodeURIComponent(url)}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!Array.isArray(data.identities)) return;
+      setSimpleAccounts([0, 1].map((i) => ({ email: data.identities[i]?.login?.fields?.email ?? "", password: "" })));
+    } catch { /* ignore: fields just stay empty */ }
+  }
+
+  // saveTestAccounts writes the simple-mode logins as login-recipe identities so
+  // the engine can log in. An empty password on an existing account is preserved
+  // server-side, so re-running without retyping keeps the stored secret.
+  async function saveTestAccounts(url: string): Promise<void> {
+    if (!currentServerUrl) return;
+    let origin = "";
+    try { origin = new URL(url).origin; } catch { return; }
+    const identities = simpleAccounts
+      .map((a, i) => ({ a, i }))
+      .filter(({ a }) => a.email.trim() !== "")
+      .map(({ a, i }) => ({
+        name: `account-${i + 1}`,
+        login: { url: `${origin}/login`, fields: { email: a.email.trim(), password: a.password } },
+      }));
+    try {
+      await fetch(`${currentServerUrl}/api/dast/identities?url=${encodeURIComponent(url)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ identities }),
+      });
+    } catch { /* best effort: the test still runs unauthenticated if this fails */ }
   }
 
   function triggerAgenticDast(url: string): void {
@@ -1652,13 +1693,14 @@ export default function App() {
 
                 {/* Target */}
                 <span className="scanner-grid-label" style={{ marginTop: simple ? 0 : 16 }}>{simple ? "YOUR APP'S LINK" : "TARGET"}</span>
-                <form className="dast-row-form" onSubmit={(e) => { e.preventDefault(); if (needsOwner && !ownerConfirmed) return; (agenticMode || simple ? triggerAgenticDast : triggerDast)(dastUrl); }}>
+                <form className="dast-row-form" onSubmit={async (e) => { e.preventDefault(); if (needsOwner && !ownerConfirmed) return; if (simple) await saveTestAccounts(dastUrl); (agenticMode || simple ? triggerAgenticDast : triggerDast)(dastUrl); }}>
                   <input
                     className="dast-input dast-input-lg"
                     type="url"
                     placeholder={simple ? "https://myapp.com" : "https://staging.example.com"}
                     value={dastUrl}
                     onChange={(e) => { setDastUrl(e.target.value); setOwnerConfirmed(false); }}
+                    onBlur={() => { if (simple) void loadTestAccounts(dastUrl); }}
                     disabled={isScanning}
                     autoFocus
                     style={{ fontFamily: "var(--font-mono)" }}
@@ -1702,6 +1744,45 @@ export default function App() {
                         <span className="pt-simple-tier-d">Trojan also fills in forms and tries actions. It may leave a few test entries behind, like a test sign-up.</span>
                       </button>
                     </div>
+
+                    {/* Optional test logins so the agent can reach the signed-in parts of the app. */}
+                    <span className="scanner-grid-label" style={{ marginTop: 18 }}>
+                      TEST ACCOUNTS (OPTIONAL)
+                      <span className="pt-info" data-tip="The AI agent logs in as these two test users and checks whether one account can see the other account's data, a common and serious bug. Use test accounts you do not mind it poking at.">i</span>
+                    </span>
+                    <div style={{ fontSize: "0.85em", opacity: 0.7, marginBottom: 2 }}>
+                      Add test logins so Trojan can check the private, signed-in parts of your app.
+                    </div>
+                    {simpleAccounts.map((acct, i) => (
+                      <div key={i} className="dast-row-form" style={{ gap: 8, marginTop: 6 }}>
+                        <input className="dast-input" type="email" placeholder={`Account ${i + 1} email`} value={acct.email} disabled={isScanning}
+                          onChange={(e) => setSimpleAccounts((rows) => rows.map((r, j) => j === i ? { ...r, email: e.target.value } : r))}
+                          style={{ fontFamily: "var(--font-mono)" }} />
+                        <input className="dast-input" type="password" placeholder="Password" value={acct.password} disabled={isScanning}
+                          onChange={(e) => setSimpleAccounts((rows) => rows.map((r, j) => j === i ? { ...r, password: e.target.value } : r))}
+                          style={{ fontFamily: "var(--font-mono)" }} />
+                      </div>
+                    ))}
+
+                    {/* Optional: point Trojan at the app's code for deeper results (grey-box, in plain words). */}
+                    <span className="scanner-grid-label" style={{ marginTop: 18 }}>
+                      YOUR APP'S CODE (OPTIONAL)
+                      <span className="pt-info" data-tip="Pick the folder of the app you are testing and the AI can read its code to find deeper issues and pinpoint the exact cause. Your code stays on your machine and is never stored.">i</span>
+                    </span>
+                    <div style={{ fontSize: "0.85em", opacity: 0.7, marginTop: 4 }}>
+                      {agGreyBox && greyBoxProject
+                        ? `Using code from ${greyBoxProject.split("/").pop()}.`
+                        : "Pick your app's folder to give the AI more context. We never store your code."}
+                      <button type="button" className="pt-chip" style={{ marginLeft: 8 }} disabled={isScanning}
+                        onClick={async () => { const picked = await invoke<string | null>("pick_folder"); if (picked) { setGreyBoxFolder(picked); setAgGreyBox(true); } }}>
+                        {agGreyBox && greyBoxProject ? "Change folder" : "Choose folder"}
+                      </button>
+                      {agGreyBox && greyBoxProject && (
+                        <button type="button" className="pt-chip" style={{ marginLeft: 6 }} disabled={isScanning}
+                          onClick={() => { setAgGreyBox(false); setGreyBoxFolder(""); }}>Remove</button>
+                      )}
+                    </div>
+
                     <span className="scanner-grid-label" style={{ marginTop: 18 }}>COST</span>
                     <RunCostHint balance={tokenBalance} model="sonnet" />
                   </>
