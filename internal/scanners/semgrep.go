@@ -1,17 +1,44 @@
 package scanners
 
 import (
+	"embed"
 	"encoding/json"
 	"fmt"
+	"io/fs"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 
 	"github.com/dev-zeph/trojan/internal/normalizer"
 )
 
+// trojanRulesFS holds Trojan's own Semgrep rules, shipped inside the binary.
+// Each rule file has a sibling test file (same name, .php) in semgreprules/
+// for `semgrep --test`; only the .yaml rules are embedded.
+//
+//go:embed semgreprules/*.yaml
+var trojanRulesFS embed.FS
+
+// trojanRuleIDPrefix marks Trojan's own rules. Semgrep prefixes a local
+// rule's check_id with its config file's path (a random temp dir here), so the
+// reported ID is normalized back to "trojan.<rule-id>" (see normalizeRuleID).
+const trojanRuleIDPrefix = "trojan-"
+
+// phpRulePacks are the Semgrep registry packs added for PHP projects, on top
+// of --config=auto. auto alone misses the echoed-request XSS rule and other
+// PHP rules in p/php; the packs alone drop some auto-only rules, so both run.
+var phpRulePacks = []string{"p/php", "p/owasp-top-ten"}
+
 // Semgrep implements the Scanner interface for static analysis.
-type Semgrep struct{}
+//
+// PHP is set by RelevantScanners when the project contains PHP. It adds the
+// PHP rule packs and Trojan's own PHP rules; every other project runs with
+// exactly the same arguments as before.
+type Semgrep struct {
+	PHP bool
+}
 
 func (s Semgrep) Name() string     { return "semgrep" }
 func (s Semgrep) Category() string { return "sast" }
@@ -20,14 +47,16 @@ func (s Semgrep) IsAvailable() bool {
 	return IsInstalled("semgrep")
 }
 
-func (s Semgrep) Run(projectPath string) ([]normalizer.Finding, error) {
-	if !s.IsAvailable() {
-		return nil, fmt.Errorf("semgrep not found: run 'trojan init' to install it")
+// semgrepArgs builds the semgrep command line. extraConfigs are added as
+// further --config flags right after --config=auto (Semgrep runs the union of
+// every --config it is given).
+func semgrepArgs(projectPath string, extraConfigs []string) []string {
+	args := []string{"--config=auto"}
+	for _, c := range extraConfigs {
+		args = append(args, "--config", c)
 	}
-
-	// Build args: parallel jobs + skip generated/vendor dirs + cap large files.
-	args := []string{
-		"--config=auto",
+	// Parallel jobs + skip generated/vendor dirs + cap large files.
+	args = append(args,
 		"--json",
 		"--jobs", fmt.Sprintf("%d", runtime.NumCPU()),
 		"--max-target-bytes", "1000000", // skip files > 1MB (minified JS, generated code)
@@ -41,7 +70,53 @@ func (s Semgrep) Run(projectPath string) ([]normalizer.Finding, error) {
 		"--exclude", "coverage",
 		"--exclude", "*.min.js",
 		projectPath,
+	)
+	return args
+}
+
+// writeTrojanRules copies the embedded rules into a fresh temp directory for
+// semgrep to read. The caller removes the directory when the run is done.
+func writeTrojanRules() (string, error) {
+	dir, err := os.MkdirTemp("", "trojan-semgrep-rules-")
+	if err != nil {
+		return "", err
 	}
+	entries, err := fs.ReadDir(trojanRulesFS, "semgreprules")
+	if err != nil {
+		os.RemoveAll(dir)
+		return "", err
+	}
+	for _, e := range entries {
+		data, err := trojanRulesFS.ReadFile("semgreprules/" + e.Name())
+		if err != nil {
+			os.RemoveAll(dir)
+			return "", err
+		}
+		if err := os.WriteFile(filepath.Join(dir, e.Name()), data, 0o600); err != nil {
+			os.RemoveAll(dir)
+			return "", err
+		}
+	}
+	return dir, nil
+}
+
+func (s Semgrep) Run(projectPath string) ([]normalizer.Finding, error) {
+	if !s.IsAvailable() {
+		return nil, fmt.Errorf("semgrep not found: run 'trojan init' to install it")
+	}
+
+	var extra []string
+	if s.PHP {
+		extra = append(extra, phpRulePacks...)
+		// Trojan's own rules are best effort: if they can't be written, the
+		// scan still runs with the registry rules.
+		if dir, err := writeTrojanRules(); err == nil {
+			defer os.RemoveAll(dir)
+			extra = append(extra, dir)
+		}
+	}
+	args := semgrepArgs(projectPath, extra)
+
 	bin := ManagedBinary("semgrep")
 	output, err := exec.Command(bin, args...).Output()
 	if _, isExit := err.(*exec.ExitError); err != nil && !isExit {
@@ -68,17 +143,22 @@ func (s Semgrep) Run(projectPath string) ([]normalizer.Finding, error) {
 
 	findings := make([]normalizer.Finding, 0, len(result.Results))
 	for i, r := range result.Results {
+		ruleID := normalizeRuleID(r.CheckID)
+		title := r.Extra.Metadata.TrojanTitle
+		if title == "" {
+			title = semgrepTitle(ruleID)
+		}
 		findings = append(findings, normalizer.Finding{
 			ID:          fmt.Sprintf("semgrep-%d", i),
 			Scanner:     s.Name(),
 			Category:    s.Category(),
 			Severity:    normalizeSemgrepSeverity(r.Extra.Severity),
-			Title:       ruleIDToTitle(r.CheckID),
+			Title:       title,
 			RawMessage:  r.Extra.Message,
 			FilePath:    r.Path,
 			LineNumber:  r.Start.Line,
 			CodeSnippet: strings.TrimSpace(r.Extra.Lines),
-			RuleID:      r.CheckID,
+			RuleID:      ruleID,
 			Status:      normalizer.StatusOpen,
 			CWEIDs:      parseCWEIDs(r.Extra.Metadata.CWE),
 			OWASP:       r.Extra.Metadata.OWASP,
@@ -107,10 +187,49 @@ type semgrepResult struct {
 		Severity string `json:"severity"`
 		Lines    string `json:"lines"`
 		Metadata struct {
-			CWE   []string `json:"cwe"`
-			OWASP []string `json:"owasp"`
+			CWE   stringOrList `json:"cwe"`
+			OWASP stringOrList `json:"owasp"`
+			// TrojanTitle is the plain-English title on Trojan's own rules.
+			TrojanTitle string `json:"trojan-title"`
 		} `json:"metadata"`
 	} `json:"extra"`
+}
+
+// stringOrList accepts a Semgrep metadata field as either a JSON list or a
+// single JSON string — both forms appear across registry rules, for cwe and
+// owasp alike (e.g. the "debug-enabled" rule emits owasp as a bare string).
+// Without this, one scalar value fails json.Unmarshal of the whole document
+// and the entire Semgrep pass is silently dropped.
+type stringOrList []string
+
+func (c *stringOrList) UnmarshalJSON(b []byte) error {
+	var list []string
+	if err := json.Unmarshal(b, &list); err == nil {
+		*c = list
+		return nil
+	}
+	var one string
+	if err := json.Unmarshal(b, &one); err == nil {
+		*c = []string{one}
+		return nil
+	}
+	*c = nil
+	return nil
+}
+
+// normalizeRuleID turns a Trojan rule's path-prefixed check_id
+// ("var.folders.x.trojan-semgrep-rules-123.trojan-php-xxe-request-xml") into
+// a stable "trojan.trojan-php-xxe-request-xml". Registry rule IDs are
+// returned unchanged.
+func normalizeRuleID(checkID string) string {
+	last := checkID
+	if i := strings.LastIndex(checkID, "."); i >= 0 {
+		last = checkID[i+1:]
+	}
+	if strings.HasPrefix(last, trojanRuleIDPrefix) && strings.Contains(checkID, "trojan-semgrep-rules-") {
+		return "trojan." + last
+	}
+	return checkID
 }
 
 // parseCWEIDs extracts CWE numbers from strings like "CWE-79: Cross-site Scripting".
@@ -138,6 +257,16 @@ func normalizeSemgrepSeverity(s string) normalizer.Severity {
 	default:
 		return normalizer.SeverityLow
 	}
+}
+
+// semgrepTitle is the finding title for a Semgrep rule: a plain-English title
+// for common rules, else one derived from the rule ID.
+func semgrepTitle(ruleID string) string {
+	parts := strings.Split(ruleID, ".")
+	if t, ok := friendlySemgrepTitles[parts[len(parts)-1]]; ok {
+		return t
+	}
+	return ruleIDToTitle(ruleID)
 }
 
 func ruleIDToTitle(ruleID string) string {

@@ -350,7 +350,8 @@ func ScanOnce(projectPath string) (*normalizer.ScanResult, error) {
 	if err := config.EnsureScanners(); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not install scanners: %s\n", err)
 	}
-	relevant := scanners.RelevantScanners(scanners.DefaultScanners(), scanners.DetectProject(projectPath))
+	project := scanners.DetectProject(projectPath)
+	relevant := scanners.RelevantScanners(scanners.DefaultScanners(), project)
 	findings, _ := scanners.RunAll(projectPath, relevant, nil)
 	findings, _ = normalizer.Reduce(findings)
 	// Refresh the code graph and place each finding in it. Additive: a graph
@@ -358,7 +359,11 @@ func ScanOnce(projectPath string) (*normalizer.ScanResult, error) {
 	if err := reach.Enrich(projectPath, findings); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: code graph not updated: %s\n", err)
 	}
-	return normalizer.SaveScanResult(projectPath, findings)
+	res, err := normalizer.SaveScanResult(projectPath, findings)
+	if err == nil {
+		res.CoverageNote = scanners.CoverageNote(project)
+	}
+	return res, err
 }
 
 func trojanFile(name string) (string, error) {

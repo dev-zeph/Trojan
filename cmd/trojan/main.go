@@ -182,6 +182,12 @@ func scanCmd() *cobra.Command {
 				os.Exit(1)
 			}
 
+			// coverageNote explains, for a project with source in a language
+			// the code-graph checks don't parse (e.g. PHP), that those files
+			// were covered by the rule scanners. Empty for fully graph-covered
+			// projects. Printed once per scan and carried on the ScanResult.
+			coverageNote := scanners.CoverageNote(project)
+
 			// prevFindingIDs tracks finding IDs from the last scan so that
 			// watch re-scans only synthesise AI for net-new findings. This
 			// prevents repeated API calls for vulnerabilities that haven't
@@ -217,6 +223,9 @@ func scanCmd() *cobra.Command {
 				if reduceStats.Any() {
 					fmt.Printf("  → Filtered %d non-shipping, merged %d duplicate finding(s)\n",
 						reduceStats.DroppedNonShipping, reduceStats.MergedDuplicates)
+				}
+				if coverageNote != "" {
+					color.Yellow("  → %s\n", coverageNote)
 				}
 
 				// Extract the dependency package list from Trivy (populated during Run()).
@@ -313,11 +322,13 @@ func scanCmd() *cobra.Command {
 						r.Packages = pkgs
 						r.Privacy = scanners.RunPrivacyScan(path)
 						r.ScannerErrors = scannerErrs
+						r.CoverageNote = coverageNote
 						return r, findings
 					}
 					scanResult.Packages = pkgs
 					scanResult.Privacy = scanners.RunPrivacyScan(path)
 					scanResult.ScannerErrors = scannerErrs
+					scanResult.CoverageNote = coverageNote
 					return scanResult, findings
 				}
 
@@ -335,6 +346,7 @@ func scanCmd() *cobra.Command {
 				r.Packages = pkgs
 				r.Privacy = scanners.RunPrivacyScan(path)
 				r.ScannerErrors = scannerErrs
+				r.CoverageNote = coverageNote
 				return r, findings
 			}
 

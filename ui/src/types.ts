@@ -42,4 +42,7 @@ export interface ScanResult {
   findings: Finding[]
   locked_count: number
   packages?: Package[]
+  // Set when the project has source in a language the code-graph checks don't
+  // parse (e.g. PHP): those files were covered by the rule scanners instead.
+  coverage_note?: string
 }
