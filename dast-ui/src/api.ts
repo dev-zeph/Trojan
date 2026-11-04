@@ -194,6 +194,49 @@ export async function verifyConsent(url: string, method: VerifyMethod): Promise<
   return res.json()
 }
 
+// ── Authenticated testing identities (test accounts) ──────────────────────────
+// Credentials Trojan uses to log in and test pages behind a login, and to
+// compare two accounts for IDOR. Stored locally (0600) by the Go backend and
+// never leaves the machine. On read, password-like field values (key matches
+// /pass|pwd|secret|token/i) come back as "" with login.secret_set = true, so the
+// UI shows "password is set" without echoing it. Re-saving an empty password on
+// an identity whose secret is already set preserves the stored value.
+export interface IdentityLogin {
+  url: string
+  method?: 'POST'
+  fields: { [field: string]: string }
+  // Set by the server on read when a password-like field has a stored value.
+  secret_set?: boolean
+}
+
+export interface Identity {
+  name: string
+  login?: IdentityLogin
+  headers?: { [header: string]: string }
+}
+
+export async function getIdentities(url: string): Promise<Identity[]> {
+  try {
+    const res = await fetch(`${BASE}/identities?url=${encodeURIComponent(url)}`)
+    if (!res.ok) return []
+    const body = await res.json()
+    return Array.isArray(body?.identities) ? body.identities : []
+  } catch {
+    return []
+  }
+}
+
+export async function putIdentities(url: string, identities: Identity[]): Promise<Identity[]> {
+  const res = await fetch(`${BASE}/identities?url=${encodeURIComponent(url)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ identities }),
+  })
+  if (!res.ok) throw new Error((await safeError(res)) ?? 'could not save test accounts')
+  const body = await res.json()
+  return Array.isArray(body?.identities) ? body.identities : []
+}
+
 async function safeError(res: Response): Promise<string | undefined> {
   try {
     const body = await res.json()
