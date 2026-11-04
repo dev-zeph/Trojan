@@ -22,6 +22,7 @@ const (
 	FrameworkEcho    Framework = "echo"
 	FrameworkChi     Framework = "chi"
 	FrameworkFiber   Framework = "fiber"
+	FrameworkPHP     Framework = "php" // plain file-routed PHP (no framework router)
 	FrameworkUnknown Framework = ""
 )
 
@@ -38,6 +39,9 @@ func Classify(projectPath string) Framework {
 		return fw
 	}
 	if fw := classifyPython(projectPath); fw != FrameworkUnknown {
+		return fw
+	}
+	if fw := classifyPHP(projectPath); fw != FrameworkUnknown {
 		return fw
 	}
 	return FrameworkUnknown
