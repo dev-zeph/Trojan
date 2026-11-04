@@ -907,7 +907,7 @@ func handleWebsiteTestStatus(ctx context.Context, req mcp.CallToolRequest) (*mcp
 	switch r.State {
 	case "running":
 		st := runStatusFor(siteDir, websiteProjectPath(req, siteDir), r)
-		st.Message = fmt.Sprintf("Still running: %s, %s in (expected %s).", r.URL, st.Elapsed, st.Expected)
+		st.Message = fmt.Sprintf("Still running: %s, %s in; expected duration %s.", r.URL, st.Elapsed, st.Expected)
 		if st.Progress != nil {
 			st.Message += fmt.Sprintf(" Phase: %s (~%d%%).", st.Progress.PhaseLabel, st.Progress.PercentEstimate)
 		}

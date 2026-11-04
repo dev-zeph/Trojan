@@ -350,3 +350,14 @@ func TestWebsiteTestDoctor_UnreachableTarget(t *testing.T) {
 		t.Errorf("doctor = %s", text)
 	}
 }
+
+func TestCoverage_AliasOfReachedHandlerCountsAsReached(t *testing.T) {
+	proj := t.TempDir()
+	os.WriteFile(filepath.Join(proj, "index.php"), []byte("<?php echo 1;"), 0o644) //nolint:errcheck
+	os.WriteFile(filepath.Join(proj, "admin.php"), []byte("<?php echo 2;"), 0o644) //nolint:errcheck
+	log := "  [step 1]\n    → http_probe\n      200 http://127.0.0.1:3300/index.php\n"
+	cov := parseRunLog(log).coverage(proj)
+	if len(cov.RoutesNotReached) != 1 || cov.RoutesNotReached[0].Route != "ANY /admin.php" {
+		t.Errorf("routes_not_reached = %+v", cov.RoutesNotReached)
+	}
+}

@@ -1,6 +1,7 @@
 package mcpserver
 
 import (
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -269,17 +270,27 @@ func (p runProgress) coverage(projectPath string) coverageManifest {
 	}
 	m.SourceRoutes = len(table)
 	m.RoutesNotReached = []unreachedRoute{}
-	seen := map[string]bool{}
-	for _, r := range table {
-		hit := false
+	reachedRoute := func(r routes.Route) bool {
 		for _, path := range paths {
 			if _, ok := routes.Match([]routes.Route{r}, r.Method, path); ok {
-				hit = true
-				break
+				return true
 			}
 		}
+		return false
+	}
+	// A handler reached through one of its aliases (PHP's /index.php vs /,
+	// a Flask view with two @route lines) counts as reached for all of them.
+	handlerKey := func(r routes.Route) string { return fmt.Sprintf("%s %s:%d", r.Method, r.HandlerFile, r.HandlerLine) }
+	handlerHit := map[string]bool{}
+	for _, r := range table {
+		if reachedRoute(r) {
+			handlerHit[handlerKey(r)] = true
+		}
+	}
+	seen := map[string]bool{}
+	for _, r := range table {
 		key := r.Method + " " + r.PathPattern
-		if hit || seen[key] {
+		if handlerHit[handlerKey(r)] || seen[key] {
 			continue
 		}
 		seen[key] = true
