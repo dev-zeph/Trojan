@@ -204,7 +204,11 @@ func newServer(project projectFunc, perRequest bool, opts ...server.ServerOption
 	s.AddTool(
 		mcp.NewTool("get_website_findings",
 			mcp.WithDescription("Return the findings from Trojan's latest test of a live website (penetration test): what was found, the evidence, and how to fix it. "+
-				"The cause is usually in the code of the project you are working in. After fixing, run start_website_test again to confirm."),
+				"The cause is usually in the code of the project you are working in. After fixing, run start_website_test again to confirm. "+
+				"If the latest test for the site failed or is still running, this reports that (with the reason) instead of findings. "+
+				"Each finding has: ID, Title, Severity (critical|high|medium|low|info), Category, URL (the probed endpoint), RawMessage (what was found), "+
+				"Simply and Actions (plain-English explanation and fix steps, when available), cwe_ids, owasp, Status, and proof (the recorded request/response that demonstrates it). "+
+				"When Trojan placed the finding in your code it also returns source_file, source_line and a ready-to-use location (\"file:line\")."),
 			mcp.WithString("url", mcp.Description("The website's URL (or just its host). Defaults to the most recently tested site.")),
 		),
 		handleGetWebsiteFindings,
@@ -238,6 +242,14 @@ func newServer(project projectFunc, perRequest bool, opts ...server.ServerOption
 				mcp.Items(map[string]any{"type": "string"})),
 		),
 		handleRetestWebsiteFindings,
+	)
+	s.AddTool(
+		mcp.NewTool("website_test_doctor",
+			mcp.WithDescription("Check whether the environment is ready to run a website pen-test BEFORE spending tokens: it verifies you are signed in and the pen-test engine binary is present, and makes no network calls (spends nothing). "+
+				"Run this first if start_website_test or website_test_status report an auth or engine problem. Returns {ready, checks[], note}. "+
+				"Note: a website test is metered by the account's Trojan token balance, not a plan."),
+		),
+		handleWebsiteTestDoctor,
 	)
 	s.AddTool(
 		tool("get_all_findings",
