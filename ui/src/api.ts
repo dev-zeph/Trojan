@@ -57,3 +57,46 @@ export function subscribeToScanEvents(onScanComplete: () => void): () => void {
 
   return () => es.close()
 }
+
+// ── Authenticated testing identities (test accounts) ──────────────────────────
+// Credentials the AI agent uses to log in and test pages behind a login, and to
+// compare two accounts for IDOR (one account reading another's data). Stored
+// locally (0600) by the Go backend and never leaves the machine. On read,
+// password-like field values (key matches /pass|pwd|secret|token/i) come back as
+// "" with login.secret_set = true, so the UI shows "password is set" without
+// echoing it. Re-saving an empty password on an identity whose secret is already
+// set preserves the stored value.
+export interface IdentityLogin {
+  url: string
+  method?: 'POST'
+  fields: { [field: string]: string }
+  secret_set?: boolean
+}
+
+export interface Identity {
+  name: string
+  login?: IdentityLogin
+  headers?: { [header: string]: string }
+}
+
+export async function getIdentities(url: string): Promise<Identity[]> {
+  try {
+    const res = await fetch(`${BASE}/identities?url=${encodeURIComponent(url)}`)
+    if (!res.ok) return []
+    const body = await res.json()
+    return Array.isArray(body?.identities) ? body.identities : []
+  } catch {
+    return []
+  }
+}
+
+export async function putIdentities(url: string, identities: Identity[]): Promise<Identity[]> {
+  const res = await fetch(`${BASE}/identities?url=${encodeURIComponent(url)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ identities }),
+  })
+  if (!res.ok) throw new Error('Could not save test accounts')
+  const body = await res.json()
+  return Array.isArray(body?.identities) ? body.identities : []
+}
