@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -206,6 +207,73 @@ func processAlive(pid int) bool {
 	return err == nil && p.Signal(syscall.Signal(0)) == nil
 }
 
+var ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+// lastLogActivity returns the most recent non-empty line of a run's log, with
+// terminal color codes stripped, so a running test can show real progress
+// ("Latest activity: crawling /admin ...") instead of only elapsed time.
+func lastLogActivity(siteDir string) string {
+	data, err := os.ReadFile(filepath.Join(siteDir, "last-run.log"))
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		s := strings.TrimSpace(ansiRe.ReplaceAllString(lines[i], ""))
+		if s != "" {
+			if len(s) > 200 {
+				s = s[:200] + "…"
+			}
+			return s
+		}
+	}
+	return ""
+}
+
+// handleWebsiteTestDoctor reports whether the environment is ready to run a
+// website test, so an agent can check readiness BEFORE spending tokens. It
+// makes no network calls and spends nothing.
+func handleWebsiteTestDoctor(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	recordActivity(clientName(ctx), "")
+	type check struct {
+		Check  string `json:"check"`
+		OK     bool   `json:"ok"`
+		Detail string `json:"detail"`
+	}
+	var checks []check
+
+	cfg, _ := config.LoadConfig()
+	signedIn := cfg != nil && strings.TrimSpace(cfg.AccessToken) != ""
+	who := "not signed in — sign in via the Trojan app (or `trojan login`), then retry"
+	if signedIn {
+		who = "signed in as " + cfg.UserEmail
+	}
+	checks = append(checks, check{"signed_in", signedIn, who})
+
+	engineOK := false
+	engineDetail := "could not locate the Trojan engine binary"
+	if exe, err := os.Executable(); err == nil {
+		if fi, statErr := os.Stat(exe); statErr == nil && !fi.IsDir() {
+			engineOK, engineDetail = true, "pen-test engine present at "+exe
+		} else {
+			engineDetail = "pen-test engine missing at " + exe + " — reinstall or rebuild the Trojan app, then retry"
+		}
+	}
+	checks = append(checks, check{"engine_binary", engineOK, engineDetail})
+
+	out := struct {
+		Ready  bool    `json:"ready"`
+		Checks []check `json:"checks"`
+		Note   string  `json:"note"`
+	}{
+		Ready:  signedIn && engineOK,
+		Checks: checks,
+		Note:   "A website test is metered by the account's Trojan token balance, not a plan. If these checks pass but a test still fails with a 401, the sign-in has expired — sign in again.",
+	}
+	data, _ := json.MarshalIndent(out, "", "  ")
+	return mcp.NewToolResultText(string(data)), nil
+}
+
 // finalizeRun decides a completed run's true state. The pen-test engine can
 // exit 0 while its agentic phase failed — it writes PENTEST_END
 // {"outcome":"error"} to the log and exits cleanly — so a non-error exit code
@@ -386,7 +454,11 @@ func handleWebsiteTestStatus(ctx context.Context, req mcp.CallToolRequest) (*mcp
 
 	switch r.State {
 	case "running":
-		return mcp.NewToolResultText(fmt.Sprintf("Still running: %s, started %s ago. Check again in a few minutes.", r.URL, time.Since(r.StartedAt).Round(time.Second))), nil
+		msg := fmt.Sprintf("Still running: %s, started %s ago.", r.URL, time.Since(r.StartedAt).Round(time.Second))
+		if act := lastLogActivity(siteDir); act != "" {
+			msg += " Latest activity: " + act
+		}
+		return mcp.NewToolResultText(msg + " Check again in a few minutes."), nil
 	case "finished":
 		return mcp.NewToolResultText(fmt.Sprintf("Finished: %s. Read the results with get_website_findings(url=%q).", r.URL, r.URL)), nil
 	}
