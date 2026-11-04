@@ -43,6 +43,7 @@ const localInstructions = `Trojan is the user's security scanner. It holds findi
 - After fixing a finding, call verify_fix with its id to prove it is gone instead of just marking it fixed. verify_fix handles both kinds: for a code finding it re-runs the scanner; for a website / pen-test finding it replays the request that proved it (seconds, no credits) and marks it fixed only if the problem is really gone.
 - get_all_findings shows code and website findings in one list, each with a source and an id. To re-check several website findings at once (or a whole test) after a fix, use retest_website_findings instead of rerunning start_website_test.
 - start_website_test and generate_report spend the user's Trojan credits; say so when you use them. Never set owner_confirmed without the user's explicit yes.
+- To test a live site: call website_test_doctor(url) first (free: checks the site is up and the saved test accounts log in, estimates cost/time), then start_website_test(url, project_path, wait=true), which blocks until the test is done and returns its findings. Don't hand-roll sleep/poll loops. Pass project_path to get findings placed on file:line with related code findings, and a list of routes the test never reached.
 - Trojan's project context (get_project_context) describes what the app does, its sensitive data and trust boundaries, and makes Trojan's testing smarter. If it is missing, offer to draft it from the codebase. After significant changes (new features or routes, a new database or data type, auth changes, new third-party services), ask the user: "Want me to update Trojan's project context to match?" Always show the user what you will save before calling update_project_context.
 
 ` + brainInstructions
@@ -115,7 +116,7 @@ func newServer(project projectFunc, perRequest bool, opts ...server.ServerOption
 	s.AddTool(
 		tool("verify_fix",
 			mcp.WithDescription("After changing code to fix a finding, re-run the Trojan check that found it. If the problem is gone the finding is marked fixed; if not, you get where it still occurs. "+
-				"Prefer this over mark_fixed. For website findings, run start_website_test again instead."),
+				"Prefer this over mark_fixed. Also takes website / pen-test finding ids: it replays the recorded attack (seconds, no credits) instead of rerunning start_website_test."),
 			idArg,
 		),
 		handleVerifyFix(project),
@@ -204,38 +205,53 @@ func newServer(project projectFunc, perRequest bool, opts ...server.ServerOption
 	s.AddTool(
 		mcp.NewTool("get_website_findings",
 			mcp.WithDescription("Return the findings from Trojan's latest test of a live website (penetration test): what was found, the evidence, and how to fix it. "+
-				"The cause is usually in the code of the project you are working in. After fixing, run start_website_test again to confirm. "+
+				"The cause is usually in the code of the project you are working in: pass project_path to get each live finding's handler file:line, its code, and related_findings (the code-scan findings in that same handler). "+
+				"After fixing, confirm with retest_website_findings(ids=[...]), which replays each finding's recorded attack in seconds for free; do NOT rerun start_website_test just to check a fix. "+
 				"If the latest test for the site failed or is still running, this reports that (with the reason) instead of findings. "+
 				"Each finding has: ID, Title, Severity (critical|high|medium|low|info), Category, URL (the probed endpoint), RawMessage (what was found), "+
 				"Simply and Actions (plain-English explanation and fix steps, when available), cwe_ids, owasp, Status, and proof (the recorded request/response that demonstrates it). "+
-				"When Trojan placed the finding in your code it also returns source_file, source_line and a ready-to-use location (\"file:line\")."),
+				"When Trojan placed the finding in your code it also returns source_file, source_line and a ready-to-use location (\"file:line\"). "+
+				"Also returns coverage (which paths the test reached and, with project_path, which code routes it never touched) and next_steps."),
 			mcp.WithString("url", mcp.Description("The website's URL (or just its host). Defaults to the most recently tested site.")),
+			mcp.WithString("project_path", mcp.Description("Optional: the site's source folder (absolute path). Places each live finding on its handler's file:line and links related code findings. Defaults to the folder the test was started with.")),
 		),
 		handleGetWebsiteFindings,
 	)
 	s.AddTool(
 		mcp.NewTool("start_website_test",
-			mcp.WithDescription("Start Trojan's AI penetration test of a live website or local dev server. Spends the user's Trojan credits and takes several minutes; returns at once. "+
-				"Check progress with website_test_status, then read results with get_website_findings. "+
+			mcp.WithDescription("Start Trojan's AI penetration test of a live website or local dev server. Spends the user's Trojan credits and takes several minutes. "+
+				"Run website_test_doctor(url=...) first: it checks the site is up and the saved test accounts log in, and estimates cost and time, without spending credits. "+
+				"With wait=true the call blocks until the test finishes and returns the findings, coverage and next steps in one go (streams progress notifications while it runs); "+
+				"if it is still running when max_wait_minutes passes, it returns live progress and you call website_test_status(wait=true) to keep waiting. "+
+				"Without wait it returns at once: check website_test_status, then read get_website_findings. "+
 				"Testing a site the user doesn't own is illegal: for a public site Trojan hasn't tested before, ask the user to confirm they own it, then pass owner_confirmed=true."),
 			mcp.WithString("url", mcp.Required(), mcp.Description("The site to test, e.g. https://myapp.com or http://localhost:3000.")),
 			mcp.WithString("thoroughness", mcp.Description(`"look" (default: only reads pages, changes nothing) or "try" (also submits forms; may leave test entries such as a test sign-up).`)),
 			mcp.WithBoolean("owner_confirmed", mcp.Description("Set only after the user has explicitly confirmed they own or may test this site.")),
-			mcp.WithString("project_path", mcp.Description("Optional: the site's source code folder, so Trojan can read the code during the test and pinpoint causes.")),
+			mcp.WithString("project_path", mcp.Description("Optional: the site's source code folder, so Trojan can read the code during the test, pinpoint causes, and report which routes the test never reached.")),
+			mcp.WithBoolean("wait", mcp.Description("Block until the test finishes and return its findings (default false). Use this instead of polling with sleeps.")),
+			mcp.WithNumber("max_wait_minutes", mcp.Description(fmt.Sprintf("With wait: give up waiting after this many minutes (default %d, max %d). The test keeps running either way.", defaultWaitMinutes, maxWaitMinutes))),
 		),
 		handleStartWebsiteTest,
 	)
 	s.AddTool(
 		mcp.NewTool("website_test_status",
-			mcp.WithDescription("Whether a website test started with start_website_test is still running, finished, or failed."),
+			mcp.WithDescription("Status of a website test started with start_website_test: running, finished, or failed (with the reason). "+
+				"While running it reports progress: phase (crawling, baseline_scan, source_review, ai_testing, explaining_findings), a rough percent_estimate, agent steps, probes sent, findings so far and the test accounts in use. "+
+				"When finished it reports coverage: the paths the test reached and, if it was started with project_path, the code routes it never reached. "+
+				"Pass wait=true to block until the run finishes and get its findings directly, instead of polling."),
 			mcp.WithString("url", mcp.Description("The site. Defaults to the most recently started test.")),
+			mcp.WithBoolean("wait", mcp.Description("If the test is still running, block until it finishes and return its findings (default false).")),
+			mcp.WithNumber("max_wait_minutes", mcp.Description(fmt.Sprintf("With wait: give up waiting after this many minutes (default %d, max %d).", defaultWaitMinutes, maxWaitMinutes))),
+			mcp.WithString("project_path", mcp.Description("Optional: the site's source folder, so coverage can list code routes the test never reached (and, with wait, findings get file:line and related code findings). Defaults to the folder the test was started with.")),
 		),
 		handleWebsiteTestStatus,
 	)
 	s.AddTool(
 		mcp.NewTool("retest_website_findings",
-			mcp.WithDescription("Re-check website / pen-test findings in seconds by replaying the exact request that proved each one — no credits, no full rerun. "+
-				"Reports each as fixed, still open, or inconclusive, and marks fixed ones resolved. Use after changing code behind a live finding. "+
+			mcp.WithDescription("The fix-verification step for live website / pen-test findings: after you change the code behind a finding from get_website_findings, call this with its id to prove the fix. "+
+				"It replays the exact request that proved each finding (seconds, no credits, no 10-minute full rerun) and reports each as fixed, still open, or inconclusive, marking fixed ones resolved. "+
+				"This is the website equivalent of verify_fix; use it instead of start_website_test to check a fix. "+
 				"Without ids, re-checks every open finding for the site; pass ids to re-check only those. A finding with no recorded proof (older tests) is inconclusive: run start_website_test instead."),
 			mcp.WithString("url", mcp.Description("The tested site (or its host). Defaults to the site holding the given ids, else the most recently tested site.")),
 			mcp.WithArray("ids", mcp.Description("Specific website finding IDs to re-check. Omit to re-check all open findings for the site."),
@@ -245,9 +261,10 @@ func newServer(project projectFunc, perRequest bool, opts ...server.ServerOption
 	)
 	s.AddTool(
 		mcp.NewTool("website_test_doctor",
-			mcp.WithDescription("Check whether the environment is ready to run a website pen-test BEFORE spending tokens: it verifies you are signed in and the pen-test engine binary is present, and makes no network calls (spends nothing). "+
-				"Run this first if start_website_test or website_test_status report an auth or engine problem. Returns {ready, checks[], note}. "+
-				"Note: a website test is metered by the account's Trojan token balance, not a plan."),
+			mcp.WithDescription("Preflight for a website pen-test, BEFORE spending credits. Always checks: signed in, pen-test engine present, token balance. "+
+				"With url it also checks: the site answers, ownership status, and that every saved test account really logs in (a failing login aborts the whole test), and returns an estimate of cost (tokens) and time. "+
+				"Spends no Trojan credits; with url it sends a few requests to the target (one GET plus one login per saved account). Returns {ready, checks[], estimate, note}; fix any check with ok=false before starting."),
+			mcp.WithString("url", mcp.Description("The site you plan to test. Omit to check only the local setup.")),
 		),
 		handleWebsiteTestDoctor,
 	)

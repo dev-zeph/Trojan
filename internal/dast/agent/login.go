@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -103,4 +104,80 @@ func loginLabel(r *LoginRecipe) string {
 		path = u.Path
 	}
 	return m + " " + path
+}
+
+// LoginCheck is the outcome of trying a login recipe without running a test.
+type LoginCheck struct {
+	OK     bool   `json:"ok"`
+	Status int    `json:"status,omitempty"` // HTTP status of the login response
+	Detail string `json:"detail"`
+}
+
+// CheckLogin performs a recipe's login once and judges whether it really
+// signed in, for preflight checks. It is stricter than performLogin (which
+// only needs some cookie): many apps set a session cookie on a failed login
+// too (e.g. to carry a flash message), so success here also needs the login
+// to move on, either a redirect away from the login URL or a page with no
+// password field. Credentials never appear in the result.
+func CheckLogin(ctx context.Context, client *http.Client, r *LoginRecipe) LoginCheck {
+	if r == nil || strings.TrimSpace(r.URL) == "" {
+		return LoginCheck{Detail: "the login recipe has no URL"}
+	}
+	if client == nil {
+		client = &http.Client{Timeout: 15 * time.Second}
+	}
+	method := strings.ToUpper(strings.TrimSpace(r.Method))
+	if method == "" {
+		method = http.MethodPost
+	}
+	form := url.Values{}
+	for k, v := range r.Fields {
+		form.Set(k, v)
+	}
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return LoginCheck{Detail: err.Error()}
+	}
+	c := *client
+	c.Jar = jar
+	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+
+	req, err := http.NewRequestWithContext(ctx, method, r.URL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return LoginCheck{Detail: "invalid login URL: " + err.Error()}
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := c.Do(req)
+	if err != nil {
+		return LoginCheck{Detail: "could not reach the login page: " + err.Error()}
+	}
+	defer resp.Body.Close()
+	body := make([]byte, 64*1024)
+	n, _ := io.ReadFull(resp.Body, body)
+	page := strings.ToLower(string(body[:n]))
+
+	u, _ := url.Parse(r.URL)
+	cookies := jar.Cookies(u)
+	label := loginLabel(r)
+	if len(cookies) == 0 {
+		return LoginCheck{Status: resp.StatusCode, Detail: fmt.Sprintf("%s returned HTTP %d and set no session cookie: wrong email/password, or the login URL or field names are off", label, resp.StatusCode)}
+	}
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		loc, _ := resp.Location()
+		if loc != nil && u != nil && strings.TrimRight(loc.Path, "/") == strings.TrimRight(u.Path, "/") {
+			return LoginCheck{Status: resp.StatusCode, Detail: label + " redirected back to the login page: the credentials were most likely rejected"}
+		}
+		to := ""
+		if loc != nil {
+			to = " to " + loc.Path
+		}
+		return LoginCheck{OK: true, Status: resp.StatusCode, Detail: fmt.Sprintf("signed in (%s redirected%s and set a session cookie)", label, to)}
+	}
+	if resp.StatusCode >= 400 {
+		return LoginCheck{Status: resp.StatusCode, Detail: fmt.Sprintf("%s returned HTTP %d: the login was rejected", label, resp.StatusCode)}
+	}
+	if strings.Contains(page, `type="password"`) || strings.Contains(page, `type='password'`) || strings.Contains(page, "type=password") {
+		return LoginCheck{Status: resp.StatusCode, Detail: label + " answered with the login form again: the credentials were most likely rejected (a cookie was set, but apps often do that on failure too)"}
+	}
+	return LoginCheck{OK: true, Status: resp.StatusCode, Detail: fmt.Sprintf("signed in (%s returned HTTP %d with a session cookie and no login form)", label, resp.StatusCode)}
 }
