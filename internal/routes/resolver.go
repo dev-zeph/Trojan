@@ -49,6 +49,10 @@ func extractFor(fw Framework, projectPath string) []Route {
 		return extractFastAPI(projectPath)
 	case FrameworkGin:
 		return extractGin(projectPath)
+	case FrameworkFlask:
+		return extractFlask(projectPath)
+	case FrameworkPHP:
+		return extractPHP(projectPath)
 	default:
 		return nil
 	}
