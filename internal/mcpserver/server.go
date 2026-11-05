@@ -40,6 +40,7 @@ const localInstructions = `Trojan is the user's security scanner. It holds findi
 
 - For code tools, always pass project_path: the absolute path of the project folder you are working in.
 - Many users aren't security experts. Explain findings in plain language: what could happen and to whom, before how to fix it.
+- For dependencies, call check_intel: it matches exact installed versions to Trojan's breach-aware intel (Pro/Team). Matches are proposals ("matched, unproven"), never say the app is vulnerable until prove_intel_match confirms it. Offer prove_intel_match after check_intel; its hosted test spends credits and needs the owner's explicit yes (owner_confirmed). Credentials never go in chat.
 - After fixing a finding, call verify_fix with its id to prove it is gone instead of just marking it fixed. verify_fix handles both kinds: for a code finding it re-runs the scanner; for a website / pen-test finding it replays the request that proved it (seconds, no credits) and marks it fixed only if the problem is really gone.
 - get_all_findings shows code and website findings in one list, each with a source and an id. To re-check several website findings at once (or a whole test) after a fix, use retest_website_findings instead of rerunning start_website_test.
 - start_website_test and generate_report spend the user's Trojan credits; say so when you use them. Never set owner_confirmed without the user's explicit yes.
@@ -159,9 +160,29 @@ func newServer(project projectFunc, perRequest bool, opts ...server.ServerOption
 	)
 	s.AddTool(
 		tool("get_dependency_risks",
-			mcp.WithDescription("Packages with known vulnerabilities, their severity, and the version that fixes each. Use to upgrade dependencies."),
+			mcp.WithDescription("Packages with known vulnerabilities (Trivy's static CVE list), their severity, and the version that fixes each. Use to upgrade dependencies. For Trojan's curated, breach-aware intel matched to exact installed versions, with verify-and-fix, use check_intel."),
 		),
 		handleDependencyRisks(project),
+	)
+	s.AddTool(
+		tool("check_intel",
+			mcp.WithDescription("Match the project's exact installed dependency versions (from its lockfiles) against Trojan's curated, breach-aware advisory intel, including packages published by attackers. Needs a Pro/Team plan. "+
+				"A match is a proposal, never a verdict: it is reported as \"matched, unproven\". Do not tell the user their app is vulnerable; offer to check whether it is actually affected with prove_intel_match. "+
+				"Returns each match with a match id, the fix version, packages scanned, lockfiles and how fresh the intel is, and saves match history in .trojan/intel/matches.json."),
+		),
+		handleCheckIntel(project),
+	)
+	s.AddTool(
+		tool("prove_intel_match",
+			mcp.WithDescription("Move a check_intel match forward. Always starts with a free version check: if the affected version is no longer installed the match is fixed; a malicious release is confirmed; a vulnerability with no playbook is confirmed by version only (whether the code is affected is not tested). "+
+				"Confirmed matches become findings (get_findings, verify_fix). "+
+				"If the advisory has a Trojan playbook AND you pass target_url, it starts a hosted verification test of that live site: that spends the user's Trojan credits, so without owner_confirmed=true it only returns the confirmation request and starts nothing. "+
+				"Set owner_confirmed only after the user explicitly says they own the site and OKs the credit spend. Call it again on a match in the proving state to read the result."),
+			mcp.WithString("match_id", mcp.Required(), mcp.Description("The match id from check_intel.")),
+			mcp.WithString("target_url", mcp.Description("Optional: the live site to verify against (only used when a playbook exists), e.g. https://myapp.com or http://localhost:3000.")),
+			mcp.WithBoolean("owner_confirmed", mcp.Description("Set only after the user has explicitly confirmed they own or may test this site and agreed to spend Trojan credits.")),
+		),
+		handleProveIntelMatch(project),
 	)
 
 	// ── Project context ──
