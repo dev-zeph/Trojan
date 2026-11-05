@@ -4,7 +4,6 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"compress/gzip"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,7 +12,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"time"
 
 	"github.com/fatih/color"
 )
@@ -68,28 +66,6 @@ func pythonExe() string {
 	return ""
 }
 
-// resolveLatestVersion queries the GitHub releases API for the latest version of a scanner.
-// Returns the raw version string (tag with prefix stripped).
-func resolveLatestVersion(repo, tagPrefix string) (string, error) {
-	client := &http.Client{Timeout: 10 * time.Second}
-	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", repo)
-	resp, err := client.Get(url)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("GitHub API returned %d", resp.StatusCode)
-	}
-	var release struct {
-		TagName string `json:"tag_name"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
-		return "", err
-	}
-	return strings.TrimPrefix(release.TagName, tagPrefix), nil
-}
-
 // downloadWithRetry attempts to download a scanner binary, retrying once on failure.
 func downloadWithRetry(asset PlatformAsset, dest string) error {
 	err := downloadScanner(asset, dest)
@@ -114,31 +90,6 @@ func clearQuarantine(path string) {
 	}
 }
 
-// tryInstallLatest attempts to download the latest GitHub release of a scanner.
-// Returns true if installation succeeded.
-func tryInstallLatest(s ScannerManifest, pinnedAsset PlatformAsset, dest string) bool {
-	latestVersion, err := resolveLatestVersion(s.GitHubRepo, s.TagPrefix)
-	if err != nil || latestVersion == s.Version {
-		return false
-	}
-
-	latestURL := strings.ReplaceAll(pinnedAsset.URL, s.Version, latestVersion)
-	latestAsset := PlatformAsset{
-		URL:             latestURL,
-		SHA256:          "", // cannot verify checksum for dynamically resolved versions
-		Archive:         pinnedAsset.Archive,
-		BinaryInArchive: pinnedAsset.BinaryInArchive,
-	}
-
-	fmt.Printf("  Installing %s v%s (latest)... ", s.Name, latestVersion)
-	if err := downloadWithRetry(latestAsset, dest); err != nil {
-		color.Yellow("failed\n")
-		return false
-	}
-	color.Green("done\n")
-	return true
-}
-
 // installPipDefensive installs a pip-based scanner with multiple fallback strategies:
 //  1. Try latest version via pip (if python3 is available)
 //  2. Fall back to pinned version via pip
@@ -161,18 +112,15 @@ func installPipDefensive(s ScannerManifest, asset PlatformAsset, binDir string) 
 	}
 
 	if hasPython {
-		// Try latest version first
-		if s.GitHubRepo != "" {
-			if latestVersion, err := resolveLatestVersion(s.GitHubRepo, s.TagPrefix); err == nil && latestVersion != s.Version {
-				latestPkg := name + "==" + latestVersion
-				if err := installViaPip(latestPkg, binDir); err == nil {
-					return nil
-				}
-			}
-		}
-		// Fall back to pinned version
+		// Pinned versions only (see EnsureScanners): the main pin, then the
+		// pin for older Pythons.
 		if err := installViaPip(asset.PipPackage, binDir); err == nil {
 			return nil
+		}
+		if s.PipFallback != "" {
+			if err := installViaPip(s.PipFallback, binDir); err == nil {
+				return nil
+			}
 		}
 	}
 
@@ -244,14 +192,8 @@ func EnsureScanners() error {
 		}
 
 		// ── binary scanners ───────────────────────────────────────
-		// Try latest version from GitHub first
-		if s.GitHubRepo != "" {
-			if tryInstallLatest(s, asset, dest) {
-				continue
-			}
-		}
-
-		// Fall back to pinned version with retry
+		// Only the pinned, checksummed version is installed, never an unverified
+		// "latest" release, so every user runs the same tested scanner.
 		fmt.Printf("  Installing %s v%s... ", s.Name, s.Version)
 		if err := downloadWithRetry(asset, dest); err != nil {
 			color.Red("failed\n")
@@ -343,17 +285,17 @@ func downloadScanner(asset PlatformAsset, dest string) error {
 	}
 	tmp.Close()
 
-	// Verify SHA256 if set
-	if asset.SHA256 != "" {
-		actual, err := sha256File(tmpPath)
-		if err != nil {
-			return fmt.Errorf("checksum failed: %w", err)
-		}
-		if actual != asset.SHA256 {
-			return fmt.Errorf("checksum mismatch\n    expected: %s\n    got:      %s\n    The downloaded file may be corrupted or tampered with.", asset.SHA256, actual)
-		}
-	} else {
-		color.Yellow("(unverified — no checksum configured) ")
+	// Every download must match its pinned checksum; an asset without one is
+	// refused rather than installed unverified.
+	if asset.SHA256 == "" {
+		return fmt.Errorf("no checksum configured for %s, so it was not installed", asset.URL)
+	}
+	actual, err := sha256File(tmpPath)
+	if err != nil {
+		return fmt.Errorf("checksum failed: %w", err)
+	}
+	if actual != asset.SHA256 {
+		return fmt.Errorf("checksum mismatch\n    expected: %s\n    got:      %s\n    The downloaded file may be corrupted or tampered with.", asset.SHA256, actual)
 	}
 
 	// Extract or move binary into place
@@ -491,14 +433,8 @@ func EnsureDastScanners() error {
 
 		dest := filepath.Join(binDir, s.Binary+exeSuffix())
 
-		// Try latest version from GitHub first
-		if s.GitHubRepo != "" {
-			if tryInstallLatest(s, asset, dest) {
-				continue
-			}
-		}
-
-		// Fall back to pinned version with retry
+		// Only the pinned, checksummed version is installed, never an unverified
+		// "latest" release, so every user runs the same tested scanner.
 		fmt.Printf("  Installing %s v%s... ", s.Name, s.Version)
 		if err := downloadWithRetry(asset, dest); err != nil {
 			color.Red("failed\n")

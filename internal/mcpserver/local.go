@@ -352,7 +352,15 @@ func ScanOnce(projectPath string) (*normalizer.ScanResult, error) {
 	}
 	project := scanners.DetectProject(projectPath)
 	relevant := scanners.RelevantScanners(scanners.DefaultScanners(), project)
-	findings, _ := scanners.RunAll(projectPath, relevant, nil)
+	findings, results := scanners.RunAll(projectPath, relevant, nil)
+	var scanErrs []normalizer.ScannerError
+	for _, r := range results {
+		if r.Err != nil {
+			scanErrs = append(scanErrs, normalizer.ScannerError{Scanner: r.Scanner, Error: oneLine(r.Err)})
+			// run_scan reads these lines and warns the caller.
+			fmt.Fprintf(os.Stderr, "%s%s: %s\n", ScannerErrorMarker, r.Scanner, oneLine(r.Err))
+		}
+	}
 	findings, _ = normalizer.Reduce(findings)
 	// Refresh the code graph and place each finding in it. Additive: a graph
 	// failure is logged and the scan is still saved.
@@ -362,8 +370,36 @@ func ScanOnce(projectPath string) (*normalizer.ScanResult, error) {
 	res, err := normalizer.SaveScanResult(projectPath, findings)
 	if err == nil {
 		res.CoverageNote = scanners.CoverageNote(project)
+		res.ScannerErrors = scanErrs
 	}
 	return res, err
+}
+
+// ScannerErrorMarker prefixes the stderr lines scan-once writes for each
+// scanner that failed to run.
+const ScannerErrorMarker = "TROJAN_SCANNER_ERROR "
+
+// oneLine shortens a scanner error to its first line, capped, for messages.
+func oneLine(err error) string {
+	s := strings.TrimSpace(err.Error())
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	if len(s) > 200 {
+		s = s[:200] + "..."
+	}
+	return s
+}
+
+// scannerErrorLines pulls the failed-scanner lines out of scan-once output.
+func scannerErrorLines(out string) []string {
+	var lines []string
+	for _, l := range strings.Split(out, "\n") {
+		if i := strings.Index(l, ScannerErrorMarker); i >= 0 {
+			lines = append(lines, strings.TrimSpace(l[i+len(ScannerErrorMarker):]))
+		}
+	}
+	return lines
 }
 
 func trojanFile(name string) (string, error) {
