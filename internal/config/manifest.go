@@ -24,9 +24,12 @@ type ScannerManifest struct {
 	Name       string                   // human-readable name e.g. "Trivy"
 	Binary     string                   // installed binary filename e.g. "trivy"
 	Version    string                   // pinned version string
-	GitHubRepo string                   // "owner/repo" for resolving latest version via GitHub releases API
+	GitHubRepo string                   // "owner/repo" of the releases (reference only; installs use the pinned assets)
 	TagPrefix  string                   // prefix in release tags, e.g. "v" for tags like "v0.70.0"
 	Platforms  map[string]PlatformAsset // keyed by "darwin/amd64", "darwin/arm64", "linux/amd64", "linux/arm64"
+	// PipFallback is a second pinned "name==version" for pip scanners, tried
+	// when the main pin can't install on the user's Python (macOS ships 3.9).
+	PipFallback string
 }
 
 // Scanners is the pinned manifest for SAST/SCA scanners installed by `trojan init`.
@@ -35,36 +38,37 @@ var Scanners = []ScannerManifest{
 	{
 		Name:       "Trivy",
 		Binary:     "trivy",
-		Version:    "0.70.0",
+		Version:    "0.76.1",
 		GitHubRepo: "aquasecurity/trivy",
 		TagPrefix:  "v",
 		Platforms: map[string]PlatformAsset{
 			"linux/amd64": {
-				URL:             "https://github.com/aquasecurity/trivy/releases/download/v0.70.0/trivy_0.70.0_Linux-64bit.tar.gz",
-				SHA256:          "8b4376d5d6befe5c24d503f10ff136d9e0c49f9127a4279fd110b727929a5aa9",
+				URL:             "https://github.com/aquasecurity/trivy/releases/download/v0.76.1/trivy_0.76.1_Linux-64bit.tar.gz",
+				SHA256:          "c7cbe3137fb8a48a17574bede3dd6beb16742d1e9772929940fc90082c39d9c0",
 				Archive:         ArchiveTarGz,
 				BinaryInArchive: "trivy",
 			},
 			"linux/arm64": {
-				URL:             "https://github.com/aquasecurity/trivy/releases/download/v0.70.0/trivy_0.70.0_Linux-ARM64.tar.gz",
-				SHA256:          "2f6bb988b553a1bbac6bdd1ce890f5e412439564e17522b88a4541b4f364fc8d",
+				URL:             "https://github.com/aquasecurity/trivy/releases/download/v0.76.1/trivy_0.76.1_Linux-ARM64.tar.gz",
+				SHA256:          "e174dff2a6dba5e3ae41f8d0537a6324405bd08132497340304c6b20e0f16a1f",
 				Archive:         ArchiveTarGz,
 				BinaryInArchive: "trivy",
 			},
 			"darwin/amd64": {
-				URL:             "https://github.com/aquasecurity/trivy/releases/download/v0.70.0/trivy_0.70.0_macOS-64bit.tar.gz",
-				SHA256:          "52d531452b19e7593da29366007d02a810e1e0080d02f9cf6a1afb46c35aaa93",
+				URL:             "https://github.com/aquasecurity/trivy/releases/download/v0.76.1/trivy_0.76.1_macOS-64bit.tar.gz",
+				SHA256:          "7aa762eacd582052d053b62dcf972a1ab058abe39a57ccae234ed8894945b6b7",
 				Archive:         ArchiveTarGz,
 				BinaryInArchive: "trivy",
 			},
 			"darwin/arm64": {
-				URL:             "https://github.com/aquasecurity/trivy/releases/download/v0.70.0/trivy_0.70.0_macOS-ARM64.tar.gz",
-				SHA256:          "68e543c51dcc96e1c344053a4fde9660cf602c25565d9f09dc17dd41e13b838a",
+				URL:             "https://github.com/aquasecurity/trivy/releases/download/v0.76.1/trivy_0.76.1_macOS-ARM64.tar.gz",
+				SHA256:          "11a9b6cd2752011b54f01ea4bd0dbfa9f0c41dc6538d5a3f9d23955f471bf4e5",
 				Archive:         ArchiveTarGz,
 				BinaryInArchive: "trivy",
 			},
 			"windows/amd64": {
-				URL:             "https://github.com/aquasecurity/trivy/releases/download/v0.70.0/trivy_0.70.0_windows-64bit.zip",
+				URL:             "https://github.com/aquasecurity/trivy/releases/download/v0.76.1/trivy_0.76.1_windows-64bit.zip",
+				SHA256:          "1051f49cb22d5284f43425f72aad9cda63ca12ceb92e7caa06903490c82dc9bf",
 				Archive:         ArchiveZip,
 				BinaryInArchive: "trivy.exe",
 			},
@@ -73,17 +77,20 @@ var Scanners = []ScannerManifest{
 	{
 		Name:       "Semgrep",
 		Binary:     "semgrep",
-		Version:    "1.89.0",
+		Version:    "1.157.0",
 		GitHubRepo: "semgrep/semgrep",
 		TagPrefix:  "v",
 		// Semgrep does not ship standalone binaries — installed via pip into ~/.trojan/venv/.
-		// The same pip entry is used for all platforms.
+		// The same pip entry is used for all platforms. Semgrep after 1.136.0
+		// needs Python 3.10+, but macOS ships 3.9, so 1.136.0 is the fallback
+		// rather than letting the installer reach for Homebrew.
+		PipFallback: "semgrep==1.136.0",
 		Platforms: map[string]PlatformAsset{
-			"linux/amd64":   {Archive: ArchivePip, PipPackage: "semgrep==1.89.0"},
-			"linux/arm64":   {Archive: ArchivePip, PipPackage: "semgrep==1.89.0"},
-			"darwin/amd64":  {Archive: ArchivePip, PipPackage: "semgrep==1.89.0"},
-			"darwin/arm64":  {Archive: ArchivePip, PipPackage: "semgrep==1.89.0"},
-			"windows/amd64": {Archive: ArchivePip, PipPackage: "semgrep==1.89.0"},
+			"linux/amd64":   {Archive: ArchivePip, PipPackage: "semgrep==1.157.0"},
+			"linux/arm64":   {Archive: ArchivePip, PipPackage: "semgrep==1.157.0"},
+			"darwin/amd64":  {Archive: ArchivePip, PipPackage: "semgrep==1.157.0"},
+			"darwin/arm64":  {Archive: ArchivePip, PipPackage: "semgrep==1.157.0"},
+			"windows/amd64": {Archive: ArchivePip, PipPackage: "semgrep==1.157.0"},
 		},
 	},
 	{
@@ -119,6 +126,7 @@ var Scanners = []ScannerManifest{
 			},
 			"windows/amd64": {
 				URL:             "https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_windows_x64.zip",
+				SHA256:          "d29144deff3a68aa93ced33dddf84b7fdc26070add4aa0f4513094c8332afc4e",
 				Archive:         ArchiveZip,
 				BinaryInArchive: "gitleaks.exe",
 			},
@@ -127,14 +135,15 @@ var Scanners = []ScannerManifest{
 	{
 		Name:       "Checkov",
 		Binary:     "checkov",
-		Version:    "3.2.529",
+		Version:    "3.4.3",
 		GitHubRepo: "bridgecrewio/checkov",
 		TagPrefix:  "",
 		// No native darwin/arm64 build — uses darwin/amd64 via Rosetta on Apple Silicon.
+		// No linux/arm64 build after 3.2.529, so that platform stays on 3.2.529.
 		Platforms: map[string]PlatformAsset{
 			"linux/amd64": {
-				URL:             "https://github.com/bridgecrewio/checkov/releases/download/3.2.529/checkov_linux_X86_64.zip",
-				SHA256:          "84b837a42d647711d066b7acf89e6ccadbb15b3977a6f7cde552d860faec01b7",
+				URL:             "https://github.com/bridgecrewio/checkov/releases/download/3.4.3/checkov_linux_X86_64.zip",
+				SHA256:          "f4f183b7fa57351f62400321f72bf6e24958670909d389f0f1973faa784a0135",
 				Archive:         ArchiveZip,
 				BinaryInArchive: "dist/checkov",
 			},
@@ -145,20 +154,21 @@ var Scanners = []ScannerManifest{
 				BinaryInArchive: "dist/checkov",
 			},
 			"darwin/amd64": {
-				URL:             "https://github.com/bridgecrewio/checkov/releases/download/3.2.529/checkov_darwin_X86_64.zip",
-				SHA256:          "e9b1f27e297f029dc52295d940c94225dc333252b21ae05f86a6bd7ab8599d85",
+				URL:             "https://github.com/bridgecrewio/checkov/releases/download/3.4.3/checkov_darwin_X86_64.zip",
+				SHA256:          "2a048a05a93abdafb94011eeb1bd3cc21fdec16cc3d6978340a724f88e38d2b2",
 				Archive:         ArchiveZip,
 				BinaryInArchive: "dist/checkov",
 			},
 			"darwin/arm64": {
 				// No native arm64 build — Rosetta runs x86_64 transparently on Apple Silicon
-				URL:             "https://github.com/bridgecrewio/checkov/releases/download/3.2.529/checkov_darwin_X86_64.zip",
-				SHA256:          "e9b1f27e297f029dc52295d940c94225dc333252b21ae05f86a6bd7ab8599d85",
+				URL:             "https://github.com/bridgecrewio/checkov/releases/download/3.4.3/checkov_darwin_X86_64.zip",
+				SHA256:          "2a048a05a93abdafb94011eeb1bd3cc21fdec16cc3d6978340a724f88e38d2b2",
 				Archive:         ArchiveZip,
 				BinaryInArchive: "dist/checkov",
 			},
 			"windows/amd64": {
-				URL:             "https://github.com/bridgecrewio/checkov/releases/download/3.2.529/checkov_windows_X86_64.zip",
+				URL:             "https://github.com/bridgecrewio/checkov/releases/download/3.4.3/checkov_windows_X86_64.zip",
+				SHA256:          "f9a6ec2a4f2c6ca3e24248d6244fc967f734dbd9f10c40755d7d5c9db960246b",
 				Archive:         ArchiveZip,
 				BinaryInArchive: "dist/checkov.exe",
 			},
@@ -167,36 +177,37 @@ var Scanners = []ScannerManifest{
 	{
 		Name:       "Syft",
 		Binary:     "syft",
-		Version:    "1.44.0",
+		Version:    "1.56.0",
 		GitHubRepo: "anchore/syft",
 		TagPrefix:  "v",
 		Platforms: map[string]PlatformAsset{
 			"linux/amd64": {
-				URL:             "https://github.com/anchore/syft/releases/download/v1.44.0/syft_1.44.0_linux_amd64.tar.gz",
-				SHA256:          "0e91737aee2b5baf1d255b959630194a302335d848ff97bb07921eb6205b5f5a",
+				URL:             "https://github.com/anchore/syft/releases/download/v1.56.0/syft_1.56.0_linux_amd64.tar.gz",
+				SHA256:          "1c2493cfcf52d3367d6cb25780d9190c111c2219c34c820574c43e8bae15c528",
 				Archive:         ArchiveTarGz,
 				BinaryInArchive: "syft",
 			},
 			"linux/arm64": {
-				URL:             "https://github.com/anchore/syft/releases/download/v1.44.0/syft_1.44.0_linux_arm64.tar.gz",
-				SHA256:          "6f6cdcdc695721d91ce756e3b5bc3e3416599c464101f5e32e9c3f33054ee6d9",
+				URL:             "https://github.com/anchore/syft/releases/download/v1.56.0/syft_1.56.0_linux_arm64.tar.gz",
+				SHA256:          "ace61b9397ae28189c674ae332d67a8074dafd71e87724dfb8b22412d8253bb5",
 				Archive:         ArchiveTarGz,
 				BinaryInArchive: "syft",
 			},
 			"darwin/amd64": {
-				URL:             "https://github.com/anchore/syft/releases/download/v1.44.0/syft_1.44.0_darwin_amd64.tar.gz",
-				SHA256:          "c40ece5407927327f94f35901727dbc604b46857e04f04ec94a310845fb71bde",
+				URL:             "https://github.com/anchore/syft/releases/download/v1.56.0/syft_1.56.0_darwin_amd64.tar.gz",
+				SHA256:          "ff37fb20e8d072e193cb659ecb932994ba2add772cbf86909c368fb95a630c50",
 				Archive:         ArchiveTarGz,
 				BinaryInArchive: "syft",
 			},
 			"darwin/arm64": {
-				URL:             "https://github.com/anchore/syft/releases/download/v1.44.0/syft_1.44.0_darwin_arm64.tar.gz",
-				SHA256:          "24e4d34078ae81da7c82539616f0ccac3e226cf4f74a38ce6fb3463619e50a55",
+				URL:             "https://github.com/anchore/syft/releases/download/v1.56.0/syft_1.56.0_darwin_arm64.tar.gz",
+				SHA256:          "c19b97a8c175ac7bd8105b8c8240ce740bf078333b12cc62ea49002c1b33e6e0",
 				Archive:         ArchiveTarGz,
 				BinaryInArchive: "syft",
 			},
 			"windows/amd64": {
-				URL:             "https://github.com/anchore/syft/releases/download/v1.44.0/syft_1.44.0_windows_amd64.zip",
+				URL:             "https://github.com/anchore/syft/releases/download/v1.56.0/syft_1.56.0_windows_amd64.zip",
+				SHA256:          "c4cd2846dc0128e29a947bc6f56e1e5ef01707275b0e58590fbe48105198661d",
 				Archive:         ArchiveZip,
 				BinaryInArchive: "syft.exe",
 			},
@@ -205,31 +216,31 @@ var Scanners = []ScannerManifest{
 	{
 		Name:       "Bearer",
 		Binary:     "bearer",
-		Version:    "2.0.2",
+		Version:    "2.1.3",
 		GitHubRepo: "Bearer/bearer",
 		TagPrefix:  "v",
 		Platforms: map[string]PlatformAsset{
 			"linux/amd64": {
-				URL:             "https://github.com/Bearer/bearer/releases/download/v2.0.2/bearer_2.0.2_linux_amd64.tar.gz",
-				SHA256:          "865c80c5f80aaca1f83e98bca4decb0fd5b5d024e13f8ec48e94d69430d0d23b",
+				URL:             "https://github.com/Bearer/bearer/releases/download/v2.1.3/bearer_2.1.3_linux_amd64.tar.gz",
+				SHA256:          "974d4ad7bb71bc578675684d444e345e8fbad91c85557aac035406ef5cc04c68",
 				Archive:         ArchiveTarGz,
 				BinaryInArchive: "bearer",
 			},
 			"linux/arm64": {
-				URL:             "https://github.com/Bearer/bearer/releases/download/v2.0.2/bearer_2.0.2_linux_arm64.tar.gz",
-				SHA256:          "cd6b64990c5df0cdfd88be1417fedfb0118f607897baac2f9cda9cb292f665a2",
+				URL:             "https://github.com/Bearer/bearer/releases/download/v2.1.3/bearer_2.1.3_linux_arm64.tar.gz",
+				SHA256:          "93e340650311d4129689a25e7063dd146bcda2e33d22adf15ffba5fc8b112260",
 				Archive:         ArchiveTarGz,
 				BinaryInArchive: "bearer",
 			},
 			"darwin/amd64": {
-				URL:             "https://github.com/Bearer/bearer/releases/download/v2.0.2/bearer_2.0.2_darwin_amd64.tar.gz",
-				SHA256:          "1abfa29acd12c5f0157354a6716576e873dc3244b375808cea979603a3ba6303",
+				URL:             "https://github.com/Bearer/bearer/releases/download/v2.1.3/bearer_2.1.3_darwin_amd64.tar.gz",
+				SHA256:          "d16d67f906c22f0c25f08c380704ce0fd4fc231c1b00b10bc0a73a69bbfab5a0",
 				Archive:         ArchiveTarGz,
 				BinaryInArchive: "bearer",
 			},
 			"darwin/arm64": {
-				URL:             "https://github.com/Bearer/bearer/releases/download/v2.0.2/bearer_2.0.2_darwin_arm64.tar.gz",
-				SHA256:          "84f089005c643271572e45ebd507732b29326f4123602f7d6f5ca41844805717",
+				URL:             "https://github.com/Bearer/bearer/releases/download/v2.1.3/bearer_2.1.3_darwin_arm64.tar.gz",
+				SHA256:          "927ce356022a15dcf9a7a61fefe33335d62bbec2014fc63e7114f348aeba4f7d",
 				Archive:         ArchiveTarGz,
 				BinaryInArchive: "bearer",
 			},
@@ -273,6 +284,7 @@ var DastScanners = []ScannerManifest{
 			},
 			"windows/amd64": {
 				URL:             "https://github.com/projectdiscovery/nuclei/releases/download/v3.8.0/nuclei_3.8.0_windows_amd64.zip",
+				SHA256:          "5378cee06b67f6aa78d4e34ed717c18f6d1d8d8d44a089b46d91afcc76f8ec1d",
 				Archive:         ArchiveZip,
 				BinaryInArchive: "nuclei.exe",
 			},
