@@ -49,6 +49,9 @@ import (
 var version = "0.0.1"
 
 func main() {
+	// Builds may stamp "v1.2.3" or "1.2.3"; output always adds its own "v".
+	version = strings.TrimPrefix(version, "v")
+
 	rootCmd := &cobra.Command{
 		Use:   "trojan",
 		Short: "A developer-first security CLI",
