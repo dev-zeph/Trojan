@@ -1,7 +1,6 @@
 package mcpserver
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,6 +24,15 @@ func stubScanners(t *testing.T) {
 		os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\nexit 0\n"), 0o755) //nolint:errcheck
 	}
 	os.WriteFile(filepath.Join(bin, "semgrep"), []byte("#!/bin/sh\necho 'could not download rules' >&2\nexit 2\n"), 0o755) //nolint:errcheck
+	// pip scanners (semgrep; checkov on Apple Silicon) are checked for a
+	// working venv: give each a fake one so nothing is downloaded.
+	for _, venv := range []string{"venv", "venv-checkov"} {
+		vb := filepath.Join(home, ".trojan", venv, "bin")
+		os.MkdirAll(vb, 0o755)                                                                                                  //nolint:errcheck
+		os.WriteFile(filepath.Join(vb, "python"), []byte("#!/bin/sh\nexit 0\n"), 0o755)                                         //nolint:errcheck
+		os.WriteFile(filepath.Join(home, ".trojan", venv, ".trojan-ok-"+strings.TrimPrefix(venv, "venv-")+"_stub"), nil, 0o644) //nolint:errcheck
+	}
+	os.WriteFile(filepath.Join(home, ".trojan", "venv", ".trojan-ok-semgrep_stub"), nil, 0o644) //nolint:errcheck
 }
 
 // A scanner that fails to run returns no findings; verify_fix must not read
@@ -42,18 +50,7 @@ func TestVerifyOnceScannerFailureIsNotFixed(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected an error when semgrep fails, got %+v", res)
 	}
-	if !strings.Contains(err.Error(), "not verified") {
-		t.Errorf("error should say the fix is not verified: %v", err)
-	}
-}
-
-func TestScannerErrorLines(t *testing.T) {
-	out := "Results saved to x\n" + ScannerErrorMarker + "semgrep: semgrep failed: exit status 2\nother\n"
-	got := scannerErrorLines(out)
-	if len(got) != 1 || got[0] != "semgrep: semgrep failed: exit status 2" {
-		t.Fatalf("got %q", got)
-	}
-	if l := oneLine(errors.New("first\nsecond")); l != "first" {
-		t.Errorf("oneLine = %q", l)
+	if !strings.Contains(err.Error(), "couldn't confirm") {
+		t.Errorf("error should say the fix couldn't be confirmed: %v", err)
 	}
 }

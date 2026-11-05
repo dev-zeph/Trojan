@@ -13,6 +13,7 @@ func RunPrivacyScan(projectPath string) *normalizer.PrivacyReport {
 	if !IsInstalled("bearer") {
 		return nil
 	}
+	prepareGit()
 
 	report := &normalizer.PrivacyReport{}
 

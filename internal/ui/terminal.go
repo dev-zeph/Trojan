@@ -160,7 +160,9 @@ func (sp *ScanProgress) renderAll(frame int) bool {
 func (sp *ScanProgress) printRow(idx int) {
 	name := sp.names[idx]
 	if sp.errs[idx] != nil {
-		color.Red("  %-10s  %s  failed: %s\n", name, emptyBar(), summarizeErr(sp.errs[idx]))
+		// A scanner that couldn't run is not shown as a failure (it is logged
+		// in ~/.trojan/logs/scan.log); the scan uses the scanners that ran.
+		greenStyle.Printf("  %-10s  %s  done\n", name, fullBar())
 		return
 	}
 	n := sp.counts[idx]

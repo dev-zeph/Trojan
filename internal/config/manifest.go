@@ -30,6 +30,9 @@ type ScannerManifest struct {
 	// PipFallback is a second pinned "name==version" for pip scanners, tried
 	// when the main pin can't install on the user's Python (macOS ships 3.9).
 	PipFallback string
+	// InstallMB is roughly the disk space the installed scanner takes, used to
+	// make sure an install can't fill the user's disk.
+	InstallMB int
 }
 
 // Scanners is the pinned manifest for SAST/SCA scanners installed by `trojan init`.
@@ -37,6 +40,7 @@ type ScannerManifest struct {
 var Scanners = []ScannerManifest{
 	{
 		Name:       "Trivy",
+		InstallMB:  200,
 		Binary:     "trivy",
 		Version:    "0.76.1",
 		GitHubRepo: "aquasecurity/trivy",
@@ -76,6 +80,7 @@ var Scanners = []ScannerManifest{
 	},
 	{
 		Name:       "Semgrep",
+		InstallMB:  300,
 		Binary:     "semgrep",
 		Version:    "1.157.0",
 		GitHubRepo: "semgrep/semgrep",
@@ -95,6 +100,7 @@ var Scanners = []ScannerManifest{
 	},
 	{
 		Name:       "Gitleaks",
+		InstallMB:  30,
 		Binary:     "gitleaks",
 		Version:    "8.30.1",
 		GitHubRepo: "gitleaks/gitleaks",
@@ -134,11 +140,12 @@ var Scanners = []ScannerManifest{
 	},
 	{
 		Name:       "Checkov",
+		InstallMB:  400,
 		Binary:     "checkov",
 		Version:    "3.4.3",
 		GitHubRepo: "bridgecrewio/checkov",
 		TagPrefix:  "",
-		// No native darwin/arm64 build — uses darwin/amd64 via Rosetta on Apple Silicon.
+		// No native darwin/arm64 binary: Apple Silicon installs the pip package.
 		// No linux/arm64 build after 3.2.529, so that platform stays on 3.2.529.
 		Platforms: map[string]PlatformAsset{
 			"linux/amd64": {
@@ -160,11 +167,11 @@ var Scanners = []ScannerManifest{
 				BinaryInArchive: "dist/checkov",
 			},
 			"darwin/arm64": {
-				// No native arm64 build — Rosetta runs x86_64 transparently on Apple Silicon
-				URL:             "https://github.com/bridgecrewio/checkov/releases/download/3.4.3/checkov_darwin_X86_64.zip",
-				SHA256:          "2a048a05a93abdafb94011eeb1bd3cc21fdec16cc3d6978340a724f88e38d2b2",
-				Archive:         ArchiveZip,
-				BinaryInArchive: "dist/checkov",
+				// No native arm64 build of the binary (only x86_64, which needs
+				// Rosetta, missing on new Apple Silicon Macs and being phased out).
+				// The pip package runs natively in Trojan's own Python instead.
+				Archive:    ArchivePip,
+				PipPackage: "checkov==3.4.3",
 			},
 			"windows/amd64": {
 				URL:             "https://github.com/bridgecrewio/checkov/releases/download/3.4.3/checkov_windows_X86_64.zip",
@@ -176,6 +183,7 @@ var Scanners = []ScannerManifest{
 	},
 	{
 		Name:       "Syft",
+		InstallMB:  100,
 		Binary:     "syft",
 		Version:    "1.56.0",
 		GitHubRepo: "anchore/syft",
@@ -215,6 +223,7 @@ var Scanners = []ScannerManifest{
 	},
 	{
 		Name:       "Bearer",
+		InstallMB:  150,
 		Binary:     "bearer",
 		Version:    "2.1.3",
 		GitHubRepo: "Bearer/bearer",
@@ -253,6 +262,7 @@ var Scanners = []ScannerManifest{
 var DastScanners = []ScannerManifest{
 	{
 		Name:       "Nuclei",
+		InstallMB:  120,
 		Binary:     "nuclei",
 		Version:    "3.8.0",
 		GitHubRepo: "projectdiscovery/nuclei",
