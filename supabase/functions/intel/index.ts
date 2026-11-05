@@ -70,7 +70,8 @@ Deno.serve(async (req) => {
         console.error('intel: query failed', { userId: user.id, ecosystem, error: error.message })
         return json({ error: 'Could not load intel. Please try again.' }, 500)
       }
-      for (const row of data ?? []) {
+      type Row = Record<string, unknown> & { id: string; ecosystem: string; package: string }
+      for (const row of (data ?? []) as unknown as Row[]) {
         if (seen.has(row.id) || !rowMatchesWanted(row, wanted)) continue
         seen.add(row.id)
         advisories.push(row)
