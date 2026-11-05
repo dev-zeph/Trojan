@@ -138,8 +138,12 @@ func TestAdvisoryAffects(t *testing.T) {
 		{"fixed_version fallback", Advisory{Ecosystem: "npm", FixedVersion: strp("2.0.0")}, []tc{
 			{"1.9.0", true, "2.0.0"}, {"2.0.0", false, ""},
 		}},
-		{"malicious, no range data", Advisory{Ecosystem: "npm", Kind: "malicious"}, []tc{
-			{"1.0.0", true, ""}, {"0.0.1-x", true, ""},
+		{"malicious, no range data never matches", Advisory{Ecosystem: "npm", Kind: "malicious"}, []tc{
+			{"1.0.0", false, ""}, {"0.0.1-x", false, ""},
+		}},
+		{"malicious typosquat, introduced 0", Advisory{Ecosystem: "npm", Kind: "malicious", AffectedRanges: ranges(t,
+			`[{"type":"SEMVER","events":[{"introduced":"0"}]}]`)}, []tc{
+			{"1.0.0", true, ""}, {"0.0.1", true, ""},
 		}},
 		{"vulnerability, no range data", Advisory{Ecosystem: "npm", Kind: "vulnerability"}, []tc{
 			{"1.0.0", false, ""},

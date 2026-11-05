@@ -202,8 +202,7 @@ func nextFixed(evs []Event) string {
 //
 // Order of evidence: an exact hit in affected_versions; then the OSV ranges;
 // then, if the advisory has neither ranges nor versions, "version < fixed_version"
-// when a fixed version exists, or every version for a malicious-package
-// advisory (a malicious package is bad in all versions unless stated otherwise).
+// when a fixed version exists. An advisory with no version data never matches.
 func (a Advisory) AffectsVersion(version string) (bool, string) {
 	cmp := comparatorFor(a.Ecosystem)
 	fallbackFix := ""
@@ -234,9 +233,10 @@ func (a Advisory) AffectsVersion(version string) (bool, string) {
 			}
 			return false, ""
 		}
-		if strings.EqualFold(a.Kind, "malicious") {
-			return true, ""
-		}
+		// No version data at all: never assume a hit. Telling a user a package
+		// is malicious on no evidence is the false positive intel must avoid.
+		// A wholly malicious package (typosquat) is ingested as an OSV range
+		// introduced "0", which the range loop above already matches.
 	}
 	return false, ""
 }
