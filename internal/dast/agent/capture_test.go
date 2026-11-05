@@ -46,6 +46,41 @@ func TestAutoCaptureSetCookie(t *testing.T) {
 	}
 }
 
+// TestAutoCaptureSetCookieOnRedirect proves a session set on a login redirect
+// (302 Set-Cookie -> Location) is retained across the hop and captured. This is
+// the Meridian lab case: without a per-probe cookie jar the cookie was dropped
+// when the client followed the redirect, so authenticated chains (IDOR, admin
+// routes) could never be proved live.
+func TestAutoCaptureSetCookieOnRedirect(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
+		http.SetCookie(w, &http.Cookie{Name: "mrd_session", Value: "forged-admin-session-value", Path: "/"})
+		http.Redirect(w, r, "/portal", http.StatusFound) // 302, as a real login does
+	})
+	// The post-login page only renders with the session the 302 handed out.
+	mux.HandleFunc("/portal", func(w http.ResponseWriter, r *http.Request) {
+		if c, _ := r.Cookie("mrd_session"); c != nil && c.Value == "forged-admin-session-value" {
+			_, _ = w.Write([]byte(`{"portal":"welcome admin"}`))
+			return
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	tb, base := newTestbox(t, DefaultLimits(), mux)
+
+	res, err := tb.HTTPProbe(context.Background(), ProbeRequest{Method: "POST", URL: base + "/login"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The followed redirect must have carried the cookie: we land on the authed page.
+	if res.Status != 200 || !strings.Contains(res.Body, "welcome admin") {
+		t.Errorf("redirect didn't carry the session cookie: %d %q", res.Status, res.Body)
+	}
+	// And the session the 302 set must be captured for replay on other endpoints.
+	if res.CapturedIdentity != "captured-1" {
+		t.Fatalf("session set on the 302 was not captured, got %q (from %q)", res.CapturedIdentity, res.CapturedFrom)
+	}
+}
+
 // TestAutoCaptureDedup proves the same session isn't registered twice.
 func TestAutoCaptureDedup(t *testing.T) {
 	mux := http.NewServeMux()

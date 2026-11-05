@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -371,8 +373,22 @@ func (t *Toolbox) HTTPProbe(ctx context.Context, req ProbeRequest) (*ProbeResult
 		sentHeaders[k] = v
 	}
 
+	// Per-probe cookie jar: a login commonly sets its session cookie on a 302 and
+	// then redirects (e.g. /login -> /portal). Without a jar, Go drops that
+	// Set-Cookie when it follows the redirect and only the final hop's headers come
+	// back, so the agent could log in but never hold the session — authenticated
+	// chains (IDOR, admin-only routes) could only be reasoned about from source,
+	// never proved live. The jar retains cookies across hops and resends them on
+	// the followed request. It is per-probe on purpose: the session is surfaced as
+	// an explicit, replayable identity below rather than silently riding along on
+	// every later probe, which would break authorization testing (anonymous and
+	// identity-scoped probes must send exactly what the agent chose).
+	jar, _ := cookiejar.New(nil)
+	client := *t.client
+	client.Jar = jar
+
 	start := time.Now()
-	resp, err := t.client.Do(httpReq)
+	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, err
 	}
@@ -410,7 +426,13 @@ func (t *Toolbox) HTTPProbe(ctx context.Context, req ProbeRequest) (*ProbeResult
 	// Auto-register any session this response just handed us (a Set-Cookie
 	// session/auth cookie or a bearer token in the body) as a named identity, so a
 	// later probe can replay it instead of a finding stalling on "needs a login".
-	if name, src := t.autoCaptureFromResponse(req.Method, req.URL, resp.Header, result.Body); name != "" {
+	// Prefer the jar's cookies: they include a session set on a redirect hop that
+	// the final response's headers no longer carry.
+	var jarCookies []*http.Cookie
+	if u, perr := url.Parse(req.URL); perr == nil {
+		jarCookies = jar.Cookies(u)
+	}
+	if name, src := t.autoCaptureFromResponse(req.Method, req.URL, resp.Header, jarCookies, result.Body); name != "" {
 		result.CapturedIdentity = name
 		result.CapturedFrom = src
 	}
