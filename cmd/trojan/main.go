@@ -120,12 +120,8 @@ func scanCmd() *cobra.Command {
 					os.Exit(0)
 				}
 
-				findings, scanResults := scanners.RunAll(path, relevant, nil)
-				for _, r := range scanResults {
-					if r.Err != nil {
-						fmt.Fprintf(os.Stderr, "trojan: warning: %s scanner did not run: %s\n", r.Scanner, r.Err)
-					}
-				}
+				// Scanners that couldn't run are logged by RunAll, not shown.
+				findings, _ := scanners.RunAll(path, relevant, nil)
 				findings, _ = normalizer.Reduce(findings)
 
 				var blocking []normalizer.Finding

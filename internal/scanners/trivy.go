@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/dev-zeph/trojan/internal/config"
 	"github.com/dev-zeph/trojan/internal/normalizer"
 )
 
@@ -37,7 +38,22 @@ func (t *Trivy) Run(projectPath string) ([]normalizer.Finding, error) {
 	// flag is opt-in and defaults to 0, so without it exit 1 instead meant a
 	// FATAL error, which the old code below wrongly treated as "findings
 	// found" and silently swallowed).
-	cmd := exec.Command(ManagedBinary("trivy"), "fs", "--format", "json", "--quiet", "--exit-code", "1", projectPath)
+	args := []string{"fs", "--format", "json", "--quiet", "--exit-code", "1"}
+	// Trivy's first scan downloads a vulnerability database (about 1.5 GB
+	// unpacked). Scanners run side by side, so filling the disk would take the
+	// other scanners down too: without room, skip Trivy this time (the next
+	// scan tries again), and with an existing database but little room, scan
+	// with it instead of downloading a fresh copy.
+	if db, ok := trivyDBPath(); ok {
+		if _, err := os.Stat(db); err != nil {
+			if !config.HasSpace(filepath.Dir(filepath.Dir(db)), trivyDBMB) {
+				return nil, fmt.Errorf("skipped: not enough disk space for Trivy's vulnerability database")
+			}
+		} else if !config.HasSpace(filepath.Dir(db), trivyUpdateMB) {
+			args = append(args, "--skip-db-update")
+		}
+	}
+	cmd := exec.Command(ManagedBinary("trivy"), append(args, projectPath)...)
 	cmd.Env = trivyEnv()
 	output, err := cmd.Output()
 
@@ -143,6 +159,24 @@ func isolatedDockerConfigDir() (string, error) {
 		return "", err
 	}
 	return dir, nil
+}
+
+const (
+	trivyDBMB     = 1500 // first download: archive plus unpacked database
+	trivyUpdateMB = 300  // refreshing an existing database
+)
+
+// trivyDBPath is where Trivy keeps its vulnerability database (its default
+// cache folder: ~/Library/Caches/trivy on macOS, ~/.cache/trivy on Linux).
+func trivyDBPath() (string, bool) {
+	if dir := os.Getenv("TRIVY_CACHE_DIR"); dir != "" {
+		return filepath.Join(dir, "db", "trivy.db"), true
+	}
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		return "", false
+	}
+	return filepath.Join(cache, "trivy", "db", "trivy.db"), true
 }
 
 // Packages returns the full dependency list extracted during the last Run() call.

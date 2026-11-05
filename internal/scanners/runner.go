@@ -24,6 +24,7 @@ type ScannerResult struct {
 // for each entry — RunAll itself still drops findings from failed scanners out
 // of the aggregated slice, since a failed scanner produced no reliable findings.
 func RunAll(projectPath string, scanners []Scanner, onProgress func(name string, done bool, count int, err error)) ([]normalizer.Finding, []ScannerResult) {
+	prepareGit()
 	results := make(chan ScannerResult, len(scanners))
 	var wg sync.WaitGroup
 
@@ -37,6 +38,9 @@ func RunAll(projectPath string, scanners []Scanner, onProgress func(name string,
 			}
 
 			findings, err := s.Run(projectPath)
+			if err != nil {
+				scanLog("%s: %v", s.Name(), err)
+			}
 
 			if onProgress != nil {
 				onProgress(s.Name(), true, len(findings), err) // scanner done

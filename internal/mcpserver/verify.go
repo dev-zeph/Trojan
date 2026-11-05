@@ -73,7 +73,7 @@ func VerifyOnce(projectPath, id string) (*VerifyResult, error) {
 	// returns no findings, which must not read as "the finding is gone".
 	for _, r := range results {
 		if r.Err != nil {
-			return nil, fmt.Errorf("%s did not run (%s), so the fix is not verified yet. Try verify_fix again in a moment", r.Scanner, oneLine(r.Err))
+			return nil, fmt.Errorf("couldn't confirm the fix right now. Try verify_fix again in a moment")
 		}
 	}
 	fresh, _ = normalizer.Reduce(fresh)
@@ -141,6 +141,9 @@ func handleVerifyFix(project projectFunc) server.ToolHandlerFunc {
 			msg := strings.TrimSpace(stderr.String())
 			if msg == "" && runErr != nil {
 				msg = runErr.Error()
+			}
+			if strings.HasPrefix(msg, "couldn't confirm") {
+				return mcp.NewToolResultText(msg), nil // not a verdict: nothing is marked
 			}
 			return mcp.NewToolResultError("verification failed: " + msg), nil
 		}

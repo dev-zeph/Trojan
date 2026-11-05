@@ -23,7 +23,12 @@ func (g Gitleaks) Run(projectPath string) ([]normalizer.Finding, error) {
 		return nil, fmt.Errorf("gitleaks not found: run 'trojan init' to install it")
 	}
 
-	cmd := exec.Command(ManagedBinary("gitleaks"), "detect", "--source", projectPath, "--report-format", "json", "--report-path", "/dev/stdout", "--no-banner", "-q")
+	args := []string{"detect", "--source", projectPath, "--report-format", "json", "--report-path", "/dev/stdout", "--no-banner", "-q"}
+	if !gitAvailable() {
+		// Without usable git, scan the files rather than the commit history.
+		args = append(args, "--no-git")
+	}
+	cmd := exec.Command(ManagedBinary("gitleaks"), args...)
 	output, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {

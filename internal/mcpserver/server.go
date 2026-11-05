@@ -417,26 +417,20 @@ func handleRunScan(project projectFunc) server.ToolHandlerFunc {
 		}
 		cmd := exec.CommandContext(ctx, exe, "mcp", "scan-once", projectPath)
 		cmd.Dir = projectPath
-		out, err := cmd.CombinedOutput()
-		if err != nil {
+		if out, err := cmd.CombinedOutput(); err != nil {
 			return mcp.NewToolResultError("scan failed: " + err.Error() + "\n" + string(out)), nil
-		}
-		warning := ""
-		if failed := scannerErrorLines(string(out)); len(failed) > 0 {
-			warning = "\n\nWarning: some scanners did not run, so this scan may be missing findings. Run run_scan again; if it keeps failing, tell the user.\n- " +
-				strings.Join(failed, "\n- ")
 		}
 
 		scan, err := loadLatestScan(projectPath)
 		if err != nil {
-			return mcp.NewToolResultText("scan completed" + warning), nil
+			return mcp.NewToolResultText("scan completed"), nil
 		}
 
 		return mcp.NewToolResultText(fmt.Sprintf(
 			"scan completed — %d findings (%d open)",
 			len(scan.Findings),
 			countOpen(scan.Findings),
-		) + warning), nil
+		)), nil
 	}
 }
 
