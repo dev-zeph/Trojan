@@ -1,0 +1,66 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      express:
+        specifier: ^4.18.0
+        version: 4.18.2
+    devDependencies:
+      vitest:
+        specifier: ^1.0.0
+        version: 1.2.0(@types/node@20.11.5)
+
+  packages/web:
+    dependencies:
+      '@remix-run/node':
+        specifier: ^2.0.0
+        version: 2.5.0(typescript@5.3.3)
+      shared:
+        specifier: workspace:*
+        version: link:../shared
+
+packages:
+
+  '@remix-run/node@2.5.0':
+    resolution: {integrity: sha512-a}
+
+  '@types/node@20.11.5':
+    resolution: {integrity: sha512-b}
+
+  express@4.18.2:
+    resolution: {integrity: sha512-c}
+
+  body-parser@1.20.1:
+    resolution: {integrity: sha512-d}
+
+  vitest@1.2.0:
+    resolution: {integrity: sha512-e}
+
+  typescript@5.3.3:
+    resolution: {integrity: sha512-f}
+
+snapshots:
+
+  '@remix-run/node@2.5.0(typescript@5.3.3)':
+    dependencies:
+      typescript: 5.3.3
+
+  '@types/node@20.11.5': {}
+
+  express@4.18.2:
+    dependencies:
+      body-parser: 1.20.1
+
+  body-parser@1.20.1: {}
+
+  vitest@1.2.0(@types/node@20.11.5):
+    dependencies:
+      '@types/node': 20.11.5
+
+  typescript@5.3.3: {}

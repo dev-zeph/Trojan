@@ -1,0 +1,44 @@
+lockfileVersion: '6.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+dependencies:
+  next:
+    specifier: 14.1.0
+    version: 14.1.0(react-dom@18.2.0)(react@18.2.0)
+  react:
+    specifier: ^18.2.0
+    version: 18.2.0
+
+devDependencies:
+  '@types/node':
+    specifier: ^20.0.0
+    version: 20.11.5
+
+packages:
+
+  /@types/node@20.11.5:
+    resolution: {integrity: sha512-abc}
+    dev: true
+
+  /next@14.1.0(react-dom@18.2.0)(react@18.2.0):
+    resolution: {integrity: sha512-def}
+    dev: false
+
+  /react@18.2.0:
+    resolution: {integrity: sha512-ghi}
+    dev: false
+
+  /loose-envify@1.4.0:
+    resolution: {integrity: sha512-jkl}
+    dev: false
+
+  /semver@6.3.1:
+    resolution: {integrity: sha512-mno}
+    dev: false
+
+  /semver@7.5.4:
+    resolution: {integrity: sha512-pqr}
+    dev: false
