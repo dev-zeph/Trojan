@@ -63,7 +63,7 @@ jobs:
         shell: bash
         run: |
           VERSION="${{ github.ref_name }}"
-          VERSION="${VERSION#desktop-}"   # strip "desktop-" prefix → v0.2.0
+          VERSION="${VERSION#desktop-v}" # strip "desktop-v" → 0.2.0 (the code adds the "v")
           mkdir -p desktop/src-tauri/binaries
           GOOS=${{ matrix.goos }} GOARCH=${{ matrix.go-arch }} go build \
             -ldflags="-X main.version=${VERSION}" \
