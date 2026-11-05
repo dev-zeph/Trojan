@@ -196,6 +196,7 @@ type Toolbox struct {
 	finished bool
 	summary  string
 	covered  map[string]bool // distinct method+URL pairs probed, for stall detection
+	read     map[string]bool // distinct source handlers read (file:line), for stall detection
 
 	// Auto-captured identities (§6.5 #2, expert feedback #3): sessions the agent
 	// obtains mid-run are registered as "captured-N" so it can reuse them. Bounded
@@ -527,11 +528,26 @@ func (t *Toolbox) markCovered(method, url string) {
 }
 
 // Progress is a monotonic count of what the run has learned: distinct probes,
-// findings and facts. If it stops growing, the agent is going in circles.
+// findings, facts, and source handlers read. Grey-box recon (reading a handler
+// the agent hasn't seen) is new ground just like a probe, so it counts here;
+// otherwise a disciplined read-the-source-first run is killed by the stall guard
+// before it ever probes. Re-reading a handler, or a query that returns no source
+// (e.g. no code index), adds nothing, so a genuinely stuck run still stalls.
 func (t *Toolbox) Progress() int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return len(t.covered) + len(t.findings) + len(t.facts)
+	return len(t.covered) + len(t.findings) + len(t.facts) + len(t.read)
+}
+
+// markRead records that the agent read a distinct source handler, keyed by its
+// resolved location so re-reads and empty results don't inflate progress.
+func (t *Toolbox) markRead(key string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.read == nil {
+		t.read = make(map[string]bool)
+	}
+	t.read[key] = true
 }
 
 // Findings returns a copy of everything recorded so far.

@@ -637,6 +637,10 @@ func onReadSource(tb *Toolbox, req greybox.ReadSourceRequest, res greybox.ReadSo
 	if len(res.Chunks) > 0 {
 		c := res.Chunks[0]
 		p.Source = &HandlerRef{File: c.File, Line: c.Line, Symbol: c.Symbol}
+		// Reading a handler the run hasn't seen is new ground (recon), so it
+		// counts toward the stall guard. Keyed by resolved file:line so re-reads
+		// and empty results (no code index) don't inflate progress.
+		tb.markRead(fmt.Sprintf("%s:%d", c.File, c.Line))
 	}
 	if res.Summary != nil {
 		p.Summary = &GreyBoxSummary{
