@@ -16,7 +16,7 @@
 //   POST ${serverUrl}/api/context  (OrgContext body) -> { ok: true, path: string }
 
 import { getStore } from "./store";
-import type { OrgContext } from "../types";
+import type { OrgContext, InferResult, ContextChanges } from "../types";
 
 export const CONTEXT_DRAFT_KEY     = "org-context-draft";
 export const CONTEXT_ONBOARDED_KEY = "org-context-onboarded";
@@ -76,7 +76,20 @@ export function normalizeOrgContext(c: OrgContext): OrgContext {
         description: a.description?.trim() || undefined,
         targets: cleanList(a.targets),
       })),
+    data_stores: cleanList(c.data_stores),
+    auth_model: normalizeAuth(c),
+    third_party_services: cleanList(c.third_party_services),
+    learned: c.learned && c.learned.length > 0 ? c.learned : undefined,
   };
+}
+
+function normalizeAuth(c: OrgContext): OrgContext["auth_model"] {
+  const a = c.auth_model;
+  if (!a) return undefined;
+  const who = a.who_logs_in?.trim() || undefined;
+  const roles = cleanList(a.roles);
+  if (!who && !roles && !a.admin_area) return undefined;
+  return { who_logs_in: who, roles, admin_area: a.admin_area || undefined };
 }
 
 // ── Local draft (pre-server / offline) ─────────────────────────────────────
@@ -103,15 +116,19 @@ export async function setContextOnboarded(v: boolean): Promise<void> {
 }
 
 // ── /api/context wire ──────────────────────────────────────────────────────
-export async function fetchOrgContext(serverUrl: string): Promise<{ exists: boolean; context: OrgContext | null }> {
-  const res = await fetch(`${serverUrl}/api/context`);
+function projectQuery(projectPath?: string): string {
+  return projectPath ? `?project_path=${encodeURIComponent(projectPath)}` : "";
+}
+
+export async function fetchOrgContext(serverUrl: string, projectPath?: string): Promise<{ exists: boolean; context: OrgContext | null }> {
+  const res = await fetch(`${serverUrl}/api/context${projectQuery(projectPath)}`);
   if (!res.ok) throw new Error(`Could not load project context (${res.status})`);
   const data = await res.json();
   return { exists: Boolean(data?.exists), context: (data?.context ?? null) as OrgContext | null };
 }
 
-export async function postOrgContext(serverUrl: string, ctx: OrgContext): Promise<{ ok: boolean; path: string }> {
-  const res = await fetch(`${serverUrl}/api/context`, {
+export async function postOrgContext(serverUrl: string, ctx: OrgContext, projectPath?: string): Promise<{ ok: boolean; path: string }> {
+  const res = await fetch(`${serverUrl}/api/context${projectQuery(projectPath)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(normalizeOrgContext(ctx)),
@@ -135,5 +152,63 @@ export async function syncDraftToServer(serverUrl: string): Promise<void> {
     await postOrgContext(serverUrl, draft!);
   } catch {
     // server not ready, endpoint not yet deployed, or offline -- retry next scan
+  }
+}
+
+// ── Understanding your app (infer + changes) ───────────────────────────────
+export type InferErrorKind = "out_of_tokens" | "not_signed_in" | "failed";
+
+export class InferError extends Error {
+  kind: InferErrorKind;
+  constructor(kind: InferErrorKind, message: string) {
+    super(message);
+    this.kind = kind;
+  }
+}
+
+// POST /api/context/infer. Throws InferError; kind "out_of_tokens" means the
+// UI should offer the token top-up instead of a generic failure.
+export async function inferOrgContext(serverUrl: string, projectPath: string, description: string): Promise<InferResult> {
+  let res: Response;
+  try {
+    res = await fetch(`${serverUrl}/api/context/infer`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project_path: projectPath, description }),
+    });
+  } catch {
+    throw new InferError("failed", "Trojan couldn't reach itself just now. Please try again.");
+  }
+  if (res.status === 402) {
+    const data = await res.json().catch(() => ({}));
+    throw new InferError("out_of_tokens", data?.message || "You're out of tokens.");
+  }
+  if (res.status === 401) {
+    throw new InferError("not_signed_in", "Please sign in to Trojan first.");
+  }
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new InferError("failed", data?.message || "Trojan couldn't work out what your app does just now. Please try again.");
+  }
+  const data = await res.json();
+  return {
+    draft: data.draft as OrgContext,
+    questions: Array.isArray(data.questions) ? data.questions : [],
+    mismatches: Array.isArray(data.mismatches) ? data.mismatches : [],
+    free: Boolean(data.free),
+  };
+}
+
+// GET /api/context/changes. Returns null when there is nothing to report or
+// the check could not run (this is a nicety, so it never throws).
+export async function fetchContextChanges(serverUrl: string, projectPath: string): Promise<ContextChanges | null> {
+  try {
+    const res = await fetch(`${serverUrl}/api/context/changes${projectQuery(projectPath)}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data?.changed) return null;
+    return data.changes as ContextChanges;
+  } catch {
+    return null;
   }
 }

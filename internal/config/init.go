@@ -4,7 +4,6 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"compress/gzip"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -57,324 +56,224 @@ func exeSuffix() string {
 	return ""
 }
 
-// pythonExe finds a usable Python interpreter across platforms (python3 on
-// Unix/macOS, python or the "py" launcher on Windows). Returns "" if none.
-func pythonExe() string {
-	for _, c := range []string{"python3", "python", "py"} {
-		if exec.Command(c, "--version").Run() == nil {
-			return c
+// spaceReserveMB is left free on the user's disk after any install, so
+// installing scanners can never fill the disk and disrupt other apps.
+const spaceReserveMB = 500
+
+// ensureSpace refuses an install that would leave less than spaceReserveMB
+// free. If free space can't be read, the install goes ahead.
+func ensureSpace(dir string, needMB int) error {
+	// Measure the nearest folder that exists (the target may not yet).
+	for {
+		if _, err := os.Stat(dir); err == nil || filepath.Dir(dir) == dir {
+			break
 		}
+		dir = filepath.Dir(dir)
 	}
-	return ""
-}
-
-// resolveLatestVersion queries the GitHub releases API for the latest version of a scanner.
-// Returns the raw version string (tag with prefix stripped).
-func resolveLatestVersion(repo, tagPrefix string) (string, error) {
-	client := &http.Client{Timeout: 10 * time.Second}
-	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", repo)
-	resp, err := client.Get(url)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("GitHub API returned %d", resp.StatusCode)
-	}
-	var release struct {
-		TagName string `json:"tag_name"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
-		return "", err
-	}
-	return strings.TrimPrefix(release.TagName, tagPrefix), nil
-}
-
-// downloadWithRetry attempts to download a scanner binary, retrying once on failure.
-func downloadWithRetry(asset PlatformAsset, dest string) error {
-	err := downloadScanner(asset, dest)
-	if err == nil {
-		clearQuarantine(dest)
+	free, ok := freeMB(dir)
+	if !ok {
 		return nil
 	}
-	// Retry once
-	fmt.Print("retrying... ")
-	err = downloadScanner(asset, dest)
-	if err == nil {
-		clearQuarantine(dest)
+	if free < int64(needMB)+spaceReserveMB {
+		return fmt.Errorf("not enough disk space: %d MB free, need about %d MB plus %d MB headroom", free, needMB, spaceReserveMB)
 	}
-	return err
+	return nil
+}
+
+// installLog records install problems in ~/.trojan/logs/install.log for
+// troubleshooting. They are not printed: a scanner that can't install is
+// skipped quietly and the scan runs with the rest, and the next scan tries
+// again.
+func installLog(format string, args ...any) {
+	dir, err := trojanDir()
+	if err != nil {
+		return
+	}
+	logs := filepath.Join(dir, "logs")
+	if os.MkdirAll(logs, 0o700) != nil {
+		return
+	}
+	f, err := os.OpenFile(filepath.Join(logs, "install.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "%s %s\n", time.Now().Format(time.RFC3339), fmt.Sprintf(format, args...))
 }
 
 // clearQuarantine removes the macOS quarantine extended attribute from a downloaded binary
 // so Gatekeeper does not block execution. No-op on non-macOS systems.
 func clearQuarantine(path string) {
 	if runtime.GOOS == "darwin" {
-		exec.Command("xattr", "-d", "com.apple.quarantine", path).Run()
+		exec.Command("/usr/bin/xattr", "-d", "com.apple.quarantine", path).Run() //nolint:errcheck // absent attribute is fine
 	}
 }
 
-// tryInstallLatest attempts to download the latest GitHub release of a scanner.
-// Returns true if installation succeeded.
-func tryInstallLatest(s ScannerManifest, pinnedAsset PlatformAsset, dest string) bool {
-	latestVersion, err := resolveLatestVersion(s.GitHubRepo, s.TagPrefix)
-	if err != nil || latestVersion == s.Version {
-		return false
+// scannerMissing reports whether a scanner needs installing: its binary is
+// absent, or (for pip scanners) its environment is broken or incomplete.
+func scannerMissing(s ScannerManifest, asset PlatformAsset, dest string) bool {
+	if _, err := os.Stat(dest); err != nil {
+		return true
 	}
-
-	latestURL := strings.ReplaceAll(pinnedAsset.URL, s.Version, latestVersion)
-	latestAsset := PlatformAsset{
-		URL:             latestURL,
-		SHA256:          "", // cannot verify checksum for dynamically resolved versions
-		Archive:         pinnedAsset.Archive,
-		BinaryInArchive: pinnedAsset.BinaryInArchive,
+	if asset.Archive == ArchivePip {
+		name, _, _ := strings.Cut(asset.PipPackage, "=")
+		return !pipScannerHealthy(name)
 	}
-
-	fmt.Printf("  Installing %s v%s (latest)... ", s.Name, latestVersion)
-	if err := downloadWithRetry(latestAsset, dest); err != nil {
-		color.Yellow("failed\n")
-		return false
-	}
-	color.Green("done\n")
-	return true
+	return false
 }
 
-// installPipDefensive installs a pip-based scanner with multiple fallback strategies:
-//  1. Try latest version via pip (if python3 is available)
-//  2. Fall back to pinned version via pip
-//  3. If no python3: try installing it via Homebrew, then retry pip
-//  4. Fall back to installing the scanner itself via Homebrew
-func installPipDefensive(s ScannerManifest, asset PlatformAsset, binDir string) error {
-	name, _, _ := strings.Cut(asset.PipPackage, "=")
-
-	hasPython := pythonExe() != ""
-
-	// If Python is missing, try to install it via Homebrew (macOS/Linux only;
-	// on Windows, Python comes from python.org / winget / the Store).
-	if !hasPython && runtime.GOOS != "windows" {
-		if _, err := exec.LookPath("brew"); err == nil {
-			fmt.Print("(installing python via brew) ")
-			if err := runCaptured("brew", "install", "--quiet", "python3"); err == nil {
-				hasPython = pythonExe() != ""
-			}
-		}
-	}
-
-	if hasPython {
-		// Try latest version first
-		if s.GitHubRepo != "" {
-			if latestVersion, err := resolveLatestVersion(s.GitHubRepo, s.TagPrefix); err == nil && latestVersion != s.Version {
-				latestPkg := name + "==" + latestVersion
-				if err := installViaPip(latestPkg, binDir); err == nil {
-					return nil
-				}
-			}
-		}
-		// Fall back to pinned version
-		if err := installViaPip(asset.PipPackage, binDir); err == nil {
-			return nil
-		}
-	}
-
-	// Fallback: try installing the scanner directly via Homebrew
-	if _, err := exec.LookPath("brew"); err == nil {
-		fmt.Print("(trying brew) ")
-		if err := runCaptured("brew", "install", "--quiet", name); err == nil {
-			if p, err := exec.LookPath(name); err == nil {
-				dest := filepath.Join(binDir, name)
-				os.Remove(dest)
-				return os.Symlink(p, dest)
-			}
-		}
-	}
-
-	if !hasPython {
-		if runtime.GOOS == "windows" {
-			return fmt.Errorf("Python not found — install it with: winget install Python.Python.3")
-		}
-		return fmt.Errorf("python3 not found — install with: xcode-select --install")
-	}
-	return fmt.Errorf("pip install failed — try manually: pip3 install %s", asset.PipPackage)
-}
-
-// EnsureScanners checks which scanners are missing and installs them.
-// For each missing scanner it tries the latest GitHub release first, then
-// falls back to the pinned version. Downloads are retried once on failure.
+// EnsureScanners installs any missing scanners: pinned versions only, each
+// checked against its checksum. A scanner that can't be installed (offline,
+// low disk) is logged and skipped; scans run with the scanners that are
+// available, and the next run tries again.
 func EnsureScanners() error {
+	return ensureList(Scanners)
+}
+
+// EnsureDastScanners installs any missing DAST scanners (e.g. Nuclei).
+// Called lazily by `trojan dast` on first run rather than by `trojan init`.
+func EnsureDastScanners() error {
+	return ensureList(DastScanners)
+}
+
+func ensureList(list []ScannerManifest) error {
 	binDir, err := TrojanBinDir()
 	if err != nil {
 		return err
 	}
-
 	platform := runtime.GOOS + "/" + runtime.GOARCH
 
-	missing := []ScannerManifest{}
-	for _, s := range Scanners {
+	type job struct {
+		s     ScannerManifest
+		asset PlatformAsset
+		dest  string
+	}
+	var jobs []job
+	for _, s := range list {
+		asset, ok := s.Platforms[platform]
+		if !ok {
+			continue // not offered on this platform
+		}
 		dest := filepath.Join(binDir, s.Binary+exeSuffix())
-		if _, err := os.Stat(dest); os.IsNotExist(err) {
-			missing = append(missing, s)
+		if scannerMissing(s, asset, dest) {
+			jobs = append(jobs, job{s, asset, dest})
 		}
 	}
-
-	if len(missing) == 0 {
+	if len(jobs) == 0 {
 		return nil
 	}
 
-	fmt.Printf("Installing %d missing scanner(s) to ~/.trojan/bin/...\n\n", len(missing))
-
-	for _, s := range missing {
-		asset, ok := s.Platforms[platform]
-		if !ok {
-			color.Yellow("  %-12s skipped (unsupported platform: %s)\n", s.Name, platform)
+	fmt.Println("Setting up Trojan's scanners (first run only)...")
+	for _, j := range jobs {
+		var err error
+		if j.asset.Archive == ArchivePip {
+			err = installPip(j.s, j.asset, binDir)
+		} else {
+			err = installBinary(j.s, j.asset, j.dest)
+		}
+		if err != nil {
+			installLog("%s %s: %v", j.s.Name, j.s.Version, err)
 			continue
 		}
-
-		dest := filepath.Join(binDir, s.Binary+exeSuffix())
-
-		// ── pip-based scanners (e.g. Semgrep) ─────────────────────
-		if asset.Archive == ArchivePip {
-			fmt.Printf("  Installing %s... ", s.Name)
-			if err := installPipDefensive(s, asset, binDir); err != nil {
-				color.Red("failed\n")
-				fmt.Printf("    Error: %v\n", err)
-			} else {
-				color.Green("done\n")
-			}
-			continue
-		}
-
-		// ── binary scanners ───────────────────────────────────────
-		// Try latest version from GitHub first
-		if s.GitHubRepo != "" {
-			if tryInstallLatest(s, asset, dest) {
-				continue
-			}
-		}
-
-		// Fall back to pinned version with retry
-		fmt.Printf("  Installing %s v%s... ", s.Name, s.Version)
-		if err := downloadWithRetry(asset, dest); err != nil {
-			color.Red("failed\n")
-			fmt.Printf("    Error: %v\n", err)
-			continue
-		}
-		color.Green("done\n")
+		color.Green("  ✓ %s\n", j.s.Name)
 	}
-
 	fmt.Println()
 	return nil
 }
 
-// installViaPip installs a pinned pip package into ~/.trojan/venv/ and symlinks
-// the binary into ~/.trojan/bin/.
-func installViaPip(pipPackage, binDir string) error {
-	home, err := os.UserHomeDir()
-	if err != nil {
+// installBinary downloads a pinned, checksummed scanner (retrying once) and
+// moves it into place only once it is complete.
+func installBinary(s ScannerManifest, asset PlatformAsset, dest string) error {
+	if err := ensureSpace(filepath.Dir(dest), s.InstallMB); err != nil {
 		return err
 	}
-	venvDir := filepath.Join(home, ".trojan", "venv")
-
-	// venv layout differs by OS: bin/ on Unix, Scripts/ + .exe on Windows.
-	venvSub := "bin"
-	if runtime.GOOS == "windows" {
-		venvSub = "Scripts"
+	err := downloadScanner(asset, dest)
+	if err != nil {
+		err = downloadScanner(asset, dest)
 	}
-
-	// Create venv if it doesn't exist
-	if _, err := os.Stat(venvDir); os.IsNotExist(err) {
-		py := pythonExe()
-		if py == "" {
-			return fmt.Errorf("could not create venv: no Python interpreter found")
-		}
-		if err := runCaptured(py, "-m", "venv", venvDir); err != nil {
-			return fmt.Errorf("could not create venv (is Python installed?): %w", err)
-		}
+	if err == nil {
+		clearQuarantine(dest)
 	}
-
-	pipBin := filepath.Join(venvDir, venvSub, "pip"+exeSuffix())
-	if err := runCaptured(pipBin, "install", "--quiet", "--disable-pip-version-check", pipPackage); err != nil {
-		return fmt.Errorf("pip install failed: %w", err)
-	}
-
-	// Link the venv binary into ~/.trojan/bin/. Windows symlinks need elevated
-	// privileges, so copy the executable there instead.
-	name, _, _ := strings.Cut(pipPackage, "=")
-	venvBin := filepath.Join(venvDir, venvSub, name+exeSuffix())
-	dest := filepath.Join(binDir, name+exeSuffix())
-	os.Remove(dest) // remove stale link/copy if present
-	if runtime.GOOS == "windows" {
-		return installDirect(venvBin, dest)
-	}
-	return os.Symlink(venvBin, dest)
+	return err
 }
 
-func runCaptured(name string, args ...string) error {
-	cmd := exec.Command(name, args...)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%w\n%s", err, string(out))
+// fetchVerified downloads an asset to a temp file and checks it against its
+// pinned checksum. An asset without a checksum is refused. The caller removes
+// the returned file.
+func fetchVerified(asset PlatformAsset) (string, error) {
+	if asset.SHA256 == "" {
+		return "", fmt.Errorf("no checksum configured for %s, so it was not installed", asset.URL)
 	}
-	return nil
+	tmp, err := os.CreateTemp("", "trojan-download-*")
+	if err != nil {
+		return "", fmt.Errorf("could not create temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	fail := func(err error) (string, error) {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return "", err
+	}
+
+	client := &http.Client{Timeout: 10 * time.Minute}
+	resp, err := client.Get(asset.URL)
+	if err != nil {
+		return fail(fmt.Errorf("download failed: %w", err))
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fail(fmt.Errorf("download failed: HTTP %d", resp.StatusCode))
+	}
+	if _, err := io.Copy(tmp, resp.Body); err != nil {
+		return fail(fmt.Errorf("download failed: %w", err))
+	}
+	if err := tmp.Close(); err != nil {
+		return fail(err)
+	}
+	actual, err := sha256File(tmpPath)
+	if err != nil {
+		os.Remove(tmpPath)
+		return "", fmt.Errorf("checksum failed: %w", err)
+	}
+	if actual != asset.SHA256 {
+		os.Remove(tmpPath)
+		return "", fmt.Errorf("checksum mismatch\n    expected: %s\n    got:      %s\n    The downloaded file may be corrupted or tampered with.", asset.SHA256, actual)
+	}
+	return tmpPath, nil
 }
 
 // downloadScanner downloads, verifies, and installs a single scanner binary.
+// The binary is written beside dest and renamed into place only when it is
+// complete, so an interrupted install (e.g. a full disk) never leaves a
+// broken binary that would later be mistaken for an installed scanner.
 func downloadScanner(asset PlatformAsset, dest string) error {
-	// Download to a temp file
-	tmp, err := os.CreateTemp("", "trojan-scanner-*")
+	archive, err := fetchVerified(asset)
 	if err != nil {
-		return fmt.Errorf("could not create temp file: %w", err)
+		return err
 	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
+	defer os.Remove(archive)
 
-	resp, err := http.Get(asset.URL)
-	if err != nil {
-		return fmt.Errorf("download failed: %w", err)
-	}
-	defer resp.Body.Close()
+	partial := dest + ".partial"
+	os.Remove(partial)
+	defer os.Remove(partial)
 
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download failed: HTTP %d", resp.StatusCode)
-	}
-
-	if _, err := io.Copy(tmp, resp.Body); err != nil {
-		tmp.Close()
-		return fmt.Errorf("download failed: %w", err)
-	}
-	tmp.Close()
-
-	// Verify SHA256 if set
-	if asset.SHA256 != "" {
-		actual, err := sha256File(tmpPath)
-		if err != nil {
-			return fmt.Errorf("checksum failed: %w", err)
-		}
-		if actual != asset.SHA256 {
-			return fmt.Errorf("checksum mismatch\n    expected: %s\n    got:      %s\n    The downloaded file may be corrupted or tampered with.", asset.SHA256, actual)
-		}
-	} else {
-		color.Yellow("(unverified — no checksum configured) ")
-	}
-
-	// Extract or move binary into place
 	switch asset.Archive {
 	case ArchiveDirect:
-		if err := installDirect(tmpPath, dest); err != nil {
-			return err
-		}
+		err = installDirect(archive, partial)
 	case ArchiveTarGz:
-		if err := extractTarGz(tmpPath, asset.BinaryInArchive, dest); err != nil {
-			return err
-		}
+		err = extractTarGz(archive, asset.BinaryInArchive, partial)
 	case ArchiveZip:
-		if err := extractZip(tmpPath, asset.BinaryInArchive, dest); err != nil {
-			return err
-		}
+		err = extractZip(archive, asset.BinaryInArchive, partial)
 	default:
-		return fmt.Errorf("unknown archive type: %s", asset.Archive)
+		err = fmt.Errorf("unknown archive type: %s", asset.Archive)
 	}
-
-	return os.Chmod(dest, 0755)
+	if err != nil {
+		return err
+	}
+	if err := os.Chmod(partial, 0o755); err != nil {
+		return err
+	}
+	return os.Rename(partial, dest)
 }
 
 func installDirect(src, dest string) error {
@@ -457,61 +356,6 @@ func extractZip(archivePath, binaryName, dest string) error {
 }
 
 
-// EnsureDastScanners installs any missing DAST scanners (e.g. Nuclei).
-// Called lazily by `trojan dast` on first run rather than by `trojan init`.
-// Uses the same latest-first + retry strategy as EnsureScanners.
-func EnsureDastScanners() error {
-	binDir, err := TrojanBinDir()
-	if err != nil {
-		return err
-	}
-
-	platform := runtime.GOOS + "/" + runtime.GOARCH
-
-	missing := []ScannerManifest{}
-	for _, s := range DastScanners {
-		dest := filepath.Join(binDir, s.Binary+exeSuffix())
-		if _, err := os.Stat(dest); os.IsNotExist(err) {
-			missing = append(missing, s)
-		}
-	}
-
-	if len(missing) == 0 {
-		return nil
-	}
-
-	fmt.Printf("Installing %d DAST scanner(s) to ~/.trojan/bin/...\n\n", len(missing))
-
-	for _, s := range missing {
-		asset, ok := s.Platforms[platform]
-		if !ok {
-			color.Yellow("  %-12s skipped (unsupported platform: %s)\n", s.Name, platform)
-			continue
-		}
-
-		dest := filepath.Join(binDir, s.Binary+exeSuffix())
-
-		// Try latest version from GitHub first
-		if s.GitHubRepo != "" {
-			if tryInstallLatest(s, asset, dest) {
-				continue
-			}
-		}
-
-		// Fall back to pinned version with retry
-		fmt.Printf("  Installing %s v%s... ", s.Name, s.Version)
-		if err := downloadWithRetry(asset, dest); err != nil {
-			color.Red("failed\n")
-			fmt.Printf("    Error: %v\n", err)
-			continue
-		}
-		color.Green("done\n")
-	}
-
-	fmt.Println()
-	return nil
-}
-
 // RunInit is the full init flow — called by `trojan init`.
 func RunInit(projectPath string) error {
 	PrintLogo()
@@ -565,4 +409,11 @@ func containsStr(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// HasSpace reports whether installing or downloading about needMB into dir
+// would still leave the safety headroom free. Unknown free space counts as
+// enough.
+func HasSpace(dir string, needMB int) bool {
+	return ensureSpace(dir, needMB) == nil
 }

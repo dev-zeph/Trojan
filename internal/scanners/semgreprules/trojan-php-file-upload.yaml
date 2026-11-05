@@ -1,0 +1,40 @@
+rules:
+  - id: trojan-php-upload-client-filename
+    languages: [php]
+    severity: ERROR
+    message: >-
+      An uploaded file is saved under the name the visitor's browser sent. An
+      attacker can upload a file called shell.php and then open it to run code
+      on your server. Save uploads under a name your code makes up (for example
+      a random ID plus an extension you picked) and keep them out of folders
+      the web server runs code from.
+    metadata:
+      trojan-title: Uploaded file saved under the visitor's file name
+      cwe:
+        - "CWE-434: Unrestricted Upload of File with Dangerous Type"
+      owasp:
+        - "A04:2021 - Insecure Design"
+      category: security
+      confidence: MEDIUM
+    mode: taint
+    pattern-sources:
+      - pattern: $_FILES[$K]['name']
+      - pattern: $_FILES[$K]["name"]
+      - pattern: $HTTP_POST_FILES[$K]['name']
+      - pattern: $HTTP_POST_FILES[$K]["name"]
+    pattern-sanitizers:
+      - pattern-either:
+          - pattern: md5(...)
+          - pattern: sha1(...)
+          - pattern: hash(...)
+          - pattern: crc32(...)
+    pattern-sinks:
+      - patterns:
+          - pattern: move_uploaded_file($TMP, $DEST)
+          - focus-metavariable: $DEST
+      - patterns:
+          - pattern: copy($TMP, $DEST)
+          - focus-metavariable: $DEST
+      - patterns:
+          - pattern: rename($TMP, $DEST)
+          - focus-metavariable: $DEST

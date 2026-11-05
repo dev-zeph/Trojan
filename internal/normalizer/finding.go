@@ -42,6 +42,16 @@ type Finding struct {
 	RuleID      string   // The scanner rule that triggered this
 	Status      Status   // open, resolved, suppressed
 
+	// Website (DAST) findings keep the probed URL in FilePath for backward
+	// compatibility (UIs link it, memory matches on it). The fields below say
+	// so explicitly and, when Trojan could place the finding in the project's
+	// source (grey-box: the agent named the file, or the URL resolved to a
+	// route handler), carry that source location. LineNumber stays 0 for these
+	// findings because FilePath is a URL, not a file.
+	URL        string `json:"url,omitempty"`         // probed URL (website findings)
+	SourceFile string `json:"source_file,omitempty"` // project-relative handler file, when known
+	SourceLine int    `json:"source_line,omitempty"` // 1-indexed line in SourceFile, 0 if unknown
+
 	// CWE and compliance fields
 	CWEIDs     []string            `json:"cwe_ids,omitempty"`    // e.g. ["CWE-79", "CWE-89"]
 	OWASP      []string            `json:"owasp,omitempty"`      // e.g. ["A03:2021 - Injection"]
@@ -69,6 +79,50 @@ type Finding struct {
 	// Locked is set at serve time (never persisted to disk).
 	// True when the finding is not accessible on the free plan.
 	Locked bool `json:"locked,omitempty"`
+
+	// Reach places the finding in the code graph: whether a public
+	// entrypoint reaches it, behind auth or not, and what data it touches.
+	// Set during the scan by internal/reach; nil when the finding has no
+	// enclosing function (dependencies, config files) or no graph was built.
+	Reach *ReachInfo `json:"reach,omitempty"`
+
+	// Proof is a replayable record of the request/response that made this a
+	// finding, so Trojan can re-check (retest) just this endpoint instead of
+	// rerunning a whole website test. Set for website / DAST findings captured
+	// with proof; nil for older findings and code findings.
+	Proof *Proof `json:"proof,omitempty"`
+}
+
+// ReachInfo is a finding's position in the code graph (see internal/reach).
+// It lives here, not in internal/reach, so Finding can carry it without an
+// import cycle.
+type ReachInfo struct {
+	// NodeKey is the stable graph.Node.Key of the enclosing function.
+	NodeKey  string `json:"node_key,omitempty"`
+	Function string `json:"function,omitempty"`
+	// Reachable is true when a public entrypoint (route handler, server
+	// action) is the enclosing function or calls into it.
+	Reachable bool `json:"reachable"`
+	// Guarded is true when every entrypoint path to the function passes an
+	// auth check. Only meaningful when Reachable.
+	Guarded bool `json:"guarded"`
+	// Entrypoints lists up to three entrypoints that reach it, unguarded
+	// ones first, as "label (file:line)".
+	Entrypoints []string `json:"entrypoints,omitempty"`
+	// Reads and Writes name the datastores the function (or what it calls)
+	// reads from or writes to.
+	Reads  []string `json:"reads,omitempty"`
+	Writes []string `json:"writes,omitempty"`
+	// Sensitive is true when the code touches personal data (heuristic) or a
+	// sensitive category from .trojan/context.yaml, listed in Categories.
+	Sensitive  bool     `json:"sensitive,omitempty"`
+	Categories []string `json:"categories,omitempty"`
+	// ClientSide is true for code that runs in the browser or is called
+	// from browser code.
+	ClientSide bool `json:"client_side,omitempty"`
+	// Priority ranks findings for attention: exposed (public and unguarded,
+	// or browser code) +4, sensitive +2, touches a datastore +1.
+	Priority int `json:"priority"`
 }
 
 // PackageAdvisory is a single security advisory attached to a dependency.

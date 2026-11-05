@@ -46,6 +46,18 @@ supabase/functions/_shared/pricing.ts
 supabase/functions/_shared/pricing.test.ts
 supabase/functions/_shared/purchase_email.ts
 supabase/functions/_shared/purchase_email.test.ts
+# Agent prompts and breach playbooks stay private (the repo is public).
+# Earlier versions remain in git history; these are untracked going forward.
+supabase/functions/whitebox-agent/
+supabase/functions/infer-context/
+supabase/functions/agentic-dast/
+supabase/functions/triage/
+supabase/functions/synthesize/
+supabase/functions/threat-lab/
+supabase/functions/compliance-lab/
+supabase/functions/pentest-report/
+supabase/functions/dast-templates/
+supabase/functions/attack-templates/
 
 # Internal / private
 Blueprint.md

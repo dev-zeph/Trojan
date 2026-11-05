@@ -1,3 +1,5 @@
+mod notifications;
+mod pentest_notify;
 use tauri::{AppHandle, Emitter, Manager, async_runtime::Receiver};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_shell::ShellExt;
@@ -99,6 +101,12 @@ struct ScanReturn {
 /// Every output line is forwarded to the frontend terminal panel as a
 /// `terminal-output` Tauri event so the user sees live scan progress.
 async fn await_ready(app: &AppHandle, mut rx: Receiver<CommandEvent>) -> Result<(String, String), String> {
+    await_ready_mut(app, &mut rx).await
+}
+
+/// Same as `await_ready` but borrows the receiver, so a caller can keep
+/// reading the sidecar after READY (see pentest_notify::watch_run).
+async fn await_ready_mut(app: &AppHandle, rx: &mut Receiver<CommandEvent>) -> Result<(String, String), String> {
     let mut last_stdout: Vec<String> = Vec::new();
     let mut last_stderr: Vec<String> = Vec::new();
     let mut cache_path = String::new();
@@ -234,6 +242,7 @@ fn signal_terminate(pid: u32) {
 
 /// Kill all previously tracked scan children, freeing their HTTP server ports.
 fn kill_old_scans(app: &AppHandle) {
+    pentest_notify::bump_generation();
     if let Ok(mut children) = app.state::<ActiveScans>().0.lock() {
         for child in children.drain(..) {
             let _ = child.kill();
@@ -326,7 +335,10 @@ async fn start_dast(app: AppHandle, url: String, owner_confirmed: bool) -> Resul
 }
 
 /// A named auth session supplied for authorization (IDOR/BOLA) testing.
-#[derive(serde::Deserialize)]
+/// Serialized (not pushed to argv) so the secret header is handed to the sidecar
+/// through its environment, which `ps` does not expose, instead of the command
+/// line, which it does.
+#[derive(serde::Deserialize, serde::Serialize)]
 struct PtIdentity {
     name: String,
     header: String,
@@ -365,6 +377,7 @@ async fn start_agentic_dast(
     allow_dangerous: bool,
     attack_template: Option<AttackTemplateArg>,
     owner_confirmed: bool,
+    project_path: Option<String>,
 ) -> Result<ScanReturn, String> {
     kill_old_scans(&app);
     let _ = app.emit(
@@ -385,18 +398,24 @@ async fn start_agentic_dast(
     if grey_box {
         args.push("--grey-box".into());
     }
+    // The sidecar runs from the app's own folder, so grey-box and the project
+    // brain (context, graph, memory) need the project path passed explicitly.
+    if let Some(p) = project_path.filter(|p| !p.is_empty()) {
+        args.push("--project".into());
+        args.push(p);
+    }
     if !focus.is_empty() {
         args.push("--focus".into());
         args.push(focus);
     }
-    for id in &identities {
-        let name = id.name.trim();
-        let header = id.header.trim();
-        if !name.is_empty() && !header.is_empty() {
-            args.push("--identity".into());
-            args.push(format!("{name}={header}"));
-        }
-    }
+    // Test logins carry secrets (a cookie or bearer token), so they are passed to
+    // the sidecar through its environment, NOT argv — `ps` can read another
+    // process's command line but not its environment. Collect the non-empty ones;
+    // they are attached to the spawn below as TROJAN_DAST_IDENTITIES.
+    let id_specs: Vec<&PtIdentity> = identities
+        .iter()
+        .filter(|id| !id.name.trim().is_empty() && !id.header.trim().is_empty())
+        .collect();
     if !api_spec.trim().is_empty() {
         args.push("--api-spec".into());
         args.push(api_spec.trim().into());
@@ -433,20 +452,31 @@ async fn start_agentic_dast(
         }
     }
 
-    let (rx, child) = app
+    let mut command = app
         .shell()
         .sidecar("trojan")
         .map_err(|e| format!("sidecar not found: {e}"))?
-        .args(args)
+        .args(args);
+    // Hand the test logins to the sidecar via its environment, keeping the
+    // secrets out of argv (and therefore out of `ps`). The CLI reads this var and
+    // merges it with any --identity flags.
+    if !id_specs.is_empty() {
+        if let Ok(js) = serde_json::to_string(&id_specs) {
+            command = command.env("TROJAN_DAST_IDENTITIES", js);
+        }
+    }
+    let (mut rx, child) = command
         .spawn()
         .map_err(|e| format!("spawn failed: {e}"))?;
     // Track the child before awaiting READY so a mid-scan cancel can kill it.
     if let Ok(mut children) = app.state::<ActiveScans>().0.lock() {
         children.push(child);
     }
-    let result = await_ready(&app, rx).await;
+    let result = await_ready_mut(&app, &mut rx).await;
     let _ = app.emit("terminal-scan-done", ());
     let (report_url, cache_path) = result?;
+    // READY is the start of the run; keep listening for its end to notify.
+    pentest_notify::watch_run(app.clone(), rx, url.clone(), report_url.clone());
     Ok(ScanReturn { url: report_url, cache_path })
 }
 
@@ -850,6 +880,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             // Store for keeping Go sidecar child processes alive.
             app.manage(ActiveScans(Mutex::new(Vec::new())));
@@ -874,6 +905,12 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            notifications::nudge_check,
+            notifications::get_nudge_enabled,
+            notifications::set_nudge_enabled,
+            pentest_notify::get_pentest_notify_enabled,
+            pentest_notify::set_pentest_notify_enabled,
+            pentest_notify::enable_pentest_notify,
             pick_folder,
             check_cache_exists,
             start_scan,

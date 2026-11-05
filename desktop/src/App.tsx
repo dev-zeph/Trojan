@@ -50,6 +50,9 @@ import type {
   McpToolStatus,
   Toast,
 } from "./types";
+import NotificationSettings, { useScanNudges } from "./NotificationSettings";
+import { PenTestNotify } from "./components/PenTestNotify";
+import { ContextChangeBanner } from "./ContextChangeBanner";
 import "./App.css";
 
 
@@ -126,6 +129,7 @@ const SIMPLE_NAV: typeof NAV = ([
 
 // ── App ───────────────────────────────────────────────────────────────────
 export default function App() {
+  useScanNudges();
   const [profileLoaded, setProfileLoaded] = useState(false);
   const [profile, setProfile]             = useState<UserProfile | null>(null);
   const [view, setView]                   = useState<NavView>("overview");
@@ -138,6 +142,13 @@ export default function App() {
   const [iframeOffOrigin, setIframeOffOrigin] = useState(false);
   const [isDragOver, setIsDragOver]       = useState(false);
   const [recent, setRecent]               = useState<RecentProject[]>([]);
+  // The most recently scanned code project: grey-box pen tests read it, and the
+  // founder home checks whether it changed since Trojan last learned about it.
+  const latestCodeProject = recent.find((r) => r.type !== "dast")?.path ?? "";
+  // A folder the user picked for grey-box wins over the latest scan.
+  const [greyBoxFolder, setGreyBoxFolder] = useState("");
+  const greyBoxProject = greyBoxFolder || latestCodeProject;
+  const [scanDoneCount, setScanDoneCount] = useState(0);
   const [dastUrl, setDastUrl]             = useState("");
   const [agenticMode, setAgenticMode]     = useState(false);
   const [agTier, setAgTier]               = useState<"passive" | "safe-active" | "aggressive">("passive");
@@ -148,6 +159,11 @@ export default function App() {
   const [agGreyBox, setAgGreyBox]         = useState(false);
   const [agFocus, setAgFocus]             = useState<"" | "api" | "web" | "llm">("");
   const [agIdentities, setAgIdentities]   = useState<{ name: string; header: string }[]>([]);
+  // Simple-dashboard test accounts: email+password logins Trojan uses to test
+  // the signed-in parts of the app (and, with two, whether one account can see
+  // another's data). Saved to <site>/identities.json via /api/dast/identities
+  // before the run; the engine logs in and only its session cookie is used.
+  const [simpleAccounts, setSimpleAccounts] = useState<{ email: string; password: string }[]>([{ email: "", password: "" }, { email: "", password: "" }]);
   const [agApiSpec, setAgApiSpec]         = useState("");
   const [agRequireApproval, setAgRequireApproval] = useState(false);
   const [agAllowEndpoints, setAgAllowEndpoints]   = useState("");
@@ -551,6 +567,7 @@ export default function App() {
     // than leave a stale number sitting in the sidebar.
     void refreshTokenBalance();
     setToasts((prev) => prev.map((t) => t.id === id ? { ...t, status: "done", reportUrl, cachePath } : t));
+    setScanDoneCount((n) => n + 1);
   }
   function updateToastError(id: string, error: string): void {
     setToasts((prev) => prev.map((t) => t.id === id ? { ...t, status: "error", error } : t));
@@ -766,6 +783,42 @@ export default function App() {
       .catch((e) => { if (!String(e).includes("__cancelled__")) updateToastError(id, friendlyError(String(e))); });
   }
 
+  // loadTestAccounts prefills the simple-mode account emails from what was saved
+  // for this site (passwords come back blank; a saved one is kept on re-save).
+  async function loadTestAccounts(url: string): Promise<void> {
+    if (!currentServerUrl || !url.trim()) return;
+    try {
+      const res = await fetch(`${currentServerUrl}/api/dast/identities?url=${encodeURIComponent(url)}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!Array.isArray(data.identities)) return;
+      setSimpleAccounts([0, 1].map((i) => ({ email: data.identities[i]?.login?.fields?.email ?? "", password: "" })));
+    } catch { /* ignore: fields just stay empty */ }
+  }
+
+  // saveTestAccounts writes the simple-mode logins as login-recipe identities so
+  // the engine can log in. An empty password on an existing account is preserved
+  // server-side, so re-running without retyping keeps the stored secret.
+  async function saveTestAccounts(url: string): Promise<void> {
+    if (!currentServerUrl) return;
+    let origin = "";
+    try { origin = new URL(url).origin; } catch { return; }
+    const identities = simpleAccounts
+      .map((a, i) => ({ a, i }))
+      .filter(({ a }) => a.email.trim() !== "")
+      .map(({ a, i }) => ({
+        name: `account-${i + 1}`,
+        login: { url: `${origin}/login`, fields: { email: a.email.trim(), password: a.password } },
+      }));
+    try {
+      await fetch(`${currentServerUrl}/api/dast/identities?url=${encodeURIComponent(url)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ identities }),
+      });
+    } catch { /* best effort: the test still runs unauthenticated if this fails */ }
+  }
+
   function triggerAgenticDast(url: string): void {
     if (!url.trim() || isScanning) return;
     const id = crypto.randomUUID();
@@ -791,6 +844,7 @@ export default function App() {
         ? { title: agTemplate.title, technique: agTemplate.technique, body: agTemplate.prompt_body }
         : null,
       ownerConfirmed,
+      projectPath: agGreyBox ? greyBoxProject : null,
     })
       .then(async ({ url: rUrl, cachePath }) => {
         updateToastDone(id, rUrl, cachePath);
@@ -855,6 +909,9 @@ export default function App() {
               matchedAt: f.FilePath,
               evidence: f.CodeSnippet,
               rationale: f.RawMessage,
+              verdictReason: f.VerdictReason,
+              sourceFile: f.source_file,
+              sourceLine: f.source_line,
             })),
             user_familiarity: profile?.familiarity ?? 1,
           }),
@@ -1242,6 +1299,14 @@ export default function App() {
         <main className={`content-area${view === "report" ? " content-area--report" : ""}`}>
 
           {/* ── Overview ── */}
+          {view === "overview" && simple && latestCodeProject && (
+            <ContextChangeBanner
+              serverUrl={currentServerUrl}
+              projectPath={latestCodeProject}
+              refreshKey={scanDoneCount}
+              onTopUp={handleTopUp}
+            />
+          )}
           {view === "overview" && simple && (
             <FounderHome
               name={profile.name}
@@ -1628,13 +1693,14 @@ export default function App() {
 
                 {/* Target */}
                 <span className="scanner-grid-label" style={{ marginTop: simple ? 0 : 16 }}>{simple ? "YOUR APP'S LINK" : "TARGET"}</span>
-                <form className="dast-row-form" onSubmit={(e) => { e.preventDefault(); if (needsOwner && !ownerConfirmed) return; (agenticMode || simple ? triggerAgenticDast : triggerDast)(dastUrl); }}>
+                <form className="dast-row-form" onSubmit={async (e) => { e.preventDefault(); if (needsOwner && !ownerConfirmed) return; if (simple) await saveTestAccounts(dastUrl); (agenticMode || simple ? triggerAgenticDast : triggerDast)(dastUrl); }}>
                   <input
                     className="dast-input dast-input-lg"
                     type="url"
                     placeholder={simple ? "https://myapp.com" : "https://staging.example.com"}
                     value={dastUrl}
                     onChange={(e) => { setDastUrl(e.target.value); setOwnerConfirmed(false); }}
+                    onBlur={() => { if (simple) void loadTestAccounts(dastUrl); }}
                     disabled={isScanning}
                     autoFocus
                     style={{ fontFamily: "var(--font-mono)" }}
@@ -1678,6 +1744,45 @@ export default function App() {
                         <span className="pt-simple-tier-d">Trojan also fills in forms and tries actions. It may leave a few test entries behind, like a test sign-up.</span>
                       </button>
                     </div>
+
+                    {/* Optional test logins so the agent can reach the signed-in parts of the app. */}
+                    <span className="scanner-grid-label" style={{ marginTop: 18 }}>
+                      TEST ACCOUNTS (OPTIONAL)
+                      <span className="pt-info" data-tip="The AI agent logs in as these two test users and checks whether one account can see the other account's data, a common and serious bug. Use test accounts you do not mind it poking at.">i</span>
+                    </span>
+                    <div style={{ fontSize: "0.85em", opacity: 0.7, marginBottom: 2 }}>
+                      Add test logins so Trojan can check the private, signed-in parts of your app.
+                    </div>
+                    {simpleAccounts.map((acct, i) => (
+                      <div key={i} className="dast-row-form" style={{ gap: 8, marginTop: 6 }}>
+                        <input className="dast-input" type="email" placeholder={`Account ${i + 1} email`} value={acct.email} disabled={isScanning}
+                          onChange={(e) => setSimpleAccounts((rows) => rows.map((r, j) => j === i ? { ...r, email: e.target.value } : r))}
+                          style={{ fontFamily: "var(--font-mono)" }} />
+                        <input className="dast-input" type="password" placeholder="Password" value={acct.password} disabled={isScanning}
+                          onChange={(e) => setSimpleAccounts((rows) => rows.map((r, j) => j === i ? { ...r, password: e.target.value } : r))}
+                          style={{ fontFamily: "var(--font-mono)" }} />
+                      </div>
+                    ))}
+
+                    {/* Optional: point Trojan at the app's code for deeper results (grey-box, in plain words). */}
+                    <span className="scanner-grid-label" style={{ marginTop: 18 }}>
+                      YOUR APP'S CODE (OPTIONAL)
+                      <span className="pt-info" data-tip="Pick the folder of the app you are testing and the AI can read its code to find deeper issues and pinpoint the exact cause. Your code stays on your machine and is never stored.">i</span>
+                    </span>
+                    <div style={{ fontSize: "0.85em", opacity: 0.7, marginTop: 4 }}>
+                      {agGreyBox && greyBoxProject
+                        ? `Using code from ${greyBoxProject.split("/").pop()}.`
+                        : "Pick your app's folder to give the AI more context. We never store your code."}
+                      <button type="button" className="pt-chip" style={{ marginLeft: 8 }} disabled={isScanning}
+                        onClick={async () => { const picked = await invoke<string | null>("pick_folder"); if (picked) { setGreyBoxFolder(picked); setAgGreyBox(true); } }}>
+                        {agGreyBox && greyBoxProject ? "Change folder" : "Choose folder"}
+                      </button>
+                      {agGreyBox && greyBoxProject && (
+                        <button type="button" className="pt-chip" style={{ marginLeft: 6 }} disabled={isScanning}
+                          onClick={() => { setAgGreyBox(false); setGreyBoxFolder(""); }}>Remove</button>
+                      )}
+                    </div>
+
                     <span className="scanner-grid-label" style={{ marginTop: 18 }}>COST</span>
                     <RunCostHint balance={tokenBalance} model="sonnet" />
                   </>
@@ -1768,6 +1873,25 @@ export default function App() {
                               disabled={isScanning}
                             />
                           </div>
+                          {agGreyBox && (
+                            <div style={{ fontSize: "0.85em", opacity: 0.7, marginTop: 8 }}>
+                              {greyBoxProject
+                                ? `Reading code from ${greyBoxProject.split("/").pop()}.`
+                                : "Choose the folder of the app you're testing so Trojan can read its code."}
+                              <button
+                                type="button"
+                                className="pt-chip"
+                                style={{ marginLeft: 8 }}
+                                disabled={isScanning}
+                                onClick={async () => {
+                                  const picked = await invoke<string | null>("pick_folder");
+                                  if (picked) setGreyBoxFolder(picked);
+                                }}
+                              >
+                                {greyBoxProject ? "Change" : "Choose folder"}
+                              </button>
+                            </div>
+                          )}
                         </div>
 
                         <div className="pt-card">
@@ -1791,12 +1915,13 @@ export default function App() {
 
                     {/* Identities — for authorization (IDOR/BOLA) testing */}
                     <div className="pt-idhead">
-                      <span className="scanner-grid-label" style={{ margin: 0 }}>IDENTITIES</span>
-                      <span className="pt-info" data-tip="Supply two or more logged-in sessions (name + an auth header like 'Authorization: Bearer ...'). The agent requests the same resource as each and compares, to catch broken object-level authorization.">i</span>
+                      <span className="scanner-grid-label" style={{ margin: 0 }}>TEST LOGINS</span>
+                      <span className="pt-info" data-tip="Supply two or more logged-in sessions (name + an auth header like 'Authorization: Bearer ...' or 'Cookie: session=...'). The agent requests the same resource as each and compares, to catch broken object-level authorization. These are kept in memory and passed to the scanner privately, never written to disk.">i</span>
                     </div>
                     <div className="pt-card">
+                      <p className="pt-idhint" style={{ marginTop: 0 }}>Lets Trojan check that one user can't see another user's data and that admin pages are locked.</p>
                       {agIdentities.length === 0 && (
-                        <p className="pt-idhint">Add two or more sessions to test whether one user can reach another's data.</p>
+                        <p className="pt-idhint">Add two or more sessions (for example a normal user and an admin). Each is a name plus a cookie value or a bearer token.</p>
                       )}
                       {agIdentities.map((id, i) => (
                         <div className="pt-id-row" key={i}>
@@ -3118,6 +3243,14 @@ export default function App() {
                     </div>
                   </div>
 
+                  {/* ── Scan reminders + pen-test notifications ── */}
+                  <div className="profile-section-group">
+                    <span className="profile-mono-label">NOTIFICATIONS</span>
+                    <div className="profile-card">
+                      <NotificationSettings />
+                    </div>
+                  </div>
+
                   {/* ── Security familiarity ── */}
                   <div className="profile-section-group">
                     <span className="profile-mono-label">SECURITY FAMILIARITY</span>
@@ -3213,6 +3346,13 @@ export default function App() {
               </button>
             </div>
           )}
+
+          {/* ── Pen test: "we'll notify you" banner + end toast ── */}
+          <PenTestNotify
+            currentReportUrl={reportUrl}
+            visible={view === "report"}
+            onOpen={(url, target) => openReport(url, target, "dast")}
+          />
 
           {/* ── Scan report iframe ── */}
           {/* Always mounted when reportUrl is set so switching tabs doesn't trigger a reload */}

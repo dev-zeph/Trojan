@@ -1,0 +1,70 @@
+rules:
+  - id: trojan-php-xxe-entities-enabled
+    languages: [php]
+    severity: ERROR
+    message: >-
+      This code tells PHP's XML reader to follow outside references inside the
+      XML (called "external entities"). Someone who can send XML here can make
+      your server read its own private files or call internal addresses. Remove
+      LIBXML_NOENT / LIBXML_DTDLOAD, keep substituteEntities and
+      resolveExternals off, and never call libxml_disable_entity_loader(false).
+    metadata:
+      trojan-title: XML reader can be tricked into reading server files (XXE)
+      cwe:
+        - "CWE-611: Improper Restriction of XML External Entity Reference"
+      owasp:
+        - "A05:2021 - Security Misconfiguration"
+      category: security
+      confidence: HIGH
+    pattern-either:
+      - pattern: libxml_disable_entity_loader(false)
+      - pattern: $DOC->substituteEntities = true
+      - pattern: $DOC->resolveExternals = true
+      - patterns:
+          - pattern-either:
+              - pattern: simplexml_load_string(...)
+              - pattern: simplexml_load_file(...)
+              - pattern: $DOC->loadXML(...)
+              - pattern: $DOC->load(...)
+              - pattern: new SimpleXMLElement(...)
+          - pattern-regex: \bLIBXML_(NOENT|DTDLOAD|DTDATTR)\b
+
+  - id: trojan-php-xxe-request-xml
+    languages: [php]
+    severity: WARNING
+    message: >-
+      XML sent by a visitor is read here. On older PHP versions (before 8.0),
+      or if outside references are switched on anywhere, an attacker can use
+      this XML to read files from your server. Call
+      libxml_disable_entity_loader(true) on old PHP, or parse with
+      LIBXML_NONET and without LIBXML_NOENT.
+    metadata:
+      trojan-title: XML from a visitor is read without blocking outside references
+      cwe:
+        - "CWE-611: Improper Restriction of XML External Entity Reference"
+      owasp:
+        - "A05:2021 - Security Misconfiguration"
+      category: security
+      confidence: MEDIUM
+    mode: taint
+    pattern-sources:
+      - pattern-either:
+          - pattern: $_GET
+          - pattern: $_POST
+          - pattern: $_REQUEST
+          - pattern: $_COOKIE
+          - pattern: file_get_contents("php://input")
+          - pattern: file_get_contents('php://input')
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: simplexml_load_string($X, ...)
+              - pattern: $DOC->loadXML($X, ...)
+              - pattern: new SimpleXMLElement($X, ...)
+              - pattern: xml_parse($P, $X, ...)
+          - pattern-not: simplexml_load_string($X, $C, <... LIBXML_NONET ...>, ...)
+          - pattern-not: $DOC->loadXML($X, <... LIBXML_NONET ...>, ...)
+          - pattern-not-inside: |
+              libxml_disable_entity_loader(true);
+              ...
+          - focus-metavariable: $X

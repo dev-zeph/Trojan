@@ -18,7 +18,19 @@ import (
 // into edges yet — tree-sitter + a proper symbol table close that gap in the
 // production build. Sink detection, by contrast, works across packages because
 // it matches the callee expression textually (exec.Command, db.Query, …).
+//
+// Node keys are assigned relative to the inferred project root of files (see
+// BuildFromFiles); use BuildFromFilesRoot when the root is known.
 func BuildFromGoFiles(files []string) (*Graph, error) {
+	g := buildGo(files)
+	tagBatch(g, BatchGo)
+	AssignKeys(g, inferRoot(files))
+	return g, nil
+}
+
+// buildGo is BuildFromGoFiles without the key pass, so BuildFromFilesRoot can
+// assign keys once over the merged graph.
+func buildGo(files []string) *Graph {
 	g := New()
 	fset := token.NewFileSet()
 
@@ -97,7 +109,7 @@ func BuildFromGoFiles(files []string) (*Graph, error) {
 		}
 	}
 
-	return g, nil
+	return g
 }
 
 // qualifiedName returns "pkg.Func" for a plain function or "pkg.(Recv).Method"

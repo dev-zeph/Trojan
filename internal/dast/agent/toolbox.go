@@ -11,6 +11,7 @@ import (
 
 	"github.com/dev-zeph/trojan/internal/dast"
 	"github.com/dev-zeph/trojan/internal/greybox"
+	"github.com/dev-zeph/trojan/internal/normalizer"
 )
 
 // SourceReader gives the agent read access to the target's own source — the
@@ -41,6 +42,23 @@ type Candidate struct {
 	URL       string `json:"url"`
 	Evidence  string `json:"evidence"`
 	Rationale string `json:"rationale"`
+	// File and Line optionally place the finding in the target's source
+	// (grey-box): the handler file the agent read via read_source, and the
+	// 1-indexed line of the flaw. Both optional; an older edge function that
+	// doesn't offer them in the note_finding schema simply leaves them empty,
+	// and the loop then fills them from the endpoint's read_source handler.
+	File string `json:"file,omitempty"`
+	Line int    `json:"line,omitempty"`
+	// ProbeID optionally references the http_probe response that proves this
+	// finding. When the agent supplies it, that probe's request/response is kept
+	// as the finding's replayable Proof; when it is absent (the edge-function
+	// tool schema may not ask for it), the most recent probe to the same URL is
+	// used instead. Either way the Proof lets Trojan retest just this endpoint.
+	ProbeID int `json:"probe_id,omitempty"`
+	// Proof is resolved internally from the capture store when the finding is
+	// recorded (not supplied by the model), and carried onto the normalized
+	// Finding so a deterministic retest can replay the exact request.
+	Proof *normalizer.Proof `json:"-"`
 }
 
 // Fact is something the agent learned during the run and may reuse to chain
@@ -60,11 +78,37 @@ type Fact struct {
 // Identity is a named authenticated session the agent can send probes as, for
 // testing authorization boundaries — IDOR / BOLA (§6.5 #2). Headers (typically an
 // Authorization bearer or a Cookie) are attached to a probe when the agent
-// selects this identity. Supplied by the user; there is no login automation in
-// v1, so any auth scheme works.
+// selects this identity. Any auth scheme works.
+//
+// Two origins: user-supplied test logins (Source == "", handed in at setup), and
+// sessions the agent CAPTURES mid-run — a Set-Cookie it was issued, a token it
+// read out of a response, or a credential/token it chose to remember. A captured
+// identity is named "captured-N" and its Source is a short label of where it came
+// from, so later probes can replay it with the `identity` field instead of the
+// finding stalling as "needs a logged-in session".
 type Identity struct {
 	Name    string            `json:"name"`
-	Headers map[string]string `json:"headers"`
+	Headers map[string]string `json:"headers,omitempty"`
+	// Login, when set, is a recipe for obtaining this identity's session by
+	// logging in (email+password). ResolveIdentities runs it before the test,
+	// locally, and replaces it with the captured session cookie in Headers. The
+	// credentials in a recipe are never attached to probes, never sent to the
+	// model, and never logged — only the resulting cookie is used.
+	Login *LoginRecipe `json:"login,omitempty"`
+	// Source is empty for user-supplied identities and a short human label for
+	// auto-captured ones ("session cookie from POST /rest/user/login"). It is
+	// shown to the agent; it must never contain the secret itself.
+	Source string `json:"source,omitempty"`
+}
+
+// LoginRecipe tells ResolveIdentities how to obtain an identity's session: it
+// submits Fields (form-encoded) to URL and captures the resulting session
+// cookie. Used so a user can supply an email+password test login instead of a
+// raw cookie/header. The credentials live only on this machine.
+type LoginRecipe struct {
+	URL    string            `json:"url"`              // login endpoint, e.g. http://host/login
+	Method string            `json:"method,omitempty"` // default POST
+	Fields map[string]string `json:"fields"`           // form fields, e.g. {"email":"…","password":"…"}
 }
 
 // ProbeRequest is a single constrained HTTP request the agent wants to send.
@@ -91,22 +135,39 @@ type ProbeResult struct {
 	Body      string            `json:"body"`
 	Truncated bool              `json:"truncated"`
 	Elapsed   time.Duration     `json:"elapsed"`
+	// CapturedIdentity is set when this response handed the agent a session
+	// (a Set-Cookie session/auth cookie, or a bearer token in the body) that was
+	// auto-registered as a named identity. The agent can replay it by name.
+	CapturedIdentity string `json:"captured_identity,omitempty"`
+	// CapturedFrom is a short label of what was captured, for the agent's benefit.
+	CapturedFrom string `json:"captured_identity_source,omitempty"`
+	// AvailableIdentities lists every identity the agent may send probes as right
+	// now (user-supplied + anything captured so far), so it always knows what the
+	// `identity` field accepts without having to guess.
+	AvailableIdentities []string `json:"available_identities,omitempty"`
 }
 
 // capturedProbe is a probe's request meta + response body retained for diffing
 // (§6.5 #3). Kept internal — the agent only ever sees ProbeRef via a DiffResult.
 type capturedProbe struct {
-	id       int
-	method   string
-	url      string
-	identity string
-	status   int
-	body     string
+	id          int
+	method      string
+	url         string
+	identity    string
+	status      int
+	body        string
+	reqHeaders  map[string]string // merged request headers actually sent, secrets redacted
+	reqBody     string
+	respHeaders map[string]string // allowlisted response headers (see pickHeaders)
 }
 
 func (c capturedProbe) ref() ProbeRef {
 	return ProbeRef{ProbeID: c.id, Method: c.method, URL: c.url, Identity: c.identity, Status: c.status}
 }
+
+// proofExcerptBytes bounds how much of a response body is kept on a Proof for
+// human context — enough to recognize the finding, not the whole page.
+const proofExcerptBytes = 512
 
 // maxRetainedProbes bounds the diff store: only the N most recent probe bodies
 // are kept so a long run can't accumulate hundreds of capped bodies in memory.
@@ -134,6 +195,14 @@ type Toolbox struct {
 	facts    []Fact
 	finished bool
 	summary  string
+	covered  map[string]bool // distinct method+URL pairs probed, for stall detection
+
+	// Auto-captured identities (§6.5 #2, expert feedback #3): sessions the agent
+	// obtains mid-run are registered as "captured-N" so it can reuse them. Bounded
+	// by maxCapturedIdentities; capturedSeen dedupes by header signature so the
+	// same session is never registered twice. Guarded by mu.
+	capturedSeq  int
+	capturedSeen map[string]bool
 
 	// probe capture store for diff_responses (§6.5 #3). Bounded to the most
 	// recent maxRetainedProbes; probeOrder is the eviction queue (oldest first).
@@ -195,8 +264,12 @@ func (t *Toolbox) Approvals() *Approvals { return t.approvals }
 // Envelope returns the run's safety envelope, so the loop can Classify an action.
 func (t *Toolbox) Envelope() *Envelope { return t.env }
 
-// SetIdentities registers the named auth sessions the agent may probe as.
+// SetIdentities registers the named auth sessions the agent may probe as. These
+// are the user-supplied test logins; the agent may add more by capturing sessions
+// mid-run (see registerCapturedIdentity).
 func (t *Toolbox) SetIdentities(ids []Identity) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 	t.identities = make(map[string]Identity, len(ids))
 	t.identOrder = t.identOrder[:0]
 	for _, id := range ids {
@@ -210,12 +283,28 @@ func (t *Toolbox) SetIdentities(ids []Identity) {
 	}
 }
 
-// IdentityNames returns the registered identity names, in supply order, for the
-// run context handed to the agent.
+// IdentityNames returns the registered identity names, in registration order
+// (user-supplied first, then captured), for the context handed to the agent.
 func (t *Toolbox) IdentityNames() []string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.identityNamesLocked()
+}
+
+// identityNamesLocked is IdentityNames without taking the lock; callers that
+// already hold t.mu use this.
+func (t *Toolbox) identityNamesLocked() []string {
 	out := make([]string, len(t.identOrder))
 	copy(out, t.identOrder)
 	return out
+}
+
+// lookupIdentity resolves a named identity under the lock.
+func (t *Toolbox) lookupIdentity(name string) (Identity, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	id, ok := t.identities[name]
+	return id, ok
 }
 
 // ReadSource is the grey-box tool (§6.6): read the target's own source to form
@@ -247,7 +336,7 @@ func (t *Toolbox) HTTPProbe(ctx context.Context, req ProbeRequest) (*ProbeResult
 	// budget, so an unknown identity is a cheap, adaptable tool error.
 	var identityHeaders map[string]string
 	if req.Identity != "" {
-		id, ok := t.identities[req.Identity]
+		id, ok := t.lookupIdentity(req.Identity)
 		if !ok {
 			return nil, fmt.Errorf("unknown identity %q; available: %s", req.Identity, strings.Join(t.IdentityNames(), ", "))
 		}
@@ -268,12 +357,17 @@ func (t *Toolbox) HTTPProbe(ctx context.Context, req ProbeRequest) (*ProbeResult
 	}
 	httpReq.Header.Set("User-Agent", probeUserAgent)
 	// Identity auth first (the base session), then the agent's explicit headers
-	// so a deliberate per-probe header can still override.
+	// so a deliberate per-probe header can still override. sentHeaders records
+	// exactly what went on the wire so a finding's Proof can replay it (secrets
+	// are redacted before the Proof is stored).
+	sentHeaders := map[string]string{}
 	for k, v := range identityHeaders {
 		httpReq.Header.Set(k, v)
+		sentHeaders[k] = v
 	}
 	for k, v := range req.Headers {
 		httpReq.Header.Set(k, v)
+		sentHeaders[k] = v
 	}
 
 	start := time.Now()
@@ -297,15 +391,36 @@ func (t *Toolbox) HTTPProbe(ctx context.Context, req ProbeRequest) (*ProbeResult
 		Truncated: truncated,
 		Elapsed:   time.Since(start),
 	}
-	// Capture the response so the agent can diff it later by id (§6.5 #3). The
-	// identity recorded is the one the probe was sent as (empty = anonymous).
-	result.ProbeID = t.captureProbe(req.Method, req.URL, req.Identity, result.Status, result.Body)
+	// Capture the response so the agent can diff it later by id (§6.5 #3) and so
+	// a finding can keep it as replayable Proof. The identity recorded is the one
+	// the probe was sent as (empty = anonymous); request-header secrets are
+	// redacted at capture so they never reach the Proof or disk.
+	result.ProbeID = t.captureProbe(capturedProbe{
+		method:      req.Method,
+		url:         req.URL,
+		identity:    req.Identity,
+		status:      result.Status,
+		body:        result.Body,
+		reqHeaders:  normalizer.RedactHeaders(sentHeaders),
+		reqBody:     req.Body,
+		respHeaders: result.Headers,
+	})
+
+	// Auto-register any session this response just handed us (a Set-Cookie
+	// session/auth cookie or a bearer token in the body) as a named identity, so a
+	// later probe can replay it instead of a finding stalling on "needs a login".
+	if name, src := t.autoCaptureFromResponse(req.Method, req.URL, resp.Header, result.Body); name != "" {
+		result.CapturedIdentity = name
+		result.CapturedFrom = src
+	}
+	// Always tell the agent which identities it may probe as right now.
+	result.AvailableIdentities = t.IdentityNames()
 	return result, nil
 }
 
 // captureProbe stores a response for later diffing and returns its id, evicting
 // the oldest capture once the retention cap is exceeded. Safe for concurrent use.
-func (t *Toolbox) captureProbe(method, url, identity string, status int, body string) int {
+func (t *Toolbox) captureProbe(cp capturedProbe) int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.probes == nil {
@@ -313,9 +428,8 @@ func (t *Toolbox) captureProbe(method, url, identity string, status int, body st
 	}
 	t.probeSeq++
 	id := t.probeSeq
-	t.probes[id] = capturedProbe{
-		id: id, method: method, url: url, identity: identity, status: status, body: body,
-	}
+	cp.id = id
+	t.probes[id] = cp
 	t.probeOrder = append(t.probeOrder, id)
 	if len(t.probeOrder) > maxRetainedProbes {
 		evict := t.probeOrder[0]
@@ -348,11 +462,76 @@ func (t *Toolbox) DiffResponses(aID, bID int) (*DiffResult, error) {
 	return &res, nil
 }
 
-// NoteFinding records a candidate vulnerability. No network.
+// NoteFinding records a candidate vulnerability. No network. It attaches a
+// replayable Proof from the capture store so the finding can later be retested
+// in isolation: the probe the agent referenced by ProbeID, or (when it gives
+// none) the most recent probe to the same URL. A finding with no matching probe
+// keeps a nil Proof, which an honest retest reports as inconclusive.
 func (t *Toolbox) NoteFinding(c Candidate) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if c.Proof == nil {
+		c.Proof = t.proofForCandidateLocked(c)
+	}
 	t.findings = append(t.findings, c)
+}
+
+// proofForCandidateLocked builds a Proof from a captured probe. Callers hold
+// t.mu. Returns nil when no probe matches (older runs, or a finding noted
+// without any probe to its URL).
+func (t *Toolbox) proofForCandidateLocked(c Candidate) *normalizer.Proof {
+	var cp capturedProbe
+	var found bool
+	if c.ProbeID > 0 {
+		cp, found = t.probes[c.ProbeID]
+	}
+	if !found {
+		// Most recent probe to the same URL (probeOrder is oldest-first).
+		for i := len(t.probeOrder) - 1; i >= 0; i-- {
+			if p, ok := t.probes[t.probeOrder[i]]; ok && p.url == c.URL {
+				cp, found = p, true
+				break
+			}
+		}
+	}
+	if !found {
+		return nil
+	}
+	sig := normalizer.DeriveSignal(cp.method, cp.url, cp.reqBody, cp.status, cp.respHeaders, cp.body)
+	sig.Detail = strings.TrimSpace(c.Evidence)
+	excerpt := cp.body
+	if len(excerpt) > proofExcerptBytes {
+		excerpt = excerpt[:proofExcerptBytes]
+	}
+	return &normalizer.Proof{
+		Method:          cp.method,
+		URL:             cp.url,
+		RequestHeaders:  cp.reqHeaders,
+		RequestBody:     cp.reqBody,
+		Identity:        cp.identity,
+		OrigStatus:      cp.status,
+		Signal:          sig,
+		ResponseExcerpt: excerpt,
+	}
+}
+
+// markCovered records a probed method+URL so the loop can tell new ground from
+// repetition.
+func (t *Toolbox) markCovered(method, url string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.covered == nil {
+		t.covered = make(map[string]bool)
+	}
+	t.covered[strings.ToUpper(method)+" "+url] = true
+}
+
+// Progress is a monotonic count of what the run has learned: distinct probes,
+// findings and facts. If it stops growing, the agent is going in circles.
+func (t *Toolbox) Progress() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.covered) + len(t.findings) + len(t.facts)
 }
 
 // Findings returns a copy of everything recorded so far.

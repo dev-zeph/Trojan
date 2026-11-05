@@ -31,6 +31,10 @@ type scanResponse struct {
 	LockedCount int                       `json:"locked_count"`
 	Packages    []normalizer.Package      `json:"packages,omitempty"`
 	Privacy     *normalizer.PrivacyReport `json:"privacy,omitempty"`
+	// CoverageNote explains that source in a language the code-graph checks
+	// don't parse (e.g. PHP) was covered by the rule scanners instead (see
+	// normalizer.ScanResult.CoverageNote).
+	CoverageNote string `json:"coverage_note,omitempty"`
 }
 
 // Server holds the scan results and serves the UI + API.
@@ -65,6 +69,11 @@ type Server struct {
 	// agent loop (the reverse channel). Set per-run by the CLI; nil = no HITL run
 	// active. Guarded by agenticMu.
 	approvalDecider func(id int, approve bool, note string)
+
+	// Context inference seams (see context_infer.go). Nil means the real
+	// implementations; tests inject fakes.
+	contextInferer ContextInferer
+	authSession    func() (accessToken, userID string, ok bool)
 }
 
 // New creates a new server with the given scan result and embedded UI assets.
@@ -106,6 +115,8 @@ func (s *Server) Start() (string, error) {
 	mux.HandleFunc("/api/events", s.handleSSE)
 	mux.HandleFunc("/api/install-progress", s.handleInstallProgress)
 	mux.HandleFunc("/api/context", s.handleContext)
+	mux.HandleFunc("/api/context/infer", s.handleContextInfer)
+	mux.HandleFunc("/api/context/changes", s.handleContextChanges)
 
 	// Agentic-DAST (Phase 5): consent gate + live run stream.
 	mux.HandleFunc("/api/dast/consent/status", s.handleConsentStatus)
@@ -114,22 +125,14 @@ func (s *Server) Start() (string, error) {
 	mux.HandleFunc("/api/dast/agentic/status", s.handleAgenticStatus)
 	mux.HandleFunc("/api/dast/agentic/events", s.handleAgenticEvents)
 	mux.HandleFunc("/api/dast/approval", s.handleApproval)
+	mux.HandleFunc("/api/dast/identities", s.handleIdentities)
 
 	// Serve embedded UI assets (caller passes an already-subbed fs.FS)
 	mux.Handle("/", http.FileServer(http.FS(s.uiAssets)))
 
-	// Wrap with CORS headers so the Tauri desktop webview (localhost:1420 in dev,
-	// tauri://localhost in prod) can fetch /api/* endpoints directly.
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		mux.ServeHTTP(w, r)
-	})
+	// Only loopback hosts, and only the desktop app (or the report page itself)
+	// from a browser: see localGuard.
+	handler := localGuard(mux)
 	go http.Serve(ln, handler) //nolint:errcheck
 
 	return fmt.Sprintf("http://127.0.0.1:%d", s.port), nil
@@ -220,6 +223,7 @@ func (s *Server) handleLatestScan(w http.ResponseWriter, r *http.Request) {
 	resp.Timestamp = scan.Timestamp
 	resp.ProjectPath = scan.ProjectPath
 	resp.Findings = scan.Findings
+	resp.CoverageNote = scan.CoverageNote
 	resp.LockedCount = 0
 	resp.Packages = scan.Packages
 	resp.Privacy = scan.Privacy

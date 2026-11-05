@@ -283,12 +283,25 @@ func websiteReport(rawURL string) (*report, string, error) {
 		MatchedAt string `json:"matchedAt"`
 		Evidence  string `json:"evidence"`
 		Rationale string `json:"rationale"`
+		// Per-finding verdict reasoning and source location (grey-box), so the
+		// report describes each finding from its own data.
+		VerdictReason string `json:"verdictReason,omitempty"`
+		SourceFile    string `json:"sourceFile,omitempty"`
+		SourceLine    int    `json:"sourceLine,omitempty"`
 	}
 	var findings []pf
 	var listed []string
 	for _, f := range scan.Findings {
-		findings = append(findings, pf{f.ID, f.Title, strings.ToLower(string(f.Severity)), f.Verdict, f.FilePath, f.CodeSnippet, f.RawMessage})
-		listed = append(listed, fmt.Sprintf("[%s] %s (%s)", strings.ToUpper(string(f.Severity)), f.Title, f.Status))
+		findings = append(findings, pf{
+			ID: f.ID, Title: f.Title, Severity: strings.ToLower(string(f.Severity)), Verdict: f.Verdict,
+			MatchedAt: f.FilePath, Evidence: f.CodeSnippet, Rationale: f.RawMessage,
+			VerdictReason: f.VerdictReason, SourceFile: f.SourceFile, SourceLine: f.SourceLine,
+		})
+		item := fmt.Sprintf("[%s] %s (%s)", strings.ToUpper(string(f.Severity)), f.Title, f.Status)
+		if loc := sourceLocation(f); loc != "" {
+			item += " at " + loc
+		}
+		listed = append(listed, item)
 	}
 	var r struct {
 		Grade            string   `json:"grade"`

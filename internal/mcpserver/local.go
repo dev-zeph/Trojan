@@ -22,6 +22,7 @@ import (
 
 	"github.com/dev-zeph/trojan/internal/config"
 	"github.com/dev-zeph/trojan/internal/normalizer"
+	"github.com/dev-zeph/trojan/internal/reach"
 	"github.com/dev-zeph/trojan/internal/scanners"
 )
 
@@ -178,8 +179,9 @@ func resolveProject(ctx context.Context, req mcp.CallToolRequest) (string, error
 			return dir, nil
 		}
 	}
-	// run_scan is how a never-scanned project gets its first scan.
-	if req.Params.Name == "run_scan" {
+	// run_scan is how a never-scanned project gets its first scan, and the
+	// graph tools build what they need on demand.
+	if req.Params.Name == "run_scan" || graphToolNames[req.Params.Name] {
 		if dir := expandHome(candidates[0]); filepath.IsAbs(dir) {
 			if info, err := os.Stat(dir); err == nil && info.IsDir() {
 				recordActivity(clientName(ctx), dir)
@@ -348,10 +350,22 @@ func ScanOnce(projectPath string) (*normalizer.ScanResult, error) {
 	if err := config.EnsureScanners(); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not install scanners: %s\n", err)
 	}
-	relevant := scanners.RelevantScanners(scanners.DefaultScanners(), scanners.DetectProject(projectPath))
+	project := scanners.DetectProject(projectPath)
+	relevant := scanners.RelevantScanners(scanners.DefaultScanners(), project)
+	// Scanners that couldn't run are logged by RunAll and left out; the scan
+	// uses the ones that ran.
 	findings, _ := scanners.RunAll(projectPath, relevant, nil)
 	findings, _ = normalizer.Reduce(findings)
-	return normalizer.SaveScanResult(projectPath, findings)
+	// Refresh the code graph and place each finding in it. Additive: a graph
+	// failure is logged and the scan is still saved.
+	if err := reach.Enrich(projectPath, findings); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: code graph not updated: %s\n", err)
+	}
+	res, err := normalizer.SaveScanResult(projectPath, findings)
+	if err == nil {
+		res.CoverageNote = scanners.CoverageNote(project)
+	}
+	return res, err
 }
 
 func trojanFile(name string) (string, error) {

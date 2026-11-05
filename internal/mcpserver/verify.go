@@ -15,6 +15,7 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 
 	"github.com/dev-zeph/trojan/internal/config"
+	"github.com/dev-zeph/trojan/internal/memory"
 	"github.com/dev-zeph/trojan/internal/normalizer"
 	"github.com/dev-zeph/trojan/internal/scanners"
 )
@@ -67,7 +68,14 @@ func VerifyOnce(projectPath, id string) (*VerifyResult, error) {
 		fmt.Fprintf(os.Stderr, "warning: could not install scanners: %s\n", err)
 	}
 
-	fresh, _ := scanners.RunAll(projectPath, []scanners.Scanner{scanner}, nil)
+	fresh, results := scanners.RunAll(projectPath, []scanners.Scanner{scanner}, nil)
+	// A scanner that failed to run (e.g. Semgrep couldn't download its rules)
+	// returns no findings, which must not read as "the finding is gone".
+	for _, r := range results {
+		if r.Err != nil {
+			return nil, fmt.Errorf("couldn't confirm the fix right now. Try verify_fix again in a moment")
+		}
+	}
 	fresh, _ = normalizer.Reduce(fresh)
 
 	res := &VerifyResult{Fixed: true, Scanner: target.Scanner, RuleID: target.RuleID, FindingID: id}
@@ -92,13 +100,21 @@ func relPath(root, p string) string {
 
 func handleVerifyFix(project projectFunc) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		projectPath, err := project(ctx, req)
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
 		id, err := req.RequireString("id")
 		if err != nil {
 			return mcp.NewToolResultError("missing required parameter: id"), nil
+		}
+
+		// A website / pen-test finding is verified by replaying its recorded
+		// proof against the live endpoint (seconds), not by re-running the code
+		// scanner. Route those IDs to the targeted retest.
+		if siteDir, _, ok := findWebsiteFinding(id); ok {
+			return verifyFixWebsite(ctx, siteDir, id), nil
+		}
+
+		projectPath, err := project(ctx, req)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
 		}
 
 		exe, err := os.Executable()
@@ -126,6 +142,9 @@ func handleVerifyFix(project projectFunc) server.ToolHandlerFunc {
 			if msg == "" && runErr != nil {
 				msg = runErr.Error()
 			}
+			if strings.HasPrefix(msg, "couldn't confirm") {
+				return mcp.NewToolResultText(msg), nil // not a verdict: nothing is marked
+			}
 			return mcp.NewToolResultError("verification failed: " + msg), nil
 		}
 
@@ -139,6 +158,8 @@ func handleVerifyFix(project projectFunc) server.ToolHandlerFunc {
 			for i := range scan.Findings {
 				if scan.Findings[i].ID == id {
 					scan.Findings[i].Status = normalizer.StatusResolved
+					recordMemory(projectPath, scan.Findings[i], memory.KindFixed,
+						fmt.Sprintf("verify_fix: %s no longer reports rule %s in this file", res.Scanner, res.RuleID))
 				}
 			}
 			saveLatestScan(projectPath, scan) //nolint:errcheck // the verification itself succeeded

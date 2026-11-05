@@ -145,7 +145,9 @@ func TestGraphRestoreRebuildsEdgeDedup(t *testing.T) {
 }
 
 func TestBudgetRestorePreservesConsumedCaps(t *testing.T) {
+	// Defaults have no step cap; an explicitly capped run must still restore it.
 	lim := DefaultLimits()
+	lim.MaxSteps = 15
 	b := NewBudget(lim, nil)
 	b.Restore(lim.MaxSteps-1, 5, 30*time.Second)
 

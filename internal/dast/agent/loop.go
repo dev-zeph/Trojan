@@ -115,6 +115,14 @@ type RunResult struct {
 	Usage      Usage // cumulative across all turns
 }
 
+// StopStalled ends a run that has gone StallSteps turns without probing anything
+// new, recording a finding or learning a fact. It replaces fixed step caps: a
+// thorough engagement keeps going as long as it is still discovering things.
+const StopStalled StopReason = "no new ground covered"
+
+// StallSteps is how many consecutive turns without progress end a run.
+const StallSteps = 6
+
 // StopTokenBudget is the reason surfaced when the cumulative token ceiling trips.
 const StopTokenBudget StopReason = "token budget reached"
 
@@ -164,8 +172,15 @@ func Run(ctx context.Context, tb *Toolbox, tr Transport, opts RunOptions) (*RunR
 		}
 		cp.Messages = messages
 		cp.Usage = cum
-		cp.Findings = tb.Findings()
-		cp.Facts = tb.Facts()
+		// Scrub identity secrets from the structured findings/facts before they
+		// hit disk, matching checkpoint.go's rule of never persisting a credential
+		// in the clear. (The raw conversation is still relied on to stay under the
+		// 0600 ~/.trojan handling; it must be replayed byte-for-byte.) Captured
+		// identities themselves are deliberately NOT written to cp.Identities, so
+		// their secrets never reach disk — a resumed agent re-captures them, the
+		// way it re-probes for a fresh diff.
+		cp.Findings = tb.RedactCandidates(tb.Findings())
+		cp.Facts = tb.RedactFacts(tb.Facts())
 		if g := tb.Graph(); g != nil {
 			cp.GraphNodes, cp.GraphEdges = g.Snapshot()
 		}
@@ -189,6 +204,7 @@ func Run(ctx context.Context, tb *Toolbox, tr Transport, opts RunOptions) (*RunR
 		}
 	}
 
+	lastProgress, idle := tb.Progress(), 0
 	for {
 		// Reserve a reasoning turn. A tripped cap ends the run — visibly.
 		if err := tb.Budget().BeginStep(); err != nil {
@@ -253,6 +269,15 @@ func Run(ctx context.Context, tb *Toolbox, tr Transport, opts RunOptions) (*RunR
 
 		if len(toolResults) > 0 || len(outcomes) > 0 {
 			messages = append(messages, followupMessage(toolResults, outcomes))
+		}
+
+		// Stall guard: count turns that added nothing (no new probe, finding or
+		// fact). Pending approvals don't count as idle, the agent is waiting.
+		if p := tb.Progress(); p > lastProgress || len(outcomes) > 0 {
+			lastProgress, idle = p, 0
+		} else if idle++; idle >= StallSteps && !wantEnd {
+			save(StopStalled, false)
+			return finish(result, tb, cum, EventStopped, StopStalled, emit), nil
 		}
 
 		// End only when the agent is done AND nothing was just resolved that it
@@ -335,6 +360,7 @@ func executeTool(ctx context.Context, tb *Toolbox, b blockPeek, step int, emit f
 			return err.Error(), true, false
 		}
 		emit(Event{Type: EventToolResult, Step: step, Tool: toolHTTPProbe, Detail: fmt.Sprintf("%d %s", res.Status, pr.URL)})
+		tb.markCovered(pr.Method, pr.URL)
 		onProbe(tb, pr.Method, pr.URL, step, emit)
 		return marshalResult(res), false, false
 
@@ -343,8 +369,11 @@ func executeTool(ctx context.Context, tb *Toolbox, b blockPeek, step int, emit f
 		if err := json.Unmarshal(b.Input, &c); err != nil {
 			return fmt.Sprintf("invalid note_finding input: %v", err), true, false
 		}
-		tb.NoteFinding(c)
 		handler := onFinding(tb, c, step, emit)
+		// Grey-box: if the agent read this endpoint's handler but didn't say
+		// where the flaw is, anchor the finding on that handler.
+		c = c.withHandler(handler)
+		tb.NoteFinding(c)
 		emit(Event{Type: EventFinding, Step: step, Detail: c.Title, Payload: &EventPayload{Source: handler}})
 		return `{"ok":true}`, false, false
 
@@ -369,7 +398,16 @@ func executeTool(ctx context.Context, tb *Toolbox, b blockPeek, step int, emit f
 		facts := tb.RememberFact(f)
 		onRememberFact(tb, f, step, emit)
 		emit(Event{Type: EventText, Step: step, Detail: "🧠 " + f.Summary})
-		return marshalResult(map[string]any{"ok": true, "facts": facts}), false, false
+		out := map[string]any{"ok": true, "facts": facts}
+		// If the fact is a reusable credential/token, register it as an identity so
+		// the agent can replay it by name on a later probe (authorization re-test).
+		if name, src := tb.CaptureFromFact(f); name != "" {
+			out["captured_identity"] = name
+			out["captured_identity_source"] = src
+			out["available_identities"] = tb.IdentityNames()
+			emit(Event{Type: EventText, Step: step, Detail: fmt.Sprintf("🔑 session saved as identity %q (%s). Reuse it with the \"identity\" field", name, src)})
+		}
+		return marshalResult(out), false, false
 
 	case toolDiffResponses:
 		var d struct {
@@ -665,7 +703,10 @@ func marshalResult(v any) string {
 
 // finish assembles the RunResult and emits the terminal event.
 func finish(r *RunResult, tb *Toolbox, cum Usage, ended EventType, reason StopReason, emit func(Event)) *RunResult {
-	r.Findings = tb.Findings()
+	// Scrub identity secrets before the findings leave the run: these are what
+	// persistScan writes and the memory learns, and that artifact can be shared
+	// or committed. The live tool results during the run kept the real values.
+	r.Findings = tb.RedactCandidates(tb.Findings())
 	_, r.Summary = tb.Finished()
 	r.Usage = cum
 	r.EndedBy = ended

@@ -92,12 +92,35 @@ type ThreatActor struct {
 
 // OrgContext is the authored, organization-level model of a codebase: what it
 // is, what data it protects, where its boundaries are, and who threatens it.
-// It is deliberately small and hand-written, not inferred.
+// It is deliberately small: hand-written, or inferred and then confirmed by the user.
 type OrgContext struct {
 	App             AppInfo                 `json:"app" yaml:"app"`
 	SensitiveData   []SensitiveDataCategory `json:"sensitive_data,omitempty" yaml:"sensitive_data,omitempty"`
 	TrustBoundaries []TrustBoundary         `json:"trust_boundaries,omitempty" yaml:"trust_boundaries,omitempty"`
 	ThreatActors    []ThreatActor           `json:"threat_actors,omitempty" yaml:"threat_actors,omitempty"`
+
+	// The fields below can be inferred from a plain description plus the
+	// project fingerprint, then confirmed by the user. All optional, so older
+	// context files load unchanged.
+	DataStores         []string      `json:"data_stores,omitempty" yaml:"data_stores,omitempty"`
+	AuthModel          *AuthModel    `json:"auth_model,omitempty" yaml:"auth_model,omitempty"`
+	ThirdPartyServices []string      `json:"third_party_services,omitempty" yaml:"third_party_services,omitempty"`
+	Learned            []LearnedFact `json:"learned,omitempty" yaml:"learned,omitempty"`
+}
+
+// AuthModel describes who can sign in and what roles exist.
+type AuthModel struct {
+	WhoLogsIn string   `json:"who_logs_in,omitempty" yaml:"who_logs_in,omitempty"`
+	Roles     []string `json:"roles,omitempty" yaml:"roles,omitempty"`
+	AdminArea bool     `json:"admin_area,omitempty" yaml:"admin_area,omitempty"`
+}
+
+// LearnedFact is something Trojan discovered about the app while scanning or
+// testing it (written by Trojan, not the user).
+type LearnedFact struct {
+	Fact     string `json:"fact" yaml:"fact"`
+	Evidence string `json:"evidence,omitempty" yaml:"evidence,omitempty"`
+	Source   string `json:"source,omitempty" yaml:"source,omitempty"` // "scan", "pen_test", "claude"
 }
 
 // Path returns the project-local context file path for a project root

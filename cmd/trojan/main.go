@@ -26,7 +26,6 @@ import (
 	"gopkg.in/yaml.v3"
 
 	trojan "github.com/dev-zeph/trojan"
-	ctxagent "github.com/dev-zeph/trojan/internal/agent"
 	"github.com/dev-zeph/trojan/internal/ai"
 	"github.com/dev-zeph/trojan/internal/apispec"
 	"github.com/dev-zeph/trojan/internal/ci"
@@ -34,7 +33,6 @@ import (
 	"github.com/dev-zeph/trojan/internal/dast"
 	"github.com/dev-zeph/trojan/internal/dast/agent"
 	"github.com/dev-zeph/trojan/internal/graph"
-	"github.com/dev-zeph/trojan/internal/graphstore"
 	"github.com/dev-zeph/trojan/internal/greybox"
 	"github.com/dev-zeph/trojan/internal/hook"
 	"github.com/dev-zeph/trojan/internal/mcpserver"
@@ -73,6 +71,7 @@ func main() {
 	rootCmd.AddCommand(depsCmd())
 	rootCmd.AddCommand(indexCmd())
 	rootCmd.AddCommand(contextCmd())
+	rootCmd.AddCommand(whiteboxCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -121,12 +120,8 @@ func scanCmd() *cobra.Command {
 					os.Exit(0)
 				}
 
-				findings, scanResults := scanners.RunAll(path, relevant, nil)
-				for _, r := range scanResults {
-					if r.Err != nil {
-						fmt.Fprintf(os.Stderr, "trojan: warning: %s scanner did not run: %s\n", r.Scanner, r.Err)
-					}
-				}
+				// Scanners that couldn't run are logged by RunAll, not shown.
+				findings, _ := scanners.RunAll(path, relevant, nil)
 				findings, _ = normalizer.Reduce(findings)
 
 				var blocking []normalizer.Finding
@@ -183,6 +178,12 @@ func scanCmd() *cobra.Command {
 				os.Exit(1)
 			}
 
+			// coverageNote explains, for a project with source in a language
+			// the code-graph checks don't parse (e.g. PHP), that those files
+			// were covered by the rule scanners. Empty for fully graph-covered
+			// projects. Printed once per scan and carried on the ScanResult.
+			coverageNote := scanners.CoverageNote(project)
+
 			// prevFindingIDs tracks finding IDs from the last scan so that
 			// watch re-scans only synthesise AI for net-new findings. This
 			// prevents repeated API calls for vulnerabilities that haven't
@@ -219,6 +220,9 @@ func scanCmd() *cobra.Command {
 					fmt.Printf("  → Filtered %d non-shipping, merged %d duplicate finding(s)\n",
 						reduceStats.DroppedNonShipping, reduceStats.MergedDuplicates)
 				}
+				if coverageNote != "" {
+					color.Yellow("  → %s\n", coverageNote)
+				}
 
 				// Extract the dependency package list from Trivy (populated during Run()).
 				var pkgs []normalizer.Package
@@ -240,6 +244,7 @@ func scanCmd() *cobra.Command {
 
 				// Enrich findings with compliance framework mappings.
 				normalizer.EnrichCompliance(findings)
+				enrichWithGraph(path, findings)
 
 				// Severity counts for results box.
 				counts := map[string]int{}
@@ -313,11 +318,13 @@ func scanCmd() *cobra.Command {
 						r.Packages = pkgs
 						r.Privacy = scanners.RunPrivacyScan(path)
 						r.ScannerErrors = scannerErrs
+						r.CoverageNote = coverageNote
 						return r, findings
 					}
 					scanResult.Packages = pkgs
 					scanResult.Privacy = scanners.RunPrivacyScan(path)
 					scanResult.ScannerErrors = scannerErrs
+					scanResult.CoverageNote = coverageNote
 					return scanResult, findings
 				}
 
@@ -335,6 +342,7 @@ func scanCmd() *cobra.Command {
 				r.Packages = pkgs
 				r.Privacy = scanners.RunPrivacyScan(path)
 				r.ScannerErrors = scannerErrs
+				r.CoverageNote = coverageNote
 				return r, findings
 			}
 
@@ -417,8 +425,11 @@ func dastCmd() *cobra.Command {
 	var acceptSideEffects bool
 	var maxRunTokens int
 	var greyBox bool
+	var noHypothesize bool
+	var projectPath string
 	var focus string
 	var identityFlags []string
+	var identitiesFile string
 	var apiSpec string
 	var requireApproval bool
 	var allowEndpoints, denyEndpoints []string
@@ -522,6 +533,43 @@ func dastCmd() *cobra.Command {
 					color.Red("Error: %s\n", ierr)
 					os.Exit(1)
 				}
+				// The desktop passes test logins via an env var, not argv, so the
+				// secrets don't show up in `ps`. Merge them in with any --identity
+				// flags (env entries are deduped by name against the flags).
+				envIdentities, eierr := identitiesFromEnv()
+				if eierr != nil {
+					color.Red("Error: %s\n", eierr)
+					os.Exit(1)
+				}
+				identities = append(identities, envIdentities...)
+				// --identities-file adds identities that may carry an email+password
+				// login recipe (the shape the dashboard writes). ResolveIdentities
+				// then performs each login locally and swaps in the session cookie,
+				// so the agent only ever sees/replays the cookie, never the password.
+				if identitiesFile != "" {
+					fileIdents, ferr := loadIdentitiesFile(identitiesFile)
+					if ferr != nil {
+						color.Red("Error: %s\n", ferr)
+						os.Exit(1)
+					}
+					identities = append(identities, fileIdents...)
+				} else if sd, derr := normalizer.WebsiteDir(targetURL); derr == nil {
+					// No explicit file: auto-load the logins the dashboard saved for
+					// this site (via /api/dast/identities), so the desktop GUI and a
+					// plain `trojan dast <url>` both pick them up with no extra wiring.
+					auto := filepath.Join(sd, "identities.json")
+					if _, serr := os.Stat(auto); serr == nil {
+						if autoIdents, aerr := loadIdentitiesFile(auto); aerr == nil {
+							identities = append(identities, autoIdents...)
+						}
+					}
+				}
+				if resolved, rerr := agent.ResolveIdentities(cmd.Context(), identities, nil); rerr != nil {
+					color.Red("Error: %s\n", rerr)
+					os.Exit(1)
+				} else {
+					identities = resolved
+				}
 				var attackTemplate *agent.AttackTemplate
 				if attackTemplateJSON != "" {
 					var at agent.AttackTemplate
@@ -540,6 +588,8 @@ func dastCmd() *cobra.Command {
 					acceptSideEffects: acceptSideEffects,
 					maxRunTokens:      maxRunTokens,
 					greyBox:           greyBox,
+					noHypothesize:     noHypothesize,
+					projectRoot:       projectPath,
 					focus:             focus,
 					apiSpec:           apiSpec,
 					requireApproval:   requireApproval,
@@ -687,6 +737,7 @@ func dastCmd() *cobra.Command {
 			// Adversarially verify each finding against its own evidence so real
 			// issues are separated from scanner noise (agentic DAST Phase 1).
 			if len(findings) > 0 {
+				normalizer.EnsureUniqueIDs(findings)
 				fmt.Printf("  → Triaging %d finding(s) for false positives...\n", len(findings))
 				if verdicts, terr := ai.TriageWithContext(findings, accessToken, loadRetriever(".", accessToken)); terr != nil {
 					color.Yellow("  Triage skipped (%s)\n\n", terr)
@@ -802,8 +853,11 @@ func dastCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&acceptSideEffects, "accept-side-effects", false, "Acknowledge possible side effects (required for safe-active POST on production)")
 	cmd.Flags().IntVar(&maxRunTokens, "max-run-tokens", agent.DefaultMaxRunTokens, "Cumulative token ceiling for the agentic run. Default 0 = no ceiling (usage is metered by token-based pricing); the run is still bounded by step/request/time caps. Set a positive value to re-impose a hard cap.")
 	cmd.Flags().BoolVar(&greyBox, "grey-box", false, "Let the agent read this project's source (run from the source dir) to form grounded hypotheses. Handler snippets are sent to the AI. Run `trojan index` first to also enable semantic source search.")
+	cmd.Flags().StringVar(&projectPath, "project", "", "Source folder of the app under test (default: the current directory when --grey-box is set). Feeds the agent its org context, code graph and memory, and is where the grey-box reader looks.")
+	cmd.Flags().BoolVar(&noHypothesize, "no-hypothesize", false, "Skip the white-box hypothesis step that normally runs first in grey-box mode (saves the tokens that step would spend).")
 	cmd.Flags().StringVar(&focus, "focus", "", "Narrow the agent to a technique preset: api | web | llm (optional)")
 	cmd.Flags().StringArrayVar(&identityFlags, "identity", nil, "Auth session for authorization (IDOR/BOLA) testing, as 'name=Header: value'. Repeatable; repeat with the same name for multiple headers. Example: --identity 'alice=Authorization: Bearer <token>'")
+	cmd.Flags().StringVar(&identitiesFile, "identities-file", "", `JSON file of auth identities for authenticated/IDOR testing: {"identities":[{"name":"client-a","login":{"url":"http://host/login","fields":{"email":"…","password":"…"}}}]}. Logins run locally; only the captured session cookie is used. Identities with a "headers" map instead of "login" are used as-is.`)
 	cmd.Flags().StringVar(&apiSpec, "api-spec", "", "OpenAPI/Swagger spec (file path or URL) to expand the agent's attack surface beyond what the crawler finds. If omitted, common spec URLs on the target are auto-probed.")
 	cmd.Flags().BoolVar(&requireApproval, "require-approval", false, "Human-in-the-loop: pause for operator approval before every state-changing action (§8). Approve/deny in the run view; read-only probes still run automatically.")
 	cmd.Flags().StringArrayVar(&allowEndpoints, "allow-endpoint", nil, "Rules of engagement: an endpoint path the agent may target (repeatable; trailing * = prefix, e.g. /api/*). Outside the list is gated for approval unless --limit-to-allowlist.")
@@ -818,6 +872,37 @@ func dastCmd() *cobra.Command {
 	cmd.Flags().MarkHidden("exit-when-done") //nolint:errcheck
 	cmd.Flags().BoolVar(&ownerConfirmed, "owner-confirmed", false, "Confirm you own or are authorized to test the target, instead of a DNS/file/meta proof")
 	cmd.AddCommand(dastVerifyCmd())
+	cmd.AddCommand(dastRetestCmd())
+	return cmd
+}
+
+// dastRetestCmd implements `trojan dast retest <site>` — a deterministic,
+// token-free re-check of a live website test's open findings. It replays the
+// request recorded in each finding's proof and reports fixed / still open /
+// inconclusive, marking fixed findings resolved. <site> is the tested URL or
+// host (omit to use the most recent test). --finding narrows to specific IDs.
+// Output is JSON for the desktop.
+func dastRetestCmd() *cobra.Command {
+	var findingIDs []string
+	cmd := &cobra.Command{
+		Use:   "retest [site]",
+		Short: "Re-check a website test's open findings by replaying their proof (no tokens, no credits)",
+		Args:  cobra.MaximumNArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			site := ""
+			if len(args) == 1 {
+				site = args[0]
+			}
+			sum, err := mcpserver.RetestWebsite(context.Background(), site, findingIDs)
+			if err != nil {
+				color.Red("%s\n", err)
+				os.Exit(1)
+			}
+			data, _ := json.MarshalIndent(sum, "", "  ")
+			fmt.Println(string(data))
+		},
+	}
+	cmd.Flags().StringArrayVar(&findingIDs, "finding", nil, "A specific finding ID to re-check (repeatable). Omit to re-check every open finding for the site.")
 	return cmd
 }
 
@@ -949,6 +1034,8 @@ type agenticParams struct {
 	acceptSideEffects bool
 	maxRunTokens      int
 	greyBox           bool
+	noHypothesize     bool   // skip the chained white-box hypothesis step
+	projectRoot       string // source folder (--project); "" = unknown
 	focus             string
 	apiSpec           string
 	identities        []agent.Identity
@@ -1059,9 +1146,22 @@ func runAgenticDast(p agenticParams) {
 		task += "\n\nIDENTITIES available for http_probe (attach with the \"identity\" field): " + strings.Join(names, ", ") +
 			".\nTest authorization by requesting the same resource as different identities and comparing the responses (IDOR/BOLA)."
 	}
+	// Security brain: org context + code graph + memory go into the seed when a
+	// project folder is known; memory alone (kept per site) otherwise.
+	brainRoot := resolveBrainRoot(p.projectRoot, p.greyBox)
+	// White-box pass first (bounded): form hypotheses over the source and save
+	// them, so the brain seed below reads them into "HYPOTHESES TO PROVE".
+	// Skipped by --no-hypothesize or when there is no grey-box project root.
+	whiteboxHyps := runHypothesizeStep(brainRoot, p.accessToken, p.greyBox, p.noHypothesize)
+	brain := openBrain(brainRoot, p.targetURL)
+	defer brain.close()
+	if seed := brain.seed(); seed != "" {
+		task += "\n\n" + seed
+	}
 	var source agent.SourceReader
+	var gb *greybox.Source // kept to anchor findings on source after the run
 	if p.greyBox {
-		if gb := buildGreyBox(".", p.accessToken); gb != nil {
+		if gb = buildGreyBox(greyBoxRoot(brainRoot), p.accessToken); gb != nil {
 			source = gb
 			if table := gb.EndpointTable(); len(table) > 0 {
 				fmt.Printf("  → Grey-box: mapped %d endpoint(s) to source handlers\n\n", len(table))
@@ -1124,12 +1224,24 @@ func runAgenticDast(p agenticParams) {
 	if rerr != nil {
 		srv.BroadcastAgentEvent(server.AgentEvent{Type: "run", Status: "error", Detail: rerr.Error()})
 		color.Red("\n  Agentic run failed: %s\n", rerr)
+		if p.desktop {
+			fmt.Printf("\n%s\n", pentestEndLine(nil, rerr, nil))
+		}
 	} else {
 		// Merge the agent's evidence-anchored candidates with the Nuclei baseline,
 		// then run everything through adversarial triage (Phase 1).
 		all := append(baseline, agenticFindingsFromCandidates(res.Findings)...) //nolint:gocritic
+		// Grey-box: anchor each finding on its handler (file + line) and give
+		// triage/synthesis that code. Then make IDs unique, since verdicts are
+		// keyed by ID.
+		var loc sourceLocator
+		if gb != nil {
+			loc = gb
+		}
+		locateWebsiteFindings(all, loc)
+		normalizer.EnsureUniqueIDs(all)
 		if len(all) > 0 {
-			if verdicts, terr := ai.TriageWithContext(all, p.accessToken, loadRetriever(".", p.accessToken)); terr == nil {
+			if verdicts, terr := brain.triage(all, p.accessToken, loadRetriever(greyBoxRoot(brainRoot), p.accessToken)); terr == nil {
 				for i := range all {
 					if v, ok := verdicts[all[i].ID]; ok {
 						all[i].Verdict = v.Verdict
@@ -1139,6 +1251,13 @@ func runAgenticDast(p agenticParams) {
 				}
 			}
 		}
+
+		// Memory: write what this run proved so the next one starts smarter.
+		brain.learn(all, res.Findings)
+		// Record what the pen test did with each white-box hypothesis: proven
+		// ones are captured by learn above; unproven ones become a dated
+		// "tested, not proven" fact so the next run does not keep chasing them.
+		brain.recordHypothesisOutcomes(whiteboxHyps, all)
 
 		// AI synthesis — plain-English explanation + fix actions per finding, the
 		// same pass the one-shot scan runs. Without it, Simply/Actions are empty
@@ -1156,6 +1275,10 @@ func runAgenticDast(p agenticParams) {
 		}
 		srv.BroadcastAgentEvent(server.AgentEvent{Type: "run", Status: "complete", Detail: res.Summary})
 		fmt.Printf("\n  → Agentic pen-test complete — %d candidate finding(s); %s\n", len(res.Findings), stopLabel(res))
+		if p.desktop {
+			// Read by the desktop app to send the "pen test is done" notification.
+			fmt.Printf("\n%s\n", pentestEndLine(res, nil, all))
+		}
 	}
 
 	if p.exitWhenDone {
@@ -1372,13 +1495,62 @@ func agenticFindingsFromCandidates(cs []agent.Candidate) []normalizer.Finding {
 			Severity:    parseAgentSeverity(c.Severity),
 			Title:       c.Title,
 			RawMessage:  c.Rationale,
-			FilePath:    c.URL,
+			FilePath:    c.URL, // kept as the URL: UIs link it, memory matches on it
+			URL:         c.URL,
+			SourceFile:  c.File,
+			SourceLine:  c.Line,
 			CodeSnippet: c.Evidence,
 			RuleID:      "agentic",
 			Status:      normalizer.StatusOpen,
+			Proof:       c.Proof,
 		})
 	}
 	return out
+}
+
+// sourceLocator is the slice of *greybox.Source that locateWebsiteFindings
+// needs; an interface so it can be faked in tests.
+type sourceLocator interface {
+	Locate(method, rawURL string) (string, int, bool)
+	ProjectFile(file string) (string, bool)
+	HandlerSource(file string, line int) string
+}
+
+// locateWebsiteFindings fills URL on website findings and, in grey-box runs,
+// anchors them on project source. A file the agent reported is kept only if it
+// is a real file inside the project; otherwise (or when the agent named none)
+// the finding's URL is resolved through the route table to its handler's file
+// and line. When a location is known and the finding has no code context, the
+// handler's code is attached as SurroundingCode so triage and the explanation
+// can tie the live evidence to the code. loc is nil in black-box runs.
+func locateWebsiteFindings(findings []normalizer.Finding, loc sourceLocator) {
+	for i := range findings {
+		f := &findings[i]
+		if f.Category != "dast" {
+			continue
+		}
+		if f.URL == "" {
+			f.URL = f.FilePath
+		}
+		if loc == nil {
+			continue
+		}
+		if f.SourceFile != "" {
+			if rel, ok := loc.ProjectFile(f.SourceFile); ok {
+				f.SourceFile = rel
+			} else {
+				f.SourceFile, f.SourceLine = "", 0
+			}
+		}
+		if f.SourceFile == "" {
+			if file, line, ok := loc.Locate("", f.URL); ok {
+				f.SourceFile, f.SourceLine = file, line
+			}
+		}
+		if f.SourceFile != "" && f.SurroundingCode == "" {
+			f.SurroundingCode = loc.HandlerSource(f.SourceFile, f.SourceLine)
+		}
+	}
 }
 
 // synthesizeFindings populates Simply/Actions/etc. on each finding via the AI
@@ -1880,10 +2052,9 @@ re-embedded).`,
 // the source->sink attack paths it finds.
 //
 // This is entirely local and free to run — the graph build and pattern
-// overlay need no account and no tokens. Only the optional AI hypothesis
-// loop in `scan` talks to a model, and only when ANTHROPIC_API_KEY is set
-// (the same gate cmd/agentdemo uses), so there is nothing to Pro-gate here
-// the way dastCmd gates a billed, server-metered run.
+// overlay need no account and no tokens. The AI hypothesis loop is a separate,
+// billed command (`trojan hypothesize`, hosted via the whitebox-agent edge
+// function), so there is nothing to gate here.
 func contextCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "context",
@@ -1960,9 +2131,8 @@ func contextScanCmd() *cobra.Command {
 before printing the source->sink attack paths it finds. This step is fully
 offline.
 
-If ANTHROPIC_API_KEY is set, it then runs the hypothesis-driven agent loop
-over the graph and prints the resulting finding. Without a key, it prints a
-clear message and exits cleanly.`,
+To have Trojan's hosted white-box reviewer form testable attack hypotheses
+over this graph, run ` + "`trojan hypothesize`" + ` (uses Trojan Tokens).`,
 		Args: cobra.MaximumNArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
 			path := "."
@@ -1980,7 +2150,7 @@ clear message and exits cleanly.`,
 				return
 			}
 
-			g, err := graph.BuildFromFiles(files)
+			g, err := refreshGraph(path)
 			if err != nil {
 				color.Red("Error building graph: %s\n", err)
 				os.Exit(1)
@@ -2004,16 +2174,9 @@ clear message and exits cleanly.`,
 				fmt.Println()
 			}
 
-			// Persist the overlaid graph locally so context accumulates across
-			// runs. This is the compounding local memory that is the point of
-			// the tool; the database never leaves the machine. A write failure
-			// is a warning, not a fatal, since the scan output is still useful.
-			dbPath := filepath.Join(path, graphstore.DefaultDBPath)
-			if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
-				color.Yellow("  Warning: could not create %s: %s\n", filepath.Dir(dbPath), err)
-			} else if err := graphstore.Save(dbPath, g); err != nil {
-				color.Yellow("  Warning: could not persist graph to %s: %s\n", dbPath, err)
-			}
+			// refreshGraph already persisted the graph to .trojan/graph.db
+			// (incrementally, with file hashes); the overlay is re-applied on
+			// every load, so it isn't saved.
 
 			fmt.Printf("Code Property Graph for %s\n", path)
 			fmt.Printf("  files scanned : %d\n", len(files))
@@ -2038,36 +2201,10 @@ clear message and exits cleanly.`,
 				}
 			}
 
-			if strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")) == "" {
-				fmt.Println("ANTHROPIC_API_KEY is not set, so the AI hypothesis loop is disabled.")
-				fmt.Println("The graph above ran fully offline. Set ANTHROPIC_API_KEY to have Claude")
-				fmt.Println("form an attack hypothesis grounded in this graph.")
-				return
-			}
-
-			fmt.Println("== Running hypothesis loop (Claude) ==")
-			tb := ctxagent.NewToolbox(g)
-			loopCfg := ctxagent.Config{
-				Model:      os.Getenv("TROJAN_AGENT_MODEL"),
-				OrgContext: orgContextText(orgCtx),
-				Logf:       func(format string, args ...any) { fmt.Printf("  "+format+"\n", args...) },
-			}
-			finding, err := ctxagent.RunHypothesisLoop(context.Background(), tb, loopCfg)
-			if err != nil {
-				if errors.Is(err, ctxagent.ErrNoFinding) {
-					fmt.Println("The model finished without emitting a finding.")
-					return
-				}
-				color.Red("Error: %s\n", err)
-				os.Exit(1)
-			}
-
-			fmt.Println()
-			fmt.Println("== Finding ==")
-			fmt.Printf("Hypothesis: %s\n", finding.Hypothesis)
-			fmt.Printf("Severity:   %s\n", finding.Severity)
-			fmt.Printf("Path:       %s\n", strings.Join(finding.Path, " -> "))
-			fmt.Printf("Rationale:  %s\n", finding.Rationale)
+			fmt.Println("This step is fully offline. To have Trojan's hosted white-box")
+			fmt.Println("reviewer form concrete, testable attack hypotheses over this graph,")
+			fmt.Println("run `trojan hypothesize` (uses Trojan Tokens).")
+			_ = orgCtx
 		},
 	}
 }
@@ -2167,6 +2304,57 @@ func parseIdentities(specs []string) ([]agent.Identity, error) {
 		out = append(out, agent.Identity{Name: n, Headers: byName[n]})
 	}
 	return out, nil
+}
+
+// loadIdentitiesFile reads a --identities-file JSON document
+// ({"identities":[{name, login{url,method,fields}, headers}]}) into agent
+// identities. Login recipes are resolved later (ResolveIdentities); header
+// identities are used as-is.
+func loadIdentitiesFile(path string) ([]agent.Identity, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("could not read --identities-file: %w", err)
+	}
+	var doc struct {
+		Identities []agent.Identity `json:"identities"`
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return nil, fmt.Errorf("invalid --identities-file JSON: %w", err)
+	}
+	return doc.Identities, nil
+}
+
+// envDASTIdentities is the env var the desktop sets to hand test logins to the
+// sidecar without putting the secrets on the command line (argv is world-readable
+// via `ps`; a child's environment is not). It holds a JSON array of
+// {name, header} objects, the same shape the desktop collects in its UI.
+const envDASTIdentities = "TROJAN_DAST_IDENTITIES"
+
+// identitiesFromEnv parses the TROJAN_DAST_IDENTITIES env var (set by the desktop)
+// into agent identities, reusing the same 'Header: value' parsing as --identity.
+// Empty/unset env returns no identities and no error.
+func identitiesFromEnv() ([]agent.Identity, error) {
+	raw := strings.TrimSpace(os.Getenv(envDASTIdentities))
+	if raw == "" {
+		return nil, nil
+	}
+	var specs []struct {
+		Name   string `json:"name"`
+		Header string `json:"header"`
+	}
+	if err := json.Unmarshal([]byte(raw), &specs); err != nil {
+		return nil, fmt.Errorf("invalid %s: expected a JSON array of {name, header}: %w", envDASTIdentities, err)
+	}
+	lines := make([]string, 0, len(specs))
+	for _, s := range specs {
+		name := strings.TrimSpace(s.Name)
+		header := strings.TrimSpace(s.Header)
+		if name == "" || header == "" {
+			continue
+		}
+		lines = append(lines, name+"="+header)
+	}
+	return parseIdentities(lines)
 }
 
 // agenticFocusHint maps a technique preset (§10 attack-type selection) to a

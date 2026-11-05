@@ -1,13 +1,14 @@
 // Package graphstore persists Trojan's Code Property Graph (internal/graph) to
-// a local SQLite file, so the graph built during one run can be reused (and
-// eventually incrementally updated) in the next instead of being rebuilt from
-// scratch every time. This is what makes the graph "compounding local memory"
-// rather than a scratch structure that disappears when the process exits.
+// a local SQLite file, so the graph built during one run can be reused and
+// incrementally updated in the next instead of being rebuilt from scratch
+// every time. This is what makes the graph "compounding local memory" rather
+// than a scratch structure that disappears when the process exits.
 //
-// The store is intentionally simple for this first pass: Save does a full
-// replace of the nodes and edges tables, and Load reads them back verbatim,
-// including the Tags map that internal/orgcontext layers onto nodes. There is
-// no incremental diffing yet.
+// Save does a full replace of the nodes and edges tables, and Load reads them
+// back verbatim, including node keys, the Tags map that internal/orgcontext
+// layers onto nodes, and datastore nodes with their reads/writes edges.
+// Refresh (refresh.go) adds incremental rebuilds on top, using the
+// file_hashes table to skip parsing languages whose files haven't changed.
 //
 // Storage engine: modernc.org/sqlite, a pure-Go (CGO-free) transpile of
 // SQLite accessed through database/sql. This keeps CGO_ENABLED=0 working,
@@ -21,8 +22,7 @@
 // to this same SQLite file alongside `nodes` and `edges`, so the graph
 // (layers 1-3) and the embeddings (layer 4) live in one local database file
 // per project instead of two separate stores. That migration is out of scope
-// here: this package stays self-contained and does not modify internal/rag or
-// internal/graph.
+// here.
 package graphstore
 
 import (
@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	_ "modernc.org/sqlite"
 
@@ -41,18 +42,27 @@ import (
 // relative to a project root.
 const DefaultDBPath = ".trojan/graph.db"
 
+// SchemaVersion is the graph.db layout this package writes, stored in SQLite's
+// user_version. v1 (user_version 0) had no keys, no Guarded/ClientSide, no
+// batch bookkeeping and no file_hashes; open migrates it in place.
+const SchemaVersion = 2
+
 const schema = `
 CREATE TABLE IF NOT EXISTS nodes (
-	id        INTEGER PRIMARY KEY,
-	kind      TEXT NOT NULL,
-	name      TEXT NOT NULL,
-	file      TEXT NOT NULL,
-	line      INTEGER NOT NULL,
-	source    INTEGER NOT NULL,
-	pii       INTEGER NOT NULL,
-	sink_rule TEXT NOT NULL,
-	severity  TEXT NOT NULL,
-	tags      TEXT NOT NULL
+	id          INTEGER PRIMARY KEY,
+	kind        TEXT NOT NULL,
+	name        TEXT NOT NULL,
+	file        TEXT NOT NULL,
+	line        INTEGER NOT NULL,
+	source      INTEGER NOT NULL,
+	pii         INTEGER NOT NULL,
+	sink_rule   TEXT NOT NULL,
+	severity    TEXT NOT NULL,
+	tags        TEXT NOT NULL,
+	node_key    TEXT NOT NULL DEFAULT '',
+	guarded     INTEGER NOT NULL DEFAULT 0,
+	client_side INTEGER NOT NULL DEFAULT 0,
+	batches     TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS edges (
@@ -60,12 +70,43 @@ CREATE TABLE IF NOT EXISTS edges (
 	dst  INTEGER NOT NULL,
 	kind TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS file_hashes (
+	relpath  TEXT PRIMARY KEY,
+	language TEXT NOT NULL,
+	sha256   TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS meta (
+	key   TEXT PRIMARY KEY,
+	value TEXT NOT NULL
+);
 `
+
+// v2Columns are the nodes columns added in schema v2, with the definitions
+// ALTER TABLE uses to add them to a v1 database.
+var v2Columns = []struct{ name, def string }{
+	{"node_key", "TEXT NOT NULL DEFAULT ''"},
+	{"guarded", "INTEGER NOT NULL DEFAULT 0"},
+	{"client_side", "INTEGER NOT NULL DEFAULT 0"},
+	{"batches", "TEXT NOT NULL DEFAULT ''"},
+}
 
 // Save persists g to the SQLite database at dbPath, creating the file and
 // schema if they do not already exist. This pass does a full replace: any
 // existing nodes and edges rows are dropped and rewritten from g.
+//
+// A graph saved this way isn't tied to a known set of file contents, so Save
+// also clears the file hashes; the next Refresh then does a full rebuild
+// instead of trusting a graph it can't vouch for.
 func Save(dbPath string, g *graph.Graph) error {
+	return save(dbPath, g, nil, "")
+}
+
+// save writes g and, when hashes is non-nil, replaces the file_hashes table
+// and records root (the project root the keys were computed against) in the
+// same transaction. With hashes nil the cache is invalidated.
+func save(dbPath string, g *graph.Graph, hashes []fileHash, root string) error {
 	if g == nil {
 		return fmt.Errorf("graphstore: nil graph")
 	}
@@ -82,6 +123,10 @@ func Save(dbPath string, g *graph.Graph) error {
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op if committed
 
+	if err := writeHashes(tx, hashes, root); err != nil {
+		return err
+	}
+
 	if _, err := tx.Exec(`DELETE FROM nodes`); err != nil {
 		return fmt.Errorf("graphstore: clear nodes: %w", err)
 	}
@@ -89,8 +134,9 @@ func Save(dbPath string, g *graph.Graph) error {
 		return fmt.Errorf("graphstore: clear edges: %w", err)
 	}
 
-	nodeStmt, err := tx.Prepare(`INSERT INTO nodes (id, kind, name, file, line, source, pii, sink_rule, severity, tags)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	nodeStmt, err := tx.Prepare(`INSERT INTO nodes (id, kind, name, file, line, source, pii, sink_rule, severity, tags,
+		node_key, guarded, client_side, batches)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("graphstore: prepare node insert: %w", err)
 	}
@@ -102,7 +148,8 @@ func Save(dbPath string, g *graph.Graph) error {
 			return fmt.Errorf("graphstore: marshal tags for node %d: %w", n.ID, err)
 		}
 		if _, err := nodeStmt.Exec(n.ID, string(n.Kind), n.Name, n.File, n.Line,
-			boolToInt(n.Source), boolToInt(n.PII), n.SinkRule, n.Severity, tagsJSON); err != nil {
+			boolToInt(n.Source), boolToInt(n.PII), n.SinkRule, n.Severity, tagsJSON,
+			n.Key, boolToInt(n.Guarded), boolToInt(n.ClientSide), strings.Join(n.Batches, ",")); err != nil {
 			return fmt.Errorf("graphstore: insert node %d: %w", n.ID, err)
 		}
 	}
@@ -134,10 +181,15 @@ func Load(dbPath string) (*graph.Graph, error) {
 		return nil, err
 	}
 	defer db.Close()
+	return loadDB(db)
+}
 
+// loadDB reads the graph from an already-open database.
+func loadDB(db *sql.DB) (*graph.Graph, error) {
 	g := graph.New()
 
-	rows, err := db.Query(`SELECT id, kind, name, file, line, source, pii, sink_rule, severity, tags
+	rows, err := db.Query(`SELECT id, kind, name, file, line, source, pii, sink_rule, severity, tags,
+		node_key, guarded, client_side, batches
 		FROM nodes ORDER BY id ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("graphstore: query nodes: %w", err)
@@ -146,20 +198,28 @@ func Load(dbPath string) (*graph.Graph, error) {
 	var nodes []graph.Node
 	for rows.Next() {
 		var (
-			n         graph.Node
-			kind      string
-			sourceInt int
-			piiInt    int
-			tagsJSON  string
+			n          graph.Node
+			kind       string
+			sourceInt  int
+			piiInt     int
+			tagsJSON   string
+			guardedInt int
+			clientInt  int
+			batches    string
 		)
 		if err := rows.Scan(&n.ID, &kind, &n.Name, &n.File, &n.Line, &sourceInt, &piiInt,
-			&n.SinkRule, &n.Severity, &tagsJSON); err != nil {
+			&n.SinkRule, &n.Severity, &tagsJSON, &n.Key, &guardedInt, &clientInt, &batches); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("graphstore: scan node: %w", err)
 		}
 		n.Kind = graph.NodeKind(kind)
 		n.Source = sourceInt != 0
 		n.PII = piiInt != 0
+		n.Guarded = guardedInt != 0
+		n.ClientSide = clientInt != 0
+		if batches != "" {
+			n.Batches = strings.Split(batches, ",")
+		}
 		tags, err := unmarshalTags(tagsJSON)
 		if err != nil {
 			rows.Close()
@@ -201,8 +261,8 @@ func Load(dbPath string) (*graph.Graph, error) {
 	return g, nil
 }
 
-// open opens (creating if necessary) the SQLite database at dbPath and
-// ensures the schema exists.
+// open opens (creating if necessary) the SQLite database at dbPath, ensures
+// the schema exists, and migrates older layouts to SchemaVersion.
 func open(dbPath string) (*sql.DB, error) {
 	if err := ensureDir(dbPath); err != nil {
 		return nil, err
@@ -219,11 +279,73 @@ func open(dbPath string) (*sql.DB, error) {
 	// operations, not a high-throughput API.
 	db.SetMaxOpenConns(1)
 
-	if _, err := db.Exec(schema); err != nil {
+	// busy_timeout lets a second process (a scan and the MCP server, say)
+	// wait for the writer instead of failing with "database is locked". Set
+	// per connection, and the pool holds exactly one.
+	if _, err := db.Exec(`PRAGMA busy_timeout = 5000`); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("graphstore: create schema: %w", err)
+		return nil, fmt.Errorf("graphstore: set busy timeout: %w", err)
+	}
+
+	if err := migrate(db); err != nil {
+		db.Close()
+		return nil, err
 	}
 	return db, nil
+}
+
+// migrate brings the database to SchemaVersion. A fresh file gets the v2
+// schema directly. A v1 file (user_version 0, nodes table without the v2
+// columns) has those columns added with defaults, which leaves its rows
+// readable; keys stay empty until the next build writes them, and the empty
+// file_hashes table makes the next Refresh a full rebuild.
+func migrate(db *sql.DB) error {
+	var version int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		return fmt.Errorf("graphstore: read schema version: %w", err)
+	}
+	if version == SchemaVersion {
+		return nil
+	}
+	if version > SchemaVersion {
+		return fmt.Errorf("graphstore: graph.db schema v%d is newer than this build supports (v%d)", version, SchemaVersion)
+	}
+
+	// CREATE TABLE IF NOT EXISTS leaves an existing v1 nodes table alone, so
+	// add whatever v2 columns it lacks.
+	if _, err := db.Exec(schema); err != nil {
+		return fmt.Errorf("graphstore: create schema: %w", err)
+	}
+	have := make(map[string]bool)
+	rows, err := db.Query(`PRAGMA table_info(nodes)`)
+	if err != nil {
+		return fmt.Errorf("graphstore: inspect nodes: %w", err)
+	}
+	for rows.Next() {
+		var (
+			cid, notnull, pk int
+			name, typ        string
+			dflt             sql.NullString
+		)
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			rows.Close()
+			return fmt.Errorf("graphstore: inspect nodes: %w", err)
+		}
+		have[name] = true
+	}
+	rows.Close()
+	for _, c := range v2Columns {
+		if have[c.name] {
+			continue
+		}
+		if _, err := db.Exec(`ALTER TABLE nodes ADD COLUMN ` + c.name + ` ` + c.def); err != nil {
+			return fmt.Errorf("graphstore: migrate nodes.%s: %w", c.name, err)
+		}
+	}
+	if _, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, SchemaVersion)); err != nil {
+		return fmt.Errorf("graphstore: set schema version: %w", err)
+	}
+	return nil
 }
 
 func marshalTags(tags map[string]string) (string, error) {

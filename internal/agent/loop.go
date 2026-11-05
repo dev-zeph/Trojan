@@ -5,255 +5,246 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
-
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
 )
 
-// DefaultModel is the model the loop targets when Config.Model is empty. It is a
-// current Claude Opus id and is overridable per run (Config.Model) or, in the
-// demo, via the TROJAN_AGENT_MODEL env var, so upgrading the model is a config
-// change, not a code change.
-const DefaultModel = "claude-opus-4-8"
+// The white-box hypothesis loop. It lives here, in the CLI; each reasoning turn
+// is one stateless Transport call to the whitebox-agent edge function, which
+// holds the system prompt and the tool definitions. The loop executes the tool
+// calls the model requests against the local Toolbox, feeds the results back,
+// and repeats until the model finishes or a budget trips. No model and no
+// prompt live in this process: only tool execution and bookkeeping.
 
-// ErrNoAPIKey means the live loop was asked to run without a resolvable
-// Anthropic key. It is the gate the task requires: the deterministic tool layer
-// needs no key, and callers can detect this case (errors.Is) to print a clear
-// message and exit cleanly rather than crashing or hanging.
-var ErrNoAPIKey = errors.New("agent: no ANTHROPIC_API_KEY set; live hypothesis loop is disabled")
+// Tool names: the contract shared with the edge function's tool definitions.
+const (
+	toolListEntrypoints = "list_entrypoints"
+	toolGetDataflow     = "get_dataflow"
+	toolReadContext     = "read_context"
+	toolGetPIINodes     = "get_pii_nodes"
+	toolNeighbors       = "neighbors"
+	toolUnguardedPaths  = "unguarded_paths"
+	toolClientExposures = "client_exposures"
+	toolReadSource      = "read_source"
+	toolSecurityHistory = "get_security_history"
+	toolEmitHypothesis  = "emit_hypothesis"
+	toolFinish          = "finish"
+)
 
-// ErrNoFinding means the model ended its turn without emitting a finding (it ran
-// out of turns, or decided there was nothing to report). Not a failure of the
-// harness.
-var ErrNoFinding = errors.New("agent: model finished without emitting a finding")
+// StopReason says why a run ended.
+type StopReason string
 
-// Config controls one run of the hypothesis loop.
-type Config struct {
-	// Model is the Claude model id. Empty uses DefaultModel.
-	Model string
-	// APIKey is the Anthropic key. Empty falls back to the ANTHROPIC_API_KEY
-	// environment variable; if both are empty the loop returns ErrNoAPIKey.
-	APIKey string
-	// OrgContext is free-form organisation context the model may fold into its
-	// reasoning (what the app does, which data is sensitive, prior incidents).
-	// It composes with whatever an org-context workstream produces without a
-	// hard dependency on it. Optional.
-	OrgContext string
-	// MaxTurns caps the tool-calling rounds so a confused model cannot loop
-	// forever (and spend). Zero means the default (8).
+const (
+	StopFinished           StopReason = "finished"            // finish tool or end of turn
+	StopTurnBudget         StopReason = "turn budget reached" // MaxTurns spent
+	StopTokenBudget        StopReason = "token budget reached"
+	StopInsufficientTokens StopReason = "out of Trojan Tokens"
+)
+
+// Options bounds one run. Zero values take the defaults.
+type Options struct {
+	// MaxTurns caps reasoning turns (each one is billed). Default 12.
 	MaxTurns int
-	// Logf, if set, receives human-readable progress lines (tool calls, model
-	// text). Nil is silent.
+	// MaxTokens is a cumulative LLM-token ceiling across turns. 0 = off.
+	MaxTokens int
+	// MaxHypotheses caps how many hypotheses are kept. Default 8.
+	MaxHypotheses int
+	// Logf, if set, receives one-line progress (tool calls, hypotheses).
 	Logf func(format string, args ...any)
 }
 
-func (c Config) model() string {
-	if strings.TrimSpace(c.Model) != "" {
-		return c.Model
+func (o Options) maxTurns() int {
+	if o.MaxTurns > 0 {
+		return o.MaxTurns
 	}
-	return DefaultModel
+	return 12
 }
 
-func (c Config) maxTurns() int {
-	if c.MaxTurns > 0 {
-		return c.MaxTurns
+func (o Options) maxHypotheses() int {
+	if o.MaxHypotheses > 0 {
+		return o.MaxHypotheses
 	}
 	return 8
 }
 
-func (c Config) logf(format string, args ...any) {
-	if c.Logf != nil {
-		c.Logf(format, args...)
+func (o Options) logf(format string, args ...any) {
+	if o.Logf != nil {
+		o.Logf(format, args...)
 	}
 }
 
-// resolveKey returns the API key to use, honouring the explicit Config.APIKey
-// first and the ANTHROPIC_API_KEY env var second. An empty result means the
-// caller must not make a live call.
-func (c Config) resolveKey() string {
-	if strings.TrimSpace(c.APIKey) != "" {
-		return c.APIKey
-	}
-	return strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY"))
+// Result is the outcome of a run. On a transport error it still carries the
+// hypotheses emitted before the failure.
+type Result struct {
+	Hypotheses []Hypothesis
+	Summary    string
+	StopReason StopReason
+	Turns      int
+	Usage      Usage
+	RunID      string
 }
 
-// emitFindingSchema is the terminal tool: the model calls it to deliver the
-// structured Finding. Defined here (not in ToolSpecs) because it is the loop's
-// control-flow signal, not a graph query.
-func emitFindingSchema() ToolSpec {
-	return ToolSpec{
-		Name:        "emit_finding",
-		Description: "Report your single best attack hypothesis and stop. Call this exactly once, only after you have used the other tools to ground it in the graph.",
-		Properties: map[string]any{
-			"hypothesis": map[string]any{"type": "string", "description": "the attack in one or two sentences: what the attacker feeds in, where it lands, what it achieves"},
-			"severity":   map[string]any{"type": "string", "enum": []string{"high", "medium", "low"}, "description": "justify against the sink severity and whether the path touches PII"},
-			"path":       map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "the node chain from entrypoint to sink, e.g. [\"api.loginHandler\", \"db.Query\"]"},
-			"rationale":  map[string]any{"type": "string", "description": "why it holds, citing the file:line anchors the tools returned"},
-			"source_id":  map[string]any{"type": "integer", "description": "graph node id of the source entrypoint"},
-			"sink_id":    map[string]any{"type": "integer", "description": "graph node id of the sink"},
-		},
-		Required: []string{"hypothesis", "severity", "path", "rationale"},
-	}
+// SeedInput is the project data the first user turn carries. It is facts about
+// the project only; how to reason over them is the server's business.
+type SeedInput struct {
+	Project     string
+	OrgContext  string   // org context YAML, "" if none
+	EndpointMap []string // grey-box "METHOD /path -> file#handler" lines
+	Nodes       int
+	Unguarded   int
+	Exposures   int
 }
 
-// specToTool converts an SDK-agnostic ToolSpec into an Anthropic tool param.
-func specToTool(s ToolSpec) anthropic.ToolUnionParam {
-	props := s.Properties
-	if props == nil {
-		props = map[string]any{}
-	}
-	tp := anthropic.ToolParam{
-		Name:        s.Name,
-		Description: anthropic.String(s.Description),
-		InputSchema: anthropic.ToolInputSchemaParam{
-			Properties: props,
-			Required:   s.Required,
-		},
-	}
-	return anthropic.ToolUnionParam{OfTool: &tp}
-}
+// Seed caps.
+const (
+	seedOrgContextCap = 3000
+	seedMaxEndpoints  = 30
+)
 
-// systemPrompt frames the model as a pen-tester reasoning over a local graph,
-// and encodes the privacy stance: this is the user's own code, audited locally.
-func systemPrompt(orgContext string) string {
+// BuildSeed renders the first user message.
+func BuildSeed(in SeedInput, opts Options) string {
 	var b strings.Builder
-	b.WriteString(strings.TrimSpace(`
-You are a security analyst auditing the user's OWN codebase, locally, with their
-consent. You reason over a Code Property Graph through tools: nodes are functions
-and dangerous sinks, edges are calls and containment, and some nodes are tagged as
-untrusted entrypoints (sources) or as touching PII/PHI.
-
-Work like a pen-tester reading their notes:
-1. list_entrypoints to find where untrusted input enters.
-2. For an entrypoint, use neighbors(edge_kind="contains") to see its sinks and
-   neighbors(edge_kind="calls") to follow the call chain deeper.
-3. get_dataflow(source_id, sink_id) to confirm a route actually connects them.
-4. read_context to resolve any name to a file:line, and get_pii_nodes to see if the
-   route touches sensitive data (which raises severity).
-5. Form ONE concrete, graph-grounded attack hypothesis and call emit_finding once.
-
-Ground every claim in what the tools return. Cite file:line anchors. Do not invent
-nodes, routes, or code you were not shown. If nothing is exploitable, still call
-emit_finding with a low-severity, honestly-reasoned result.`))
-	if strings.TrimSpace(orgContext) != "" {
-		b.WriteString("\n\nOrganisation context provided by the user:\n")
-		b.WriteString(strings.TrimSpace(orgContext))
+	fmt.Fprintf(&b, "PROJECT: %s\n", in.Project)
+	fmt.Fprintf(&b, "GRAPH: %d nodes, %d unguarded entrypoint(s), %d client exposure(s)\n", in.Nodes, in.Unguarded, in.Exposures)
+	fmt.Fprintf(&b, "BUDGET: at most %d hypotheses, %d turns\n", opts.maxHypotheses(), opts.maxTurns())
+	if oc := strings.TrimSpace(in.OrgContext); oc != "" {
+		if len(oc) > seedOrgContextCap {
+			oc = strings.ToValidUTF8(oc[:seedOrgContextCap], "") + "\n..."
+		}
+		b.WriteString("\nORG CONTEXT (authored by the owner):\n" + oc + "\n")
+	}
+	if len(in.EndpointMap) > 0 {
+		eps := in.EndpointMap
+		more := 0
+		if len(eps) > seedMaxEndpoints {
+			more = len(eps) - seedMaxEndpoints
+			eps = eps[:seedMaxEndpoints]
+		}
+		b.WriteString("\nENDPOINT MAP (live route -> handler):\n" + strings.Join(eps, "\n") + "\n")
+		if more > 0 {
+			fmt.Fprintf(&b, "...and %d more\n", more)
+		}
 	}
 	return b.String()
 }
 
-// RunHypothesisLoop drives Claude over the graph tools to produce one grounded
-// Finding. The live model call is gated: with no resolvable key it returns
-// ErrNoAPIKey immediately, having done no network I/O, so builds and tests never
-// require a key or spend. When a key is present it runs a manual tool-use loop
-// (define tools, call the model, execute tool calls, feed results back) until
-// the model calls emit_finding or the turn budget is spent.
-func RunHypothesisLoop(ctx context.Context, tb *Toolbox, cfg Config) (*Finding, error) {
-	key := cfg.resolveKey()
-	if key == "" {
-		return nil, ErrNoAPIKey
-	}
+// Run drives the loop: seed is the first user message (see BuildSeed).
+func Run(ctx context.Context, tb *Toolbox, tr Transport, seed string, opts Options) (*Result, error) {
+	res := &Result{}
+	messages := []Message{userTextMessage(seed)}
+	seen := map[string]bool{}
 
-	client := anthropic.NewClient(option.WithAPIKey(key))
-
-	// Tools: the five graph tools plus the terminal emit_finding.
-	specs := ToolSpecs()
-	tools := make([]anthropic.ToolUnionParam, 0, len(specs)+1)
-	for _, s := range specs {
-		tools = append(tools, specToTool(s))
-	}
-	tools = append(tools, specToTool(emitFindingSchema()))
-
-	system := []anthropic.TextBlockParam{{Text: systemPrompt(cfg.OrgContext)}}
-	adaptive := anthropic.ThinkingConfigAdaptiveParam{Display: anthropic.ThinkingConfigAdaptiveDisplaySummarized}
-
-	messages := []anthropic.MessageParam{
-		anthropic.NewUserMessage(anthropic.NewTextBlock(
-			"Audit this codebase. Pick one entrypoint, trace it to a dangerous sink, and report your single best attack hypothesis via emit_finding.")),
-	}
-
-	for turn := 0; turn < cfg.maxTurns(); turn++ {
-		resp, err := client.Messages.New(ctx, anthropic.MessageNewParams{
-			Model:     anthropic.Model(cfg.model()),
-			MaxTokens: 16000,
-			System:    system,
-			Thinking:  anthropic.ThinkingConfigParamUnion{OfAdaptive: &adaptive},
-			Tools:     tools,
-			Messages:  messages,
-		})
+	for res.Turns < opts.maxTurns() {
+		res.Turns++
+		turn, err := tr.Turn(ctx, messages)
 		if err != nil {
-			return nil, fmt.Errorf("agent: claude turn failed: %w", err)
-		}
-
-		// Record the assistant turn (including any thinking blocks) before we
-		// act on the tool calls, so the conversation replays correctly.
-		messages = append(messages, resp.ToParam())
-
-		var toolResults []anthropic.ContentBlockParamUnion
-		var finding *Finding
-
-		for _, block := range resp.Content {
-			switch v := block.AsAny().(type) {
-			case anthropic.TextBlock:
-				if txt := strings.TrimSpace(v.Text); txt != "" {
-					cfg.logf("model: %s", txt)
-				}
-			case anthropic.ToolUseBlock:
-				if v.Name == "emit_finding" {
-					f, ferr := parseFinding(v.Input)
-					if ferr != nil {
-						// Hand the error back so the model can correct itself.
-						toolResults = append(toolResults,
-							anthropic.NewToolResultBlock(v.ID, "invalid emit_finding: "+ferr.Error(), true))
-						continue
-					}
-					finding = f
-					cfg.logf("finding: [%s] %s", f.Severity, f.Hypothesis)
-					toolResults = append(toolResults,
-						anthropic.NewToolResultBlock(v.ID, "recorded", false))
-					continue
-				}
-				cfg.logf("tool: %s %s", v.Name, string(v.Input))
-				out, terr := tb.Dispatch(v.Name, v.Input)
-				if terr != nil {
-					toolResults = append(toolResults,
-						anthropic.NewToolResultBlock(v.ID, terr.Error(), true))
-					continue
-				}
-				toolResults = append(toolResults,
-					anthropic.NewToolResultBlock(v.ID, out, false))
+			if errors.Is(err, ErrInsufficientTokens) {
+				res.StopReason = StopInsufficientTokens
 			}
+			return res, fmt.Errorf("white-box turn %d: %w", res.Turns, err)
 		}
-
-		if finding != nil {
-			return finding, nil
+		if res.RunID == "" {
+			res.RunID = turn.RunID
 		}
+		res.Usage.add(turn.Usage)
 
-		// No tools requested and no finding: the model is done, but emptily.
-		if resp.StopReason != anthropic.StopReasonToolUse {
-			return nil, ErrNoFinding
+		// Replay the assistant turn verbatim (thinking blocks included).
+		messages = append(messages, Message{Role: "assistant", Content: turn.Content})
+
+		results, finished := dispatch(tb, turn.Content, res, seen, opts)
+
+		// Hypotheses in this turn are already paid for, so they were kept above
+		// before the ceiling is checked.
+		if opts.MaxTokens > 0 && res.Usage.Total() > opts.MaxTokens {
+			res.StopReason = StopTokenBudget
+			return res, nil
 		}
-
-		messages = append(messages, anthropic.NewUserMessage(toolResults...))
+		if finished || turn.StopReason != "tool_use" || len(results) == 0 {
+			res.StopReason = StopFinished
+			return res, nil
+		}
+		messages = append(messages, toolResultsMessage(results))
 	}
-
-	return nil, fmt.Errorf("agent: %w (turn budget of %d exhausted)", ErrNoFinding, cfg.maxTurns())
+	res.StopReason = StopTurnBudget
+	return res, nil
 }
 
-// parseFinding decodes an emit_finding tool input into a Finding, tolerating the
-// model's JSON escaping quirks by going through the standard decoder.
-func parseFinding(raw json.RawMessage) (*Finding, error) {
-	var f Finding
-	if err := json.Unmarshal(raw, &f); err != nil {
-		return nil, err
+// dispatch executes every tool_use block in one assistant turn and returns the
+// tool results, and whether the model called finish.
+func dispatch(tb *Toolbox, content []json.RawMessage, res *Result, seen map[string]bool, opts Options) ([]toolResultBlock, bool) {
+	var out []toolResultBlock
+	finished := false
+	for _, raw := range content {
+		var b blockPeek
+		if json.Unmarshal(raw, &b) != nil {
+			continue
+		}
+		switch b.Type {
+		case "text":
+			if t := strings.TrimSpace(b.Text); t != "" {
+				opts.logf("agent: %s", oneLine(t, 200))
+			}
+		case "tool_use":
+			r := toolResultBlock{ToolUseID: b.ID}
+			switch b.Name {
+			case toolEmitHypothesis:
+				r.Content, r.IsError = emit(tb, b.Input, res, seen, opts)
+			case toolFinish:
+				var in struct {
+					Summary string `json:"summary"`
+				}
+				_ = json.Unmarshal(b.Input, &in)
+				res.Summary = strings.TrimSpace(in.Summary)
+				finished = true
+				r.Content = "ok"
+			default:
+				opts.logf("tool: %s %s", b.Name, oneLine(string(b.Input), 120))
+				s, err := tb.Dispatch(b.Name, b.Input)
+				if err != nil {
+					r.Content, r.IsError = err.Error(), true
+				} else {
+					r.Content = s
+				}
+			}
+			out = append(out, r)
+		}
 	}
-	if strings.TrimSpace(f.Hypothesis) == "" {
-		return nil, errors.New("hypothesis is empty")
+	return out, finished
+}
+
+// emit validates and records one hypothesis. Errors go back to the model so it
+// can correct itself; they never abort the run.
+func emit(tb *Toolbox, input json.RawMessage, res *Result, seen map[string]bool, opts Options) (string, bool) {
+	if len(res.Hypotheses) >= opts.maxHypotheses() {
+		return "hypothesis limit reached; call finish", true
 	}
-	if strings.TrimSpace(f.Severity) == "" {
-		f.Severity = "low"
+	h, err := parseHypothesis(input)
+	if err != nil {
+		return "invalid emit_hypothesis: " + err.Error(), true
 	}
-	return &f, nil
+	var unknown []string
+	for _, k := range h.NodeKeys {
+		if !tb.HasKey(k) {
+			unknown = append(unknown, k)
+		}
+	}
+	if len(unknown) > 0 {
+		return "unknown node key(s): " + strings.Join(unknown, ", ") + "; use keys exactly as the tools returned them", true
+	}
+	dedup := h.Class + "|" + h.Endpoint()
+	if seen[dedup] {
+		return "duplicate: already recorded " + h.Class + " at " + h.Endpoint(), true
+	}
+	seen[dedup] = true
+	h.ID = fmt.Sprintf("H%d", len(res.Hypotheses)+1)
+	res.Hypotheses = append(res.Hypotheses, h)
+	opts.logf("hypothesis %s [%s] %s at %s", h.ID, h.Confidence, h.Class, h.Endpoint())
+	return "recorded " + h.ID, false
+}
+
+func oneLine(s string, max int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) > max {
+		s = strings.ToValidUTF8(s[:max], "") + "..."
+	}
+	return s
 }

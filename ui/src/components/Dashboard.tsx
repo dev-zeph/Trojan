@@ -45,6 +45,9 @@ export function Dashboard({ scan, onViewFindings, onSelectFinding }: Props) {
           Scanned with {scanners.length > 0 ? scanners.join(', ') : '—'}.
           Results are local and have not left your machine.
         </p>
+        {scan.coverage_note && (
+          <p className="text-xs text-muted-foreground">{scan.coverage_note}</p>
+        )}
       </div>
 
       {/* Severity counts */}

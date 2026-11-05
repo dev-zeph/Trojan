@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -251,3 +252,46 @@ func TestRunSafeModeRejectionBecomesToolError(t *testing.T) {
 	}
 }
 
+func TestRunDefaultsHaveNoStepCap(t *testing.T) {
+	lim := DefaultLimits()
+	if lim.MaxSteps != 0 || lim.MaxRequests != 0 || lim.WallClock != 0 {
+		t.Fatalf("defaults should not cap steps/requests/time, got %+v", lim)
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("ok")) })
+	tb, base := newTestbox(t, lim, mux)
+
+	// 20 turns that each probe a NEW path, then finish: more than the old
+	// 15-step cap, and never idle, so it must run to the agent's own finish.
+	var turns []*TurnResult
+	for i := 0; i < 20; i++ {
+		turns = append(turns, turn("tool_use", toolUseBlock("p", toolHTTPProbe,
+			ProbeRequest{Method: "GET", URL: base + "/page" + strconv.Itoa(i)})))
+	}
+	turns = append(turns, turn("tool_use", toolUseBlock("f", toolFinish, map[string]any{"summary": "done"})))
+	res, err := Run(context.Background(), tb, &fakeTransport{turns: turns}, RunOptions{Task: "go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.EndedBy != EventFinish || res.Steps != 21 {
+		t.Errorf("EndedBy = %q Steps = %d, want finish after 21 steps", res.EndedBy, res.Steps)
+	}
+}
+
+func TestRunStopsWhenStalled(t *testing.T) {
+	tb, _ := newTestbox(t, DefaultLimits(), http.NotFoundHandler())
+
+	// Never finishes and never covers new ground: only re-reads the crawl map.
+	idle := turn("tool_use", toolUseBlock("t", toolGetCrawlMap, map[string]any{}))
+	var turns []*TurnResult
+	for i := 0; i < 50; i++ {
+		turns = append(turns, idle)
+	}
+	res, err := Run(context.Background(), tb, &fakeTransport{turns: turns}, RunOptions{Task: "go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StopReason != StopStalled || res.Steps != StallSteps {
+		t.Errorf("StopReason = %q Steps = %d, want %q after %d", res.StopReason, res.Steps, StopStalled, StallSteps)
+	}
+}
