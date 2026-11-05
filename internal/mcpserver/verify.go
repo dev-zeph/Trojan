@@ -68,7 +68,14 @@ func VerifyOnce(projectPath, id string) (*VerifyResult, error) {
 		fmt.Fprintf(os.Stderr, "warning: could not install scanners: %s\n", err)
 	}
 
-	fresh, _ := scanners.RunAll(projectPath, []scanners.Scanner{scanner}, nil)
+	fresh, results := scanners.RunAll(projectPath, []scanners.Scanner{scanner}, nil)
+	// A scanner that failed to run (e.g. Semgrep couldn't download its rules)
+	// returns no findings, which must not read as "the finding is gone".
+	for _, r := range results {
+		if r.Err != nil {
+			return nil, fmt.Errorf("%s did not run (%s), so the fix is not verified yet. Try verify_fix again in a moment", r.Scanner, oneLine(r.Err))
+		}
+	}
 	fresh, _ = normalizer.Reduce(fresh)
 
 	res := &VerifyResult{Fixed: true, Scanner: target.Scanner, RuleID: target.RuleID, FindingID: id}
