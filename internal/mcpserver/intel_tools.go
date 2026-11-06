@@ -68,11 +68,10 @@ func intelErrorText(err error) string {
 	case errors.Is(err, intel.ErrNotSignedIn):
 		return "Not signed in to Trojan, so intel can't be fetched. Run `trojan login` (or sign in via the Trojan app), then call check_intel again."
 	case errors.As(err, &sub):
-		msg := strings.TrimSpace(sub.Message)
-		if msg != "" {
-			msg += " "
+		if msg := strings.TrimSpace(sub.Message); msg != "" {
+			return msg
 		}
-		return msg + "Dependency intel is a Pro/Team feature. Upgrade the plan in the Trojan app to use check_intel."
+		return "Trojan's intel service declined this account. Check the plan in the Trojan app, then call check_intel again."
 	}
 	return "check_intel could not complete: " + err.Error()
 }

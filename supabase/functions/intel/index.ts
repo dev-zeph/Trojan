@@ -1,5 +1,5 @@
 import { supabase } from '../_shared/supabase.ts'
-import { validateToken, isPro, corsHeaders } from '../_shared/auth.ts'
+import { validateToken, corsHeaders } from '../_shared/auth.ts'
 import { parseBody } from '../_shared/body.ts'
 import { chunk, groupByEcosystem, parseRequest, rowMatchesWanted } from './lib.ts'
 
@@ -12,8 +12,8 @@ import { chunk, groupByEcosystem, parseRequest, rowMatchesWanted } from './lib.t
 //         Prefer the envelope (Cloudflare WAF). The JSON itself is:
 //         { "packages": [{ "ecosystem": "npm", "name": "next", "version": "14.1.0" }],
 //           "since"?: ISO8601 }       // max 5000 packages
-//   401 { "error": "unauthorized" }
-//   402 { "error": "subscription_required", "message": "..." }   (not pro/team)
+//   401 { "error": "unauthorized" }   (any signed-in account may use intel)
+//   (402 subscription_required is reserved; the Go client still handles it)
 //   400 { "error": "<reason>" }
 //   200 { "advisories": [...], "generated_at": ISO }
 //
@@ -32,14 +32,8 @@ Deno.serve(async (req) => {
 
   const token = req.headers.get('authorization')?.replace('Bearer ', '') ?? ''
   const user = await validateToken(token)
+  // Intel is open to every signed-in account (free included). No plan check.
   if (!user) return json({ error: 'unauthorized' }, 401)
-
-  if (!isPro(user)) {
-    return json({
-      error: 'subscription_required',
-      message: 'Trojan intel is included with Pro and Team plans. Upgrade at https://www.trojancli.com/pricing',
-    }, 402)
-  }
 
   let raw: unknown
   try {

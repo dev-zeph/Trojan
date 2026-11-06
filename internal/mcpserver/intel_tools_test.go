@@ -127,7 +127,7 @@ func TestCheckIntelErrors(t *testing.T) {
 	e := newIntelEnv(t, nextAdvisory)
 	*e.status, *e.body = 402, `{"error":"subscription_required","message":"Your plan does not include dependency intel."}`
 	out, isErr := e.check(t)
-	if !isErr || !strings.Contains(out, "Your plan does not include dependency intel.") || !strings.Contains(out, "Pro/Team") {
+	if !isErr || !strings.Contains(out, "Your plan does not include dependency intel.") || strings.Contains(out, "Pro/Team") {
 		t.Errorf("402 output: %v %q", isErr, out)
 	}
 
