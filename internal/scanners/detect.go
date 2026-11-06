@@ -173,8 +173,8 @@ func RelevantScanners(all []Scanner, p ProjectType) []Scanner {
 	for _, s := range all {
 		switch s.Name() {
 		case "semgrep":
-			// Always run SAST. PHP projects also get the PHP rule packs and
-			// Trojan's own PHP rules (see Semgrep.PHP).
+			// Always run SAST, with Trojan's own rules. PHP projects also get
+			// the PHP registry packs (see Semgrep.PHP).
 			if sg, ok := s.(Semgrep); ok && p.HasPHP {
 				sg.PHP = true
 				s = sg
@@ -185,9 +185,11 @@ func RelevantScanners(all []Scanner, p ProjectType) []Scanner {
 		case "trivy":
 			relevant = append(relevant, s) // always run SCA
 		case "gitleaks":
-			if p.HasGitHistory {
-				relevant = append(relevant, s)
-			}
+			// Always scan for secrets. Gitleaks reads the files on disk and,
+			// when there is a .git folder, the commit history too. Gating on
+			// .git used to skip secrets scanning entirely for folders that
+			// were never committed.
+			relevant = append(relevant, s)
 		case "checkov":
 			if p.HasIaC {
 				relevant = append(relevant, s)

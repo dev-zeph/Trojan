@@ -1,0 +1,141 @@
+rules:
+  - id: trojan-js-request-overrides-session-identity
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      Which account's data to load is taken from the request first, and only
+      falls back to the signed-in user when the request leaves it out. Any
+      logged-in user can add that parameter (for example ?client=3) and read
+      or change another customer's records (IDOR). Use the identity from the
+      session, and only accept an override after checking the user is allowed
+      to act for that account.
+    metadata:
+      trojan-title: Request can choose whose data to load (IDOR)
+      cwe:
+        - "CWE-639: Authorization Bypass Through User-Controlled Key"
+      owasp:
+        - "A01:2021 - Broken Access Control"
+      category: security
+      confidence: MEDIUM
+    patterns:
+      - pattern-either:
+          - pattern: $REQ.$SRC.$A ?? $REQ.$U.$B
+          - pattern: $REQ.$SRC.$A || $REQ.$U.$B
+          - pattern: $REQ.$SRC[$A] ?? $REQ.$U.$B
+          - pattern: $REQ.$SRC[$A] || $REQ.$U.$B
+          - pattern: $REQ.$SRC.$A ?? $REQ.$U.$M.$B
+          - pattern: $REQ.$SRC.$A || $REQ.$U.$M.$B
+      - metavariable-regex:
+          metavariable: $SRC
+          regex: ^(query|body|params|headers|cookies)$
+      - metavariable-regex:
+          metavariable: $U
+          regex: ^(user|session|auth|currentUser|account|locals)$
+
+  - id: trojan-js-mass-assignment
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      The whole request body is written to the database, so the client
+      decides which fields change. A user can add fields the form never shows,
+      such as "role": "admin", "isAdmin": true, or another account's ID, and
+      promote themselves or take over data (mass assignment). Copy only the
+      fields users may edit, for example with an allow-list:
+      const { name, phone } = req.body. If a schema validator (zod, Joi,
+      yup) already rejects or strips unknown fields on this route, this is
+      safe and can be marked as a false alarm.
+    metadata:
+      trojan-title: Request body saved straight to the database (mass assignment)
+      cwe:
+        - "CWE-915: Improperly Controlled Modification of Dynamically-Determined Object Attributes"
+      owasp:
+        - "A01:2021 - Broken Access Control"
+      category: security
+      confidence: MEDIUM
+    pattern-either:
+      # const { password, ...rest } = req.body; ... update(rest)
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  const {..., ...$REST} = $REQ.body;
+                  ...
+              - pattern-inside: |
+                  const {..., ...$REST} = $REQ.body || $D;
+                  ...
+              - pattern-inside: |
+                  const {..., ...$REST} = $REQ.body ?? $D;
+                  ...
+              - pattern-inside: |
+                  let {..., ...$REST} = $REQ.body;
+                  ...
+          - pattern-either:
+              - pattern: $FN(..., $REST, ...)
+              - pattern: $O.$FN(..., $REST, ...)
+              - pattern: $FN(..., {..., ...$REST, ...}, ...)
+              - pattern: $O.$FN(..., {..., ...$REST, ...}, ...)
+          - metavariable-regex:
+              metavariable: $FN
+              regex: (?i)^(update\w*|insert\w*|create\w*|save\w*|upsert\w*|set\w*|patch\w*|replace\w*|findByIdAndUpdate|findOneAndUpdate|updateOne|updateMany|merge|assign)$
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^(req|request|ctx\.request)$
+      # update(req.body) / Object.assign(user, req.body) / { ...req.body }
+      - patterns:
+          - pattern-either:
+              - pattern: $FN(..., $REQ.body, ...)
+              - pattern: $O.$FN(..., $REQ.body, ...)
+              - pattern: $FN(..., {..., ...$REQ.body, ...}, ...)
+              - pattern: $O.$FN(..., {..., ...$REQ.body, ...}, ...)
+              # Prisma / Drizzle style: update({ where, data: req.body })
+              - pattern: "$O.$FN({..., data: $REQ.body, ...})"
+              - pattern: "$O.$FN({..., data: {..., ...$REQ.body, ...}, ...})"
+          - metavariable-regex:
+              metavariable: $FN
+              regex: (?i)^(update\w*|insert\w*|create\w*|save\w*|upsert\w*|patch\w*|replace\w*|findByIdAndUpdate|findOneAndUpdate|updateOne|updateMany|merge|assign)$
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^(req|request|ctx\.request)$
+
+  - id: trojan-js-case-sensitive-path-check
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      Access to part of the site is blocked by comparing the request path as
+      text (for example req.path.startsWith("/admin")). Express matches routes
+      without caring about upper or lower case, so /ADMIN/users or /Admin
+      skips this check but still reaches the protected page. Protect the
+      routes themselves: put the check on a router (adminRouter.use(requireAdmin))
+      or on each route, instead of matching the path string.
+    metadata:
+      trojan-title: Admin check can be skipped with capital letters in the URL
+      cwe:
+        - "CWE-178: Improper Handling of Case Sensitivity"
+        - "CWE-863: Incorrect Authorization"
+      owasp:
+        - "A01:2021 - Broken Access Control"
+      category: security
+      confidence: MEDIUM
+    patterns:
+      - pattern-either:
+          - pattern: $REQ.$P.startsWith($X)
+          - pattern: $REQ.$P.indexOf($X) === 0
+          - pattern: $REQ.$P.includes($X)
+          - pattern: $REQ.$P === $X
+      - metavariable-regex:
+          metavariable: $P
+          regex: ^(path|url|originalUrl|baseUrl)$
+      - metavariable-regex:
+          metavariable: $X
+          regex: ^["'`]/
+      # Only when the match gates an access decision: the branch rejects the
+      # request (401/403/redirect to login).
+      - pattern-inside: |
+          if (<... $REQ.$P ...>) $BODY
+      - metavariable-pattern:
+          metavariable: $BODY
+          pattern-either:
+            - pattern: $RES.status(...)
+            - pattern: $RES.sendStatus(...)
+            - pattern: $RES.redirect(...)
+      # Lower-casing the path first makes the comparison safe.
+      - pattern-not: $REQ.$P.toLowerCase().startsWith($X)
