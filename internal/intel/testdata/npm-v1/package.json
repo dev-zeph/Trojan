@@ -1,0 +1,1 @@
+{ "name": "old", "dependencies": { "lodash": "^4.17.0", "alias": "npm:left-pad@1.3.0" } }

@@ -618,6 +618,12 @@ func handleStartWebsiteTest(ctx context.Context, req mcp.CallToolRequest) (*mcp.
 		args = append(args, "--identities-file", idf)
 	}
 
+	// Set by prove_intel_match (not a registered tool argument): a playbook
+	// built from an advisory, passed through the engine's hidden flag.
+	if tpl := strings.TrimSpace(req.GetString("attack_template", "")); tpl != "" {
+		args = append(args, "--attack-template", tpl)
+	}
+
 	exe, err := os.Executable()
 	if err != nil {
 		return mcp.NewToolResultError("could not locate the Trojan binary: " + err.Error()), nil

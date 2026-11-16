@@ -1,0 +1,1 @@
+{ "name": "y1", "dependencies": { "@babel/core": "^7.0.0", "lodash": "^4.17.20", "my-alias": "npm:chalk@^4.1.0" } }
