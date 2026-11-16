@@ -1,7 +1,15 @@
 import { SeverityBadge } from './SeverityBadge'
 import { ExternalLink } from './ExternalLink'
-import { resolveFinding, suppressFinding } from '@/api'
+import { useState } from 'react'
+import { markFalseAlarm, markReal, resolveFinding, suppressFinding } from '@/api'
+import { isHiddenFalseAlarm } from '@/lib/falseAlarms'
 import type { Finding } from '@/types'
+
+const VERDICT_LABEL: Record<string, string> = {
+  confirmed: 'Looks like a real issue',
+  needs_manual: 'Worth a closer look',
+  likely_fp: 'Likely a false alarm',
+}
 
 interface Props {
   finding: Finding
@@ -19,6 +27,18 @@ export function FindingDetail({ finding, onBack, onAction }: Props) {
     await suppressFinding(finding.ID)
     onAction()
   }
+
+  const [saveError, setSaveError] = useState<string | null>(null)
+  async function handleVerdict(real: boolean) {
+    setSaveError(null)
+    try {
+      await (real ? markReal(finding.ID) : markFalseAlarm(finding.ID))
+      onAction()
+    } catch {
+      setSaveError('Could not save your choice. Try again.')
+    }
+  }
+  const hidden = isHiddenFalseAlarm(finding)
 
   const vsCodeUrl = `vscode://file/${finding.FilePath}:${finding.LineNumber}`
 
@@ -45,6 +65,17 @@ export function FindingDetail({ finding, onBack, onAction }: Props) {
           <span className="uppercase">{finding.Status}</span>
         </div>
       </div>
+
+      {/* Trojan's AI check */}
+      {finding.Verdict && (
+        <div className="space-y-2 border-t border-border pt-8" data-testid="verdict">
+          <p className="text-xs uppercase tracking-widest text-muted-foreground">Trojan's check</p>
+          <p className="text-sm font-medium">{VERDICT_LABEL[finding.Verdict] ?? finding.Verdict}</p>
+          {finding.VerdictReason && (
+            <p className="text-sm leading-relaxed text-foreground/80">{finding.VerdictReason}</p>
+          )}
+        </div>
+      )}
 
       {/* Location */}
       <div className="space-y-2 border-t border-border pt-8">
@@ -155,7 +186,14 @@ export function FindingDetail({ finding, onBack, onAction }: Props) {
         >
           Suppress rule
         </button>
+        <button
+          onClick={() => handleVerdict(hidden)}
+          className="text-sm text-muted-foreground underline underline-offset-4 hover:text-foreground transition-colors"
+        >
+          {hidden ? 'This is a real issue' : 'This is a false alarm'}
+        </button>
       </div>
+      {saveError && <p className="text-xs text-red-600">{saveError}</p>}
     </div>
   )
 }

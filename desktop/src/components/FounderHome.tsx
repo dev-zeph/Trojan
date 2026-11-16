@@ -1,9 +1,10 @@
+import type { ReactNode } from "react";
 import type { RecentProject } from "../types";
 import { greet, timeAgo } from "../lib/format";
 
 // ── Founder home ──────────────────────────────────────────────────────────
 // The simple dashboard's landing page. Three things a founder can do, in
-// plain language, and their latest checks. No scores or jargon here: the
+// plain language, and their latest checks. No jargon here: the
 // result pages explain what was found.
 
 type McpStatus = Record<string, { installed: boolean; configured: boolean }>;
@@ -15,7 +16,7 @@ const AI_TOOL_NAMES: Record<string, string> = {
 };
 
 export function FounderHome({
-  name, recent, isScanning, mcpStatus, onScanCode, onTestWebsite, onConnectAI, onOpenRecent,
+  name, recent, isScanning, mcpStatus, onScanCode, onTestWebsite, onConnectAI, onOpenRecent, scoreCard,
 }: {
   name: string;
   recent: RecentProject[];
@@ -25,6 +26,7 @@ export function FounderHome({
   onTestWebsite: () => void;
   onConnectAI: () => void;
   onOpenRecent: (r: RecentProject) => void;
+  scoreCard?: ReactNode;
 }) {
   const connected = Object.entries(mcpStatus ?? {})
     .filter(([, s]) => s.configured)
@@ -69,6 +71,7 @@ export function FounderHome({
           </button>
         </div>
 
+        {scoreCard}
         <span className="fh-section-label">YOUR LATEST CHECKS</span>
         {recent.length === 0 ? (
           <p className="fh-empty">Nothing checked yet. Start with "Scan my code" above.</p>

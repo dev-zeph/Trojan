@@ -31,10 +31,20 @@ import {
 import { friendlyError, timeAgo, parseAuthCallback, greet, initials, isLocalUrl } from "./lib/format";
 import { AuthForm } from "./components/AuthForm";
 import { FounderHome } from "./components/FounderHome";
+import { ScoreCard, ScoreNotes } from "./components/ScoreCard";
+import { ReportDownloads } from "./components/ReportDownloads";
+import {
+  projectKey, recordScore, latestEntry, previousEntry, latestReport, scoreChange, isScoreStale,
+  excludeHiddenFalseAlarms, loadScoreStore, saveScoreStore, type ScoreStore,
+} from "./lib/scoreHistory";
+import { downloadReportTxt, printReportPdf } from "./lib/reportExport";
 import { Onboarding } from "./components/Onboarding";
+import { GettingStarted } from "./components/GettingStarted";
 import { CM } from "./components/CornerMarks";
 import { FeedbackForm } from "./components/FeedbackForm";
 import { TokenBalance, RunCostHint } from "./components/TokenBalance";
+import { ScanGateNotice } from "./components/ScanGateNotice";
+import { runScanGate, fetchLicenseBalance, type ScanGate } from "./lib/scanGate";
 import type {
   NavView,
   ScanType,
@@ -52,6 +62,8 @@ import type {
 } from "./types";
 import NotificationSettings, { useScanNudges } from "./NotificationSettings";
 import { PenTestNotify } from "./components/PenTestNotify";
+import { UpdatePrompt } from "./components/UpdatePrompt";
+import { ScanProgress, useScanProgress } from "./components/ScanProgress";
 import { ContextChangeBanner } from "./ContextChangeBanner";
 import "./App.css";
 
@@ -194,10 +206,23 @@ export default function App() {
   // loaded, which renders as "—" rather than 0 (0 would read as "you are out").
   const [tokenBalance, setTokenBalance]   = useState<number | null>(null);
   const [scanSummary, setScanSummary]         = useState<ScanSummary | null>(null);
-  const [threatLabResult, setThreatLabResult] = useState<ThreatLabResult | null>(null);
+  // Security Score history lives per project on disk (see lib/scoreHistory).
+  // loadedProject is the project whose scan the report server currently holds.
+  const [scoreStore, setScoreStore]       = useState<ScoreStore>({});
+  const [loadedProject, setLoadedProject] = useState("");
   const [isLabRunning, setIsLabRunning]   = useState(false);
   const [labError, setLabError]           = useState<string | null>(null);
+  const scoreProject  = loadedProject || recent.find((r) => r.type !== "dast")?.path || "";
+  const threatLabResult: ThreatLabResult | null = scoreProject ? latestReport(scoreStore, scoreProject) : null;
+  const scoreEntry    = scoreProject ? latestEntry(scoreStore, scoreProject) : null;
+  const scorePrev     = scoreProject ? previousEntry(scoreStore, scoreProject) : null;
+  const scoreDelta    = scoreChange(scoreEntry, scorePrev);
+  const scoreStale    = isScoreStale(
+    scoreEntry,
+    recent.find((r) => r.type === "sast" && projectKey(r.path) === projectKey(scoreProject))?.scannedAt,
+  );
   const [showAuthForm, setShowAuthForm]   = useState(false);
+  const [scanBlocked, setScanBlocked]     = useState<Exclude<ScanGate, { ok: true }> | null>(null);
   const [showFeedback, setShowFeedback]   = useState(false);
   const [historyFilter, setHistoryFilter] = useState<"all" | "sast" | "dast">("all");
   const [staleCaches, setStaleCaches]     = useState<Set<string>>(new Set());
@@ -221,6 +246,7 @@ export default function App() {
   const profileRef = useRef<UserProfile | null>(null);
 
   const isScanning = toasts.some((t) => t.status === "scanning");
+  const scanProgress = useScanProgress(isScanning);
 
   // Keep viewRef in sync so the drag-drop callback can read current view without stale closure.
   useEffect(() => { viewRef.current = view; }, [view]);
@@ -351,6 +377,7 @@ export default function App() {
         }
       } catch {}
       setRecent(r);
+      setScoreStore(await loadScoreStore());
 
       let activeProfile = p;
 
@@ -622,6 +649,7 @@ export default function App() {
       }
       if (!scanRes.ok) return;
       const data = await scanRes.json();
+      if (typeof data.project_path === "string" && data.project_path && !/^https?:\/\//i.test(data.project_path)) setLoadedProject(data.project_path);
       if (data.privacy) setPrivacyReport(data.privacy);
       if (Array.isArray(data.packages) && data.packages.length > 0) {
         setPackages(data.packages);
@@ -652,7 +680,9 @@ export default function App() {
       const scanRes = await fetch(`${currentServerUrl}/api/scans/latest`);
       if (!scanRes.ok) throw new Error("Could not fetch scan data");
       const scanData = await scanRes.json();
-      const findings: Finding[] = scanData.findings ?? [];
+      // Findings the AI false-positive check hid are not real problems, so they
+      // must not lower the score.
+      const findings: Finding[] = excludeHiddenFalseAlarms<Finding>(scanData.findings ?? []);
       const pkgs: PkgInfo[] = scanData.packages ?? [];
 
       const token = await getFreshToken();
@@ -682,7 +712,16 @@ export default function App() {
       }
 
       const result = await res.json() as ThreatLabResult;
-      setThreatLabResult(result);
+      // Keep it per project on disk, with the time of the scan it was built
+      // from, so the next report can show "Was X, now Y" and a rescan can
+      // flag this score as out of date.
+      const key = scanData.project_path || scoreProject;
+      setLoadedProject(key);
+      setScoreStore((prev) => {
+        const next = recordScore(prev, key, result, scanData.timestamp ?? new Date().toISOString());
+        void saveScoreStore(next);
+        return next;
+      });
       // This run just spent tokens (or confirmed a cache hit spent none) --
       // refresh rather than leave the sidebar showing the pre-run balance.
       void refreshTokenBalance();
@@ -694,54 +733,34 @@ export default function App() {
   }
 
   function exportLabTxt() {
-    if (!threatLabResult) return;
-    const r = threatLabResult;
-    const lines = [
-      "TROJAN SECURITY REPORT",
-      "======================",
-      "",
-      `Security Score: ${100 - r.threat_index}/100  |  Grade: ${r.grade}`,
-      "",
-      "VERDICT",
-      r.verdict,
-      "",
-      "KEY RISKS",
-      ...r.key_risks.map(risk => `  • ${risk}`),
-      "",
-      "ATTACK VECTORS",
-      ...r.attack_vectors.map(v => [
-        `  [${v.severity.toUpperCase()}] ${v.title}  (exploitability: ${v.exploitability})`,
-        `  ${v.description}`,
-        `  Involves: ${v.findings_involved.join(", ")}`,
-        "",
-      ].join("\n")),
-      "PRIORITY FIXES",
-      ...r.priority_fixes.map(f => [
-        `  ${f.rank}. [${f.type.toUpperCase()}] ${f.title}`,
-        `     ${f.description}`,
-        f.command ? `     Command: ${f.command}` : "",
-        f.file ? `     File: ${f.file}${f.line ? `:${f.line}` : ""}` : "",
-        "",
-      ].filter(Boolean).join("\n")),
-      "COMPLIANCE",
-      r.compliance_summary,
-    ];
-    const blob = new Blob([lines.join("\n")], { type: "text/plain" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = "trojan-security-report.txt";
-    a.click();
-    URL.revokeObjectURL(a.href);
+    if (threatLabResult) downloadReportTxt(threatLabResult);
   }
 
   function exportLabPdf() {
-    const t = document.title;
-    document.title = `Security Assessment - ${scanPath?.split("/").pop() ?? "Report"}`;
-    window.print();
-    document.title = t;
+    printReportPdf(scoreProject.split("/").pop() ?? "");
   }
 
+  // Code scans need an account and a few tokens (the AI check spends them).
+  // The balance is read through the license endpoint, which applies this
+  // month's free grant first. UX only: the edge functions enforce billing.
   function triggerSast(path: string): void {
+    if (isScanning) return;
+    void (async () => {
+      const token = authStatus?.loggedIn ? await getFreshToken() : null;
+      const gate = await runScanGate({
+        signedIn: !!token,
+        fetchBalance: async () => {
+          const b = await fetchLicenseBalance(SUPABASE_URL, token ?? "");
+          if (b !== null) setTokenBalance(b);
+          return b;
+        },
+      });
+      if (!gate.ok) { setScanBlocked(gate); return; }
+      startSast(path);
+    })();
+  }
+
+  function startSast(path: string): void {
     if (isScanning) return;
     const id = crypto.randomUUID();
     const label = path.split("/").pop() ?? path;
@@ -968,8 +987,14 @@ export default function App() {
 
   // The security report reads the loaded scan. If none is loaded yet (e.g. the
   // app was just opened), load the most recent saved code scan first.
-  function openSecurityReport(): void {
-    if (!currentServerUrl) {
+  // With a project given, make sure that project's scan is the one loaded
+  // (the score card on Home is about the latest project, which may not be the
+  // scan the report server holds).
+  function openSecurityReport(path?: string): void {
+    const wanted = path ? recent.find((r) => r.type === "sast" && projectKey(r.path) === projectKey(path)) : undefined;
+    if (wanted && wanted.cachePath && projectKey(loadedProject) !== projectKey(wanted.path) && !staleCaches.has(wanted.path)) {
+      loadScanData(wanted);
+    } else if (!currentServerUrl) {
       const latest = recent.find((r) => r.type === "sast" && r.cachePath && !staleCaches.has(r.path));
       if (latest) loadScanData(latest);
     }
@@ -1043,7 +1068,8 @@ export default function App() {
     setRecent([]);
     setCurrentServerUrl(null);
     setAuthStatus(null);
-    setThreatLabResult(null);
+    setScoreStore({});
+    setLoadedProject("");
     setPackages([]);
     setScanSummary(null);
     setReportUrl("");
@@ -1085,6 +1111,29 @@ export default function App() {
         syncAuthToGoConfig,
         applyAuthFromToken,
       }); }}
+    />
+  );
+
+  // A profile saved before the dashboard choice existed (an earlier version, or
+  // an account restored on a fresh install) has no dashboard yet. Ask the
+  // Getting Started questions instead of silently dropping the user into the
+  // full, technical dashboard. They stay signed in; only the choice is asked.
+  if (!profile.dashboard) return (
+    <GettingStarted
+      onDone={(a) => {
+        const updated: UserProfile = {
+          ...profile,
+          dashboard:          a.dashboard,
+          securityExperience: a.securityExperience,
+          codeAuthor:         a.codeAuthor,
+          familiarity:        a.familiarity,
+          aboutYou:           profile.aboutYou || a.aboutYou,
+        };
+        if (a.dashboard === "simple") setTerminalOpen(false);
+        setProfile(updated);
+        saveProfile(updated);
+        invoke("sync_profile_context", { familiarity: updated.familiarity ?? 1, aboutYou: updated.aboutYou ?? "" }).catch(() => {});
+      }}
     />
   );
 
@@ -1317,6 +1366,31 @@ export default function App() {
               onTestWebsite={() => setView("dast")}
               onConnectAI={() => setView("autofix")}
               onOpenRecent={openRecent}
+              scoreCard={(() => {
+                // Same project the report view and the print portal use, so the
+                // card, the download and the printed PDF always agree.
+                const homeProject = recent.find((r) => r.type !== "dast" && projectKey(r.path) === projectKey(scoreProject))
+                  ?? recent.find((r) => r.type !== "dast");
+                if (!homeProject) return null;
+                const loadedHere = !!currentServerUrl && projectKey(loadedProject) === projectKey(homeProject.path);
+                return (
+                  <ScoreCard
+                    projectName={homeProject.name}
+                    entry={scoreEntry}
+                    change={scoreDelta}
+                    stale={scoreStale}
+                    hasReport={!!threatLabResult}
+                    signedIn={authStatus?.loggedIn ?? false}
+                    running={isLabRunning}
+                    scanReady={!!homeProject.cachePath || loadedHere}
+                    onUpdate={() => (loadedHere ? runThreatLab() : openSecurityReport(homeProject.path))}
+                    onSignIn={() => setShowAuthForm(true)}
+                    onDownloadTxt={exportLabTxt}
+                    onDownloadPdf={exportLabPdf}
+                    onOpenReport={() => openSecurityReport(homeProject.path)}
+                  />
+                );
+              })()}
             />
           )}
 
@@ -1405,6 +1479,12 @@ export default function App() {
                         </div>
                       </div>
                       {tGrade && <span className="posture-card-sub">Grade {tGrade} — {secScore} / 100</span>}
+                      {tGrade && (
+                        <ScoreNotes
+                          change={scoreDelta} stale={scoreStale} canUpdate={authStatus?.loggedIn ?? false}
+                          running={isLabRunning} onUpdate={() => openSecurityReport(scoreProject)}
+                        />
+                      )}
                     </div>
 
                     {/* 2×2 stat cards */}
@@ -1569,7 +1649,10 @@ export default function App() {
                   <>
                     <span className="sast-scanning-spinner" />
                     <p className="sast-drop-title">Scan in progress…</p>
-                    <p className="sast-drop-or">Check the notification in the bottom-right</p>
+                    <ScanProgress
+                      progress={scanProgress}
+                      fallback={<p className="sast-drop-or">Check the notification in the bottom-right</p>}
+                    />
                   </>
                 ) : (
                   <>
@@ -1586,7 +1669,7 @@ export default function App() {
                       enabled={recent.some(r => r.type === "sast" && r.cachePath)}
                       hint="Run a scan first to generate a report."
                       title="Generate an AI security report from your findings"
-                      onClick={openSecurityReport}
+                      onClick={() => openSecurityReport()}
                     />
                   </>
                 )}
@@ -2761,16 +2844,7 @@ export default function App() {
                   </div>
                   <div className="lab-header-actions">
                     {r && (
-                      <>
-                        <button className="lab-export-btn" onClick={exportLabTxt}>
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                          Export TXT
-                        </button>
-                        <button className="lab-export-btn" onClick={exportLabPdf}>
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-                          Export PDF
-                        </button>
-                      </>
+                      <ReportDownloads onTxt={exportLabTxt} onPdf={exportLabPdf} />
                     )}
                     {hasData && signedIn && (
                       <button
@@ -2803,6 +2877,12 @@ export default function App() {
                   </div>
                 )}
                 {labError && <p className="lab-error">{labError}</p>}
+                {r && (
+                  <ScoreNotes
+                    change={scoreDelta} stale={scoreStale} canUpdate={hasData && signedIn}
+                    running={isLabRunning} onUpdate={runThreatLab}
+                  />
+                )}
 
                 {/* ── Results ── */}
                 {r && (
@@ -3347,6 +3427,8 @@ export default function App() {
             </div>
           )}
 
+          <UpdatePrompt busy={isScanning} />
+
           {/* ── Pen test: "we'll notify you" banner + end toast ── */}
           <PenTestNotify
             currentReportUrl={reportUrl}
@@ -3401,6 +3483,15 @@ export default function App() {
 
         </div>{/* end .app-body */}
       </div>
+
+      {scanBlocked && (
+        <ScanGateNotice
+          gate={scanBlocked}
+          onClose={() => setScanBlocked(null)}
+          onSignIn={() => { setScanBlocked(null); setShowAuthForm(true); }}
+          onTopUp={() => { setScanBlocked(null); handleTopUp(); }}
+        />
+      )}
 
       {/* ── In-app auth modal ── */}
       {showAuthForm && (
@@ -3464,11 +3555,16 @@ export default function App() {
                   {t.status === "done"     && t.label}
                   {t.status === "error"    && `Failed: ${t.label}`}
                 </p>
-                <p className="toast-sub">
-                  {t.status === "scanning" && (t.type === "sast" ? "Running SAST · SCA · Secrets · IaC" : "Running Nuclei templates…")}
+                <div className="toast-sub">
+                  {t.status === "scanning" && (
+                    <ScanProgress
+                      progress={scanProgress}
+                      fallback={t.type === "sast" ? "Running SAST · SCA · Secrets · IaC" : "Running Nuclei templates…"}
+                    />
+                  )}
                   {t.status === "done"     && (t.type === "sast" ? "SAST scan complete" : "DAST scan complete")}
                   {t.status === "error"    && (t.error ?? "Scan failed")}
-                </p>
+                </div>
                 {t.status === "done" && t.reportUrl && (
                   <button
                     className="toast-view-btn"
@@ -3500,7 +3596,7 @@ export default function App() {
       {/* Print portals — only one renders at a time based on current view */}
       {view !== "compliancelab" && !(view === "report" && scanType === "dast") && (
         <PrintCertificate
-          projectPath={scanPath}
+          projectPath={scoreProject || scanPath}
           scanSummary={scanSummary}
           threatLabResult={threatLabResult}
           packages={packages}

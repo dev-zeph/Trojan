@@ -30,9 +30,19 @@ func OverrideSynthesizeURL(url string) (restore func()) {
 	return func() { synthesizeURL = orig }
 }
 
-const (
-	licenseURL = "https://dtmocojzvgsswjdsrmqr.supabase.co/functions/v1/license"
-)
+// licenseURL is a var so tests can point FetchLicense at a stub server.
+var licenseURL = "https://dtmocojzvgsswjdsrmqr.supabase.co/functions/v1/license"
+
+// OverrideLicenseURL is a test-only hook, like OverrideSynthesizeURL.
+func OverrideLicenseURL(url string) (restore func()) {
+	orig := licenseURL
+	licenseURL = url
+	return func() { licenseURL = orig }
+}
+
+// ErrLicenseUnauthorized means the license endpoint rejected the access token
+// (expired or revoked): the user needs to sign in again.
+var ErrLicenseUnauthorized = errors.New("sign-in expired")
 
 // ErrInsufficientTokens is the sentinel behind every InsufficientTokensError.
 // Callers that don't need the balance can just check errors.Is(err,
@@ -98,6 +108,9 @@ func FetchLicense(accessToken string) (*LicenseInfo, error) {
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, ErrLicenseUnauthorized
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("license check failed (status %d)", resp.StatusCode)
 	}

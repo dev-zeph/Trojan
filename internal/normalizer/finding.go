@@ -191,3 +191,25 @@ type PrivacyReport struct {
 	DataTypes  []PrivacyDataType  `json:"data_types"`
 	ThirdParty []PrivacyThirdParty `json:"third_party"`
 }
+
+// VerdictLikelyFP is the triage verdict for a likely false alarm.
+const VerdictLikelyFP = "likely_fp"
+
+// HiddenAsFalseAlarm reports whether the AI check (or a person's earlier
+// decision) judged this a likely false alarm. Code-scan views hide these from
+// the findings list and the score, behind a "Trojan hid N false alarms"
+// disclosure; they stay in the stored scan result and in MCP output.
+func (f Finding) HiddenAsFalseAlarm() bool {
+	return f.Verdict == VerdictLikelyFP
+}
+
+// CountHiddenFalseAlarms counts findings hidden as likely false alarms.
+func CountHiddenFalseAlarms(findings []Finding) int {
+	n := 0
+	for _, f := range findings {
+		if f.HiddenAsFalseAlarm() {
+			n++
+		}
+	}
+	return n
+}

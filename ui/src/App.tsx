@@ -7,6 +7,7 @@ import { getLatestScan, getAuthStatus, subscribeToScanEvents } from './api'
 import type { AuthStatus } from './api'
 import type { Finding, ScanResult } from './types'
 import { ExternalLink } from './components/ExternalLink'
+import { shownOpenFindings } from './lib/falseAlarms'
 
 type View = 'dashboard' | 'findings' | 'dependencies'
 
@@ -116,7 +117,7 @@ export default function App() {
                     }`}
                   >
                     {v}
-                    {v === 'findings' && ` (${scan.findings.filter(f => f.Status === 'open').length})`}
+                    {v === 'findings' && ` (${shownOpenFindings(scan.findings).length})`}
                     {v === 'dependencies' && scan.packages != null && ` (${scan.packages.length})`}
                   </button>
                 ))}
@@ -152,6 +153,8 @@ export default function App() {
           <FindingsList
             findings={scan.findings}
             onSelect={setSelected}
+            onChanged={loadScan}
+            triageNote={scan.triage_note}
           />
         )}
       </main>

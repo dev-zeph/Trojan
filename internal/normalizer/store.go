@@ -29,6 +29,10 @@ type ScanResult struct {
 	// or misleading "clean". Built by scanners.CoverageNote. Empty when every
 	// language in the project is graph-covered.
 	CoverageNote string `json:"coverage_note,omitempty"`
+	// TriageNote is set when the AI false-alarm check could not finish (no
+	// tokens, offline, rate limit). Findings it didn't reach are shown
+	// unfiltered; the report shows this note so the user knows why.
+	TriageNote string `json:"triage_note,omitempty"`
 }
 
 // ScannerError records that a scanner failed to run, and why.

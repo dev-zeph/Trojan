@@ -361,9 +361,17 @@ func ScanOnce(projectPath string) (*normalizer.ScanResult, error) {
 	if err := reach.Enrich(projectPath, findings); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: code graph not updated: %s\n", err)
 	}
+	note := ""
+	if ScanTriage != nil {
+		note = ScanTriage(projectPath, findings)
+	}
 	res, err := normalizer.SaveScanResult(projectPath, findings)
 	if err == nil {
 		res.CoverageNote = scanners.CoverageNote(project)
+		if note != "" {
+			res.TriageNote = note
+			_ = saveLatestScan(projectPath, res) // best effort: the findings are already saved
+		}
 	}
 	return res, err
 }

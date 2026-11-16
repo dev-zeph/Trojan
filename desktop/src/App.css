@@ -3406,3 +3406,24 @@ html, body, #root { height: 100%; overflow: hidden; background: var(--bg); color
 .report-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; border-radius: 0; }
 .report-btn:disabled, .report-btn:disabled:hover { opacity: .4; cursor: not-allowed; }
 .report-action-hint { font-size: 12px; color: var(--muted-fg); }
+
+/* ── Security Score: before/after, stale nudge, Home card ─────────────────── */
+.score-change { margin: 6px 0 0; font-size: 13px; font-weight: 600; }
+.score-change-up { color: var(--success, #16a34a); }
+.score-change-down { color: var(--destructive); }
+.score-change-same { color: var(--muted-fg); }
+.score-stale { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 10px 0; padding: 10px 14px; border: 1px solid var(--border); border-left: 3px solid #d97706; border-radius: 8px; background: var(--card); font-size: 13px; }
+.score-stale-btn { font-size: 12px; font-weight: 600; padding: 5px 12px; border-radius: 6px; border: 0; background: var(--primary); color: var(--primary-foreground, #fff); cursor: pointer; }
+.score-stale-btn:disabled { opacity: 0.6; cursor: default; }
+.fh-score { margin: 24px 0; padding: 18px 20px; border: 1px solid var(--border); border-radius: 10px; background: var(--card); }
+.fh-score-body { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; margin-bottom: 8px; }
+.fh-score-num { font-size: 44px; font-weight: 700; line-height: 1; }
+.fh-score-denom { font-size: 16px; font-weight: 500; color: var(--muted-fg); margin-left: 2px; }
+.fh-score-grade { width: 40px; height: 40px; border: 2px solid; border-radius: 8px; display: grid; place-items: center; font-size: 20px; font-weight: 700; }
+.fh-score-meta { flex: 1; min-width: 200px; }
+.fh-score-hint { margin: 6px 0 0; font-size: 13px; color: var(--muted-fg); }
+.fh-score-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.fh-score-btn { font-size: 13px; font-weight: 600; padding: 7px 14px; border-radius: 6px; border: 1px solid var(--border); background: transparent; color: var(--fg); cursor: pointer; }
+.fh-score-btn:hover { background: var(--card); }
+.fh-score-btn-primary { background: var(--primary); color: var(--primary-foreground, #fff); border-color: transparent; }
+.fh-score-btn:disabled { opacity: 0.6; cursor: default; }

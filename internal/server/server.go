@@ -35,6 +35,9 @@ type scanResponse struct {
 	// don't parse (e.g. PHP) was covered by the rule scanners instead (see
 	// normalizer.ScanResult.CoverageNote).
 	CoverageNote string `json:"coverage_note,omitempty"`
+	// TriageNote explains why some findings weren't double-checked for false
+	// alarms (see normalizer.ScanResult.TriageNote).
+	TriageNote string `json:"triage_note,omitempty"`
 }
 
 // Server holds the scan results and serves the UI + API.
@@ -222,8 +225,9 @@ func (s *Server) handleLatestScan(w http.ResponseWriter, r *http.Request) {
 	var resp scanResponse
 	resp.Timestamp = scan.Timestamp
 	resp.ProjectPath = scan.ProjectPath
-	resp.Findings = scan.Findings
 	resp.CoverageNote = scan.CoverageNote
+	resp.Findings = withMemoryDecisions(scan.ProjectPath, scan.Findings)
+	resp.TriageNote = scan.TriageNote
 	resp.LockedCount = 0
 	resp.Packages = scan.Packages
 	resp.Privacy = scan.Privacy
@@ -245,6 +249,28 @@ func (s *Server) handleFindingAction(w http.ResponseWriter, r *http.Request) {
 			action = path[i+1:]
 			break
 		}
+	}
+
+	// "real" / "false-alarm": the user's verdict on the AI false-alarm check,
+	// saved to project memory so every later scan honors it.
+	if action == "real" || action == "false-alarm" {
+		real := action == "real"
+		s.scanMu.Lock()
+		defer s.scanMu.Unlock()
+		for i, f := range s.scan.Findings {
+			if f.ID != id {
+				continue
+			}
+			if err := recordDecision(s.scan.ProjectPath, f, real); err != nil {
+				http.Error(w, "could not save your choice: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			applyDecision(&s.scan.Findings[i], real)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.Error(w, "finding not found", http.StatusNotFound)
+		return
 	}
 
 	s.scanMu.Lock()

@@ -5,6 +5,7 @@ import pkg from "../package.json";
 
 export const STORE_KEY    = "recent-projects";
 export const PROFILE_KEY  = "user-profile";
+export const SCORES_KEY   = "score-history";
 export const TERMINAL_KEY = "terminal-prefs";
 
 export const SUPABASE_URL      = "https://dtmocojzvgsswjdsrmqr.supabase.co";

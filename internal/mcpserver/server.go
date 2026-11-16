@@ -14,7 +14,9 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 
 	"github.com/dev-zeph/trojan/internal/ai"
+	"github.com/dev-zeph/trojan/internal/config"
 	"github.com/dev-zeph/trojan/internal/normalizer"
+	"github.com/dev-zeph/trojan/internal/scangate"
 )
 
 // Serve starts the Trojan MCP server over stdio for the given project path.
@@ -137,6 +139,14 @@ func newServer(project projectFunc, perRequest bool, opts ...server.ServerOption
 			mcp.WithString("reason", mcp.Description(`Why: e.g. "false alarm: input is a constant", or "user accepts the risk". A reason that says the user accepts it is remembered as an accepted risk, anything else as a false alarm.`)),
 		),
 		handleUpdateStatus(project, normalizer.StatusSuppressed),
+	)
+	s.AddTool(
+		tool("mark_real",
+			mcp.WithDescription("Mark a code finding as a real issue when Trojan's AI check called it a likely false alarm (verdict likely_fp). Confirm with the user first. "+
+				"Trojan remembers the decision, so the finding shows up again in the report and stays shown after later scans."),
+			idArg,
+		),
+		handleMarkReal(project),
 	)
 	s.AddTool(
 		tool("run_scan",
@@ -328,11 +338,16 @@ func handleGetFindings(project projectFunc) server.ToolHandlerFunc {
 			Location string `json:"location,omitempty"`
 			Status   string `json:"status"`
 			Verdict  string `json:"verdict,omitempty"`
-			Exposure string `json:"exposure,omitempty"`
-			priority int
+			// VerdictReason is the AI check's (or the user's) reason. Likely
+			// false alarms are hidden in the report but listed here, so an AI
+			// tool can still see them and why.
+			VerdictReason string `json:"verdict_reason,omitempty"`
+			Exposure      string `json:"exposure,omitempty"`
+			priority      int
 		}
 		rows := []row{}
 		hiddenFP := 0
+		likelyFalseAlarms := 0
 		for _, f := range scan.Findings {
 			if (!all && f.Status != normalizer.StatusOpen) || severityRank[f.Severity] < minRank {
 				continue
@@ -348,7 +363,11 @@ func handleGetFindings(project projectFunc) server.ToolHandlerFunc {
 			if f.LineNumber > 0 {
 				loc = fmt.Sprintf("%s:%d", f.FilePath, f.LineNumber)
 			}
-			r := row{ID: f.ID, Source: "code", Severity: string(f.Severity), Title: f.Title, Location: loc, Status: string(f.Status), Verdict: f.Verdict}
+			if f.HiddenAsFalseAlarm() {
+				likelyFalseAlarms++
+			}
+			r := row{ID: f.ID, Source: "code", Severity: string(f.Severity), Title: f.Title, Location: loc, Status: string(f.Status),
+				Verdict: f.Verdict, VerdictReason: f.VerdictReason}
 			if f.Reach != nil {
 				r.Exposure, r.priority = exposureSummary(f.Reach), f.Reach.Priority
 			}
@@ -370,7 +389,9 @@ func handleGetFindings(project projectFunc) server.ToolHandlerFunc {
 			"total":                  len(scan.Findings),
 			"shown":                  len(rows),
 			"hidden_false_positives": hiddenFP,
-			"findings":               rows,
+			// Listed below with verdict "likely_fp"; the report hides them.
+			"likely_false_alarms": likelyFalseAlarms,
+			"findings":            rows,
 		}, "", "  ")
 		if err != nil {
 			return mcp.NewToolResultError("failed to serialize findings"), nil
@@ -423,8 +444,25 @@ func handleUpdateStatus(project projectFunc, status normalizer.Status) server.To
 	}
 }
 
+// runScanGate is the same sign-in and balance gate the desktop app and
+// `trojan scan` use. A var so tests can stand in for the account.
+var runScanGate = func() scangate.Result {
+	token := ""
+	if cfg, err := config.LoadConfig(); err == nil {
+		token = cfg.AccessToken
+	}
+	return scangate.Check(token, ai.FetchLicense)
+}
+
 func handleRunScan(project projectFunc) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if g := runScanGate(); !g.Allowed {
+			msg := g.Message
+			if g.Reason == scangate.ReasonSignedOut {
+				msg += " Open the Trojan desktop app and sign in, then try again."
+			}
+			return mcp.NewToolResultError("Trojan: " + msg), nil
+		}
 		projectPath, err := project(ctx, req)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
