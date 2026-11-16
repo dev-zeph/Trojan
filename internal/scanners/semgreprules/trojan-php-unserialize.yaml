@@ -9,6 +9,7 @@ rules:
       instead, or pass ['allowed_classes' => false].
     metadata:
       trojan-title: Visitor data turned back into PHP objects (unsafe unserialize)
+      trojan-severity: critical
       cwe:
         - "CWE-502: Deserialization of Untrusted Data"
       owasp:

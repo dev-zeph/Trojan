@@ -55,6 +55,7 @@ rules:
       tokens with crypto.randomBytes(32) or crypto.randomUUID() and store them.
     metadata:
       trojan-title: Security token can be guessed (built from time or email)
+      trojan-severity: critical
       cwe:
         - "CWE-330: Use of Insufficiently Random Values"
         - "CWE-640: Weak Password Recovery Mechanism for Forgotten Password"

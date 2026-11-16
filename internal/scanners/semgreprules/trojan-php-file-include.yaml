@@ -8,6 +8,7 @@ rules:
       from another site. Only load files from a fixed list you control.
     metadata:
       trojan-title: File loaded from a name in the web request
+      trojan-severity: critical
       cwe:
         - "CWE-98: Improper Control of Filename for Include/Require Statement in PHP Program ('PHP Remote File Inclusion')"
       owasp:

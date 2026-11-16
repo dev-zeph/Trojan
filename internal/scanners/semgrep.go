@@ -155,7 +155,7 @@ func (s Semgrep) Run(projectPath string) ([]normalizer.Finding, error) {
 			ID:          fmt.Sprintf("semgrep-%d", i),
 			Scanner:     s.Name(),
 			Category:    s.Category(),
-			Severity:    normalizeSemgrepSeverity(r.Extra.Severity),
+			Severity:    semgrepFindingSeverity(r),
 			Title:       title,
 			RawMessage:  r.Extra.Message,
 			FilePath:    r.Path,
@@ -194,6 +194,12 @@ type semgrepResult struct {
 			OWASP stringOrList `json:"owasp"`
 			// TrojanTitle is the plain-English title on Trojan's own rules.
 			TrojanTitle string `json:"trojan-title"`
+			// TrojanSeverity lets Trojan's own rules mark a finding critical:
+			// Semgrep's own scale stops at ERROR, which maps to high.
+			TrojanSeverity string `json:"trojan-severity"`
+			// Impact and Likelihood are the registry's own risk ratings.
+			Impact     string `json:"impact"`
+			Likelihood string `json:"likelihood"`
 		} `json:"metadata"`
 	} `json:"extra"`
 }
@@ -247,6 +253,24 @@ func parseCWEIDs(raw []string) []string {
 		}
 	}
 	return ids
+}
+
+// semgrepFindingSeverity maps a Semgrep result to Trojan's scale. Semgrep has
+// no level above ERROR, so without this no code finding could ever be
+// critical and a dependency CVE would outrank "any user can become admin".
+// A result is critical when Trojan's rule says so, or when an ERROR rule is
+// rated HIGH impact and HIGH likelihood by its own registry metadata.
+func semgrepFindingSeverity(r semgrepResult) normalizer.Severity {
+	md := r.Extra.Metadata
+	if strings.EqualFold(md.TrojanSeverity, "critical") {
+		return normalizer.SeverityCritical
+	}
+	sev := normalizeSemgrepSeverity(r.Extra.Severity)
+	if sev == normalizer.SeverityHigh &&
+		strings.EqualFold(md.Impact, "HIGH") && strings.EqualFold(md.Likelihood, "HIGH") {
+		return normalizer.SeverityCritical
+	}
+	return sev
 }
 
 func normalizeSemgrepSeverity(s string) normalizer.Severity {

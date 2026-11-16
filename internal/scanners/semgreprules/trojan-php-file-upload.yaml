@@ -10,6 +10,7 @@ rules:
       the web server runs code from.
     metadata:
       trojan-title: Uploaded file saved under the visitor's file name
+      trojan-severity: critical
       cwe:
         - "CWE-434: Unrestricted Upload of File with Dangerous Type"
       owasp:

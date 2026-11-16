@@ -3,6 +3,8 @@ package scanners
 import (
 	"os/exec"
 	"testing"
+
+	"github.com/dev-zeph/trojan/internal/normalizer"
 )
 
 // TestTrojanSemgrepRules runs `semgrep --test` over Trojan's own rules and
@@ -36,6 +38,44 @@ func TestMergeGitleaksResults(t *testing.T) {
 	}
 	if got[1].Secret != "AKIA1" {
 		t.Errorf("history-only secret missing: %+v", got[1])
+	}
+}
+
+func TestSecretSeverity(t *testing.T) {
+	cases := []struct {
+		r    gitleaksResult
+		want normalizer.Severity
+	}{
+		{gitleaksResult{RuleID: "stripe-access-token", Secret: "sk_live_abc"}, normalizer.SeverityCritical},
+		{gitleaksResult{RuleID: "stripe-access-token", Secret: "sk_test_abc"}, normalizer.SeverityHigh},
+		{gitleaksResult{RuleID: "aws-access-token", Secret: "AKIAX"}, normalizer.SeverityCritical},
+		{gitleaksResult{RuleID: "generic-api-key", Secret: "abc123"}, normalizer.SeverityHigh},
+	}
+	for _, c := range cases {
+		if got := secretSeverity(c.r); got != c.want {
+			t.Errorf("secretSeverity(%s %s) = %s, want %s", c.r.RuleID, c.r.Secret, got, c.want)
+		}
+	}
+}
+
+func TestSemgrepFindingSeverity(t *testing.T) {
+	var trojanCrit, registryCrit, plainError semgrepResult
+	trojanCrit.Extra.Severity = "ERROR"
+	trojanCrit.Extra.Metadata.TrojanSeverity = "critical"
+	registryCrit.Extra.Severity = "ERROR"
+	registryCrit.Extra.Metadata.Impact = "HIGH"
+	registryCrit.Extra.Metadata.Likelihood = "HIGH"
+	plainError.Extra.Severity = "ERROR"
+	plainError.Extra.Metadata.Impact = "HIGH"
+	plainError.Extra.Metadata.Likelihood = "LOW"
+	if got := semgrepFindingSeverity(trojanCrit); got != normalizer.SeverityCritical {
+		t.Errorf("trojan-severity critical: got %s", got)
+	}
+	if got := semgrepFindingSeverity(registryCrit); got != normalizer.SeverityCritical {
+		t.Errorf("registry HIGH/HIGH ERROR: got %s", got)
+	}
+	if got := semgrepFindingSeverity(plainError); got != normalizer.SeverityHigh {
+		t.Errorf("registry HIGH/LOW ERROR: got %s", got)
 	}
 }
 

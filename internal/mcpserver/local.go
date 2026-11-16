@@ -347,6 +347,9 @@ func importDesktopCache() {
 // It runs in its own process (`trojan mcp scan-once`) so scanner output can't
 // interfere with the MCP connection.
 func ScanOnce(projectPath string) (*normalizer.ScanResult, error) {
+	if err := scanners.ValidateProjectDir(projectPath); err != nil {
+		return nil, err
+	}
 	if err := config.EnsureScanners(); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not install scanners: %s\n", err)
 	}

@@ -1,6 +1,7 @@
 package scanners
 
 import (
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -206,6 +207,23 @@ func RelevantScanners(all []Scanner, p ProjectType) []Scanner {
 		}
 	}
 	return relevant
+}
+
+// ValidateProjectDir reports an error when path is not an existing folder.
+// Without it, scanning a moved or mistyped folder ran every scanner against
+// nothing and reported "0 findings", which reads as a clean project.
+func ValidateProjectDir(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("folder not found: %s (was it moved or renamed?)", path)
+		}
+		return fmt.Errorf("cannot open %s: %w", path, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s is a file, not a project folder", path)
+	}
+	return nil
 }
 
 func exists(path string) bool {

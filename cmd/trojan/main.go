@@ -107,6 +107,10 @@ func scanCmd() *cobra.Command {
 			if len(args) > 0 {
 				path = args[0]
 			}
+			if err := scanners.ValidateProjectDir(path); err != nil {
+				color.Red("Error: %s\n", err)
+				os.Exit(2)
+			}
 
 			// ----------------------------------------------------------------
 			// --pre-commit mode: silent scan, exit 1 only on critical/high
@@ -2712,6 +2716,10 @@ Exits 1 if findings at or above --severity threshold are detected.`,
 			if len(args) > 0 {
 				path = args[0]
 			}
+			if err := scanners.ValidateProjectDir(path); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+				os.Exit(2)
+			}
 
 			// Auto-install missing scanners (quiet — errors go to stderr).
 			if err := config.EnsureScanners(); err != nil {
@@ -2732,10 +2740,19 @@ Exits 1 if findings at or above --severity threshold are detected.`,
 
 			// Run all scanners in parallel — no spinners, no UI.
 			findings, scanResults := scanners.RunAll(path, relevant, nil)
+			codeScanRan := false
 			for _, r := range scanResults {
 				if r.Err != nil {
 					fmt.Fprintf(os.Stderr, "trojan: warning: %s scanner did not run: %s\n", r.Scanner, r.Err)
+				} else if r.Scanner == "semgrep" || r.Scanner == "bearer" {
+					codeScanRan = true
 				}
+			}
+			// With every code scanner down, 0 findings means "not checked",
+			// not "clean": never let CI pass on that.
+			if !codeScanRan {
+				fmt.Fprintln(os.Stderr, "→ Failing: no code scanner ran, so nothing was checked. Run 'trojan doctor' to see why.")
+				os.Exit(2)
 			}
 			findings, reduceStats := normalizer.Reduce(findings)
 			if reduceStats.Any() {
@@ -2802,10 +2819,10 @@ Exits 1 if findings at or above --severity threshold are detected.`,
 
 			// Print result and exit with appropriate code.
 			if failing {
-				fmt.Fprintf(os.Stderr, "→ Failing: critical/high findings detected\n")
+				fmt.Fprintf(os.Stderr, "→ Failing: findings at or above %s severity\n", severityThreshold)
 				os.Exit(1)
 			}
-			fmt.Fprintf(os.Stderr, "→ Clean: no critical or high findings\n")
+			fmt.Fprintf(os.Stderr, "→ Passing: no findings at or above %s severity\n", severityThreshold)
 		},
 	}
 

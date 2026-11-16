@@ -11,6 +11,7 @@ rules:
       to act for that account.
     metadata:
       trojan-title: Request can choose whose data to load (IDOR)
+      trojan-severity: critical
       cwe:
         - "CWE-639: Authorization Bypass Through User-Controlled Key"
       owasp:
@@ -46,6 +47,7 @@ rules:
       safe and can be marked as a false alarm.
     metadata:
       trojan-title: Request body saved straight to the database (mass assignment)
+      trojan-severity: critical
       cwe:
         - "CWE-915: Improperly Controlled Modification of Dynamically-Determined Object Attributes"
       owasp:
@@ -108,6 +110,7 @@ rules:
       or on each route, instead of matching the path string.
     metadata:
       trojan-title: Admin check can be skipped with capital letters in the URL
+      trojan-severity: critical
       cwe:
         - "CWE-178: Improper Handling of Case Sensitivity"
         - "CWE-863: Incorrect Authorization"

@@ -95,7 +95,7 @@ func (g Gitleaks) Run(projectPath string) ([]normalizer.Finding, error) {
 			ID:          fmt.Sprintf("gitleaks-%d", i),
 			Scanner:     g.Name(),
 			Category:    g.Category(),
-			Severity:    normalizer.SeverityHigh, // secrets are always high severity
+			Severity:    secretSeverity(r),
 			Title:       fmt.Sprintf("Leaked %s", r.Description),
 			RawMessage:  msg,
 			FilePath:    r.File,
@@ -246,6 +246,39 @@ func mergeGitleaksResults(files, history []gitleaksResult) []gitleaksResult {
 		files = append(files, r)
 	}
 	return files
+}
+
+// criticalSecretRules are Gitleaks rules whose match is a working credential
+// for production infrastructure, source code or cloud accounts.
+var criticalSecretRules = map[string]bool{
+	"private-key":             true,
+	"aws-access-token":        true,
+	"gcp-service-account":     true,
+	"gcp-api-key":             true,
+	"github-pat":              true,
+	"github-fine-grained-pat": true,
+	"github-oauth":            true,
+	"github-app-token":        true,
+	"gitlab-pat":              true,
+	"azure-ad-client-secret":  true,
+	"openai-api-key":          true,
+	"anthropic-api-key":       true,
+	"supabase-service-role":   true,
+}
+
+// secretSeverity is critical for live production credentials (they can be
+// used the moment someone reads them) and high for everything else,
+// including test-mode keys such as Stripe sk_test_.
+func secretSeverity(r gitleaksResult) normalizer.Severity {
+	if criticalSecretRules[r.RuleID] {
+		return normalizer.SeverityCritical
+	}
+	for _, live := range []string{"sk_live_", "rk_live_", "whsec_live", "xoxb-", "xoxp-"} {
+		if strings.HasPrefix(r.Secret, live) {
+			return normalizer.SeverityCritical
+		}
+	}
+	return normalizer.SeverityHigh
 }
 
 func shortCommit(c string) string {
