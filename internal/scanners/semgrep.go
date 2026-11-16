@@ -15,8 +15,8 @@ import (
 )
 
 // trojanRulesFS holds Trojan's own Semgrep rules, shipped inside the binary.
-// Each rule file has a sibling test file (same name, .php) in semgreprules/
-// for `semgrep --test`; only the .yaml rules are embedded.
+// Each rule file has a sibling test file (same name, .php or .js) in
+// semgreprules/ for `semgrep --test`; only the .yaml rules are embedded.
 //
 //go:embed semgreprules/*.yaml
 var trojanRulesFS embed.FS
@@ -34,8 +34,7 @@ var phpRulePacks = []string{"p/php", "p/owasp-top-ten"}
 // Semgrep implements the Scanner interface for static analysis.
 //
 // PHP is set by RelevantScanners when the project contains PHP. It adds the
-// PHP rule packs and Trojan's own PHP rules; every other project runs with
-// exactly the same arguments as before.
+// PHP registry packs. Trojan's own rules (semgreprules/) run on every project.
 type Semgrep struct {
 	PHP bool
 }
@@ -108,12 +107,16 @@ func (s Semgrep) Run(projectPath string) ([]normalizer.Finding, error) {
 	var extra []string
 	if s.PHP {
 		extra = append(extra, phpRulePacks...)
-		// Trojan's own rules are best effort: if they can't be written, the
-		// scan still runs with the registry rules.
-		if dir, err := writeTrojanRules(); err == nil {
-			defer os.RemoveAll(dir)
-			extra = append(extra, dir)
-		}
+	}
+	// Trojan's own rules run on every project: each rule is scoped to its
+	// languages, so the PHP rules cost nothing on a JS app and vice versa.
+	// They cover bugs the registry has no rule for (secret fallbacks, mass
+	// assignment, IDOR overrides, case-sensitive path checks, guessable
+	// tokens, fast password hashes). Best effort: if they can't be written,
+	// the scan still runs with the registry rules.
+	if dir, err := writeTrojanRules(); err == nil {
+		defer os.RemoveAll(dir)
+		extra = append(extra, dir)
 	}
 	args := semgrepArgs(projectPath, extra)
 
