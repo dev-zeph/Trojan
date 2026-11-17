@@ -3,12 +3,15 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -454,6 +457,42 @@ var runScanGate = func() scangate.Result {
 	return scangate.Check(token, ai.FetchLicense)
 }
 
+// scanFailureMessage turns a failed scan-once child into something a user can
+// act on. A SIGKILL (ctx deadline hit, or the OS out-of-memory killer) arrives
+// as the opaque "signal: killed"; name the likely cause and the ways forward,
+// and surface an earlier saved scan if one exists rather than implying there
+// are no results at all.
+func scanFailureMessage(runErr error, scanCtx context.Context, projectPath string, out []byte) string {
+	killed := false
+	var exitErr *exec.ExitError
+	if errors.As(runErr, &exitErr) {
+		if ws, ok := exitErr.Sys().(syscall.WaitStatus); ok && ws.Signaled() && ws.Signal() == syscall.SIGKILL {
+			killed = true
+		}
+	}
+
+	var b strings.Builder
+	if killed {
+		if scanCtx.Err() == context.DeadlineExceeded {
+			b.WriteString("Trojan: the scan ran past its 15-minute limit and was stopped. This usually means a very large project; scan a subfolder, or run `trojan ci` in a terminal where there is no time limit.")
+		} else {
+			b.WriteString("Trojan: the scan was killed before it finished, most likely low memory on this machine (the system out-of-memory killer). Close some other apps and try again, or run `trojan ci` in a terminal.")
+		}
+	} else {
+		b.WriteString("Trojan: the scan did not finish: " + runErr.Error())
+		if trimmed := strings.TrimSpace(string(out)); trimmed != "" {
+			b.WriteString("\n" + trimmed)
+		}
+	}
+
+	// A scan from before this attempt is better than nothing.
+	if scan, err := loadLatestScan(projectPath); err == nil {
+		b.WriteString(fmt.Sprintf("\n\nShowing the last saved scan instead — %d finding(s), %d open.",
+			len(scan.Findings), countOpen(scan.Findings)))
+	}
+	return b.String()
+}
+
 func handleRunScan(project projectFunc) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		if g := runScanGate(); !g.Allowed {
@@ -474,10 +513,20 @@ func handleRunScan(project projectFunc) server.ToolHandlerFunc {
 		if err != nil {
 			return mcp.NewToolResultError("could not locate the Trojan binary: " + err.Error()), nil
 		}
-		cmd := exec.CommandContext(ctx, exe, "mcp", "scan-once", projectPath)
+		// A full scan (all scanners + code graph + triage) can take 30s or
+		// more. The inbound MCP request often carries a short per-call
+		// deadline from the client; binding the child to it makes a legitimate
+		// scan get SIGKILLed partway through, which Go reports as the opaque
+		// "signal: killed". Give the scan its own generous deadline instead,
+		// keeping request values (tracing) but dropping the inherited one. The
+		// scan writes results to disk, so even a client that gave up waiting
+		// gets them on the next call.
+		scanCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Minute)
+		defer cancel()
+		cmd := exec.CommandContext(scanCtx, exe, "mcp", "scan-once", projectPath)
 		cmd.Dir = projectPath
 		if out, err := cmd.CombinedOutput(); err != nil {
-			return mcp.NewToolResultError("scan failed: " + err.Error() + "\n" + string(out)), nil
+			return mcp.NewToolResultError(scanFailureMessage(err, scanCtx, projectPath, out)), nil
 		}
 
 		scan, err := loadLatestScan(projectPath)
