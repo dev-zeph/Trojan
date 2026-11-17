@@ -674,7 +674,9 @@ func handleGetFixableFindings(project projectFunc) server.ToolHandlerFunc {
 			}
 		}
 
-		var results []findingContext
+		// Collect the fixable findings: open, at or above min_severity, and not a
+		// likely false alarm (fixing a false positive wastes the agent's turn).
+		var fixable []normalizer.Finding
 		for _, f := range scan.Findings {
 			if f.Status != normalizer.StatusOpen {
 				continue
@@ -682,14 +684,65 @@ func handleGetFixableFindings(project projectFunc) server.ToolHandlerFunc {
 			if severityRank[f.Severity] < minRank {
 				continue
 			}
-			results = append(results, buildFindingContext(f, projectPath))
+			if f.HiddenAsFalseAlarm() {
+				continue
+			}
+			fixable = append(fixable, f)
+		}
+
+		// Order so the agent fixes the most actionable first: confirmed before
+		// needs_manual before un-triaged, then by severity, stably.
+		sort.SliceStable(fixable, func(i, j int) bool {
+			if a, b := verdictPriority(fixable[i].Verdict), verdictPriority(fixable[j].Verdict); a != b {
+				return a < b
+			}
+			return severityRank[fixable[i].Severity] > severityRank[fixable[j].Severity]
+		})
+
+		// Returning all findings at full detail overflows the MCP response limit
+		// (the client then has to fall back to a file), so return a prioritised,
+		// capped subset: at most fixableMaxCount entries and roughly
+		// fixableMaxBytes of JSON, whichever comes first, with a note of how many
+		// more remain. Each entry keeps all its fix-relevant fields.
+		const (
+			fixableMaxCount = 15
+			fixableMaxBytes = 40000
+		)
+		results := make([]findingContext, 0, min(len(fixable), fixableMaxCount))
+		size := 0
+		for _, f := range fixable {
+			if len(results) >= fixableMaxCount {
+				break
+			}
+			fc := buildFindingContext(f, projectPath)
+			b, err := json.Marshal(fc)
+			if err != nil {
+				continue
+			}
+			if len(results) > 0 && size+len(b) > fixableMaxBytes {
+				break
+			}
+			size += len(b)
+			results = append(results, fc)
+		}
+
+		omitted := len(fixable) - len(results)
+		note := ""
+		if omitted > 0 {
+			note = fmt.Sprintf("Showing the %d highest-priority fixable finding(s); %d more are not shown. Fix these, mark them, then call get_fixable_findings again — or raise min_severity to narrow the list. Use get_finding(id) for a single finding's full detail.", len(results), omitted)
 		}
 
 		summary := struct {
 			Total    int              `json:"total"`
+			Returned int              `json:"returned"`
+			Omitted  int              `json:"omitted"`
+			Note     string           `json:"note,omitempty"`
 			Findings []findingContext `json:"findings"`
 		}{
-			Total:    len(results),
+			Total:    len(fixable),
+			Returned: len(results),
+			Omitted:  omitted,
+			Note:     note,
 			Findings: results,
 		}
 
@@ -698,6 +751,20 @@ func handleGetFixableFindings(project projectFunc) server.ToolHandlerFunc {
 			return mcp.NewToolResultError("failed to serialize findings"), nil
 		}
 		return mcp.NewToolResultText(string(out)), nil
+	}
+}
+
+// verdictPriority ranks findings for get_fixable_findings: a human/AI-confirmed
+// finding is the most actionable, then one that needs manual review, then one
+// with no verdict yet. likely_fp is filtered out before this is used.
+func verdictPriority(verdict string) int {
+	switch verdict {
+	case "confirmed":
+		return 0
+	case "needs_manual":
+		return 1
+	default:
+		return 2
 	}
 }
 
