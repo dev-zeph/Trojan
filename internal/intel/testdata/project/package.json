@@ -1,0 +1,1 @@
+{ "name": "mono", "private": true, "dependencies": { "next": "14.1.0" } }

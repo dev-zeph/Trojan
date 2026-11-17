@@ -40,6 +40,7 @@ import (
 	"github.com/dev-zeph/trojan/internal/orgcontext"
 	"github.com/dev-zeph/trojan/internal/rag"
 	"github.com/dev-zeph/trojan/internal/routes"
+	"github.com/dev-zeph/trojan/internal/scangate"
 	"github.com/dev-zeph/trojan/internal/scanners"
 	"github.com/dev-zeph/trojan/internal/server"
 	"github.com/dev-zeph/trojan/internal/ui"
@@ -106,6 +107,10 @@ func scanCmd() *cobra.Command {
 			if len(args) > 0 {
 				path = args[0]
 			}
+			if err := scanners.ValidateProjectDir(path); err != nil {
+				color.Red("Error: %s\n", err)
+				os.Exit(2)
+			}
 
 			// ----------------------------------------------------------------
 			// --pre-commit mode: silent scan, exit 1 only on critical/high
@@ -166,6 +171,11 @@ func scanCmd() *cobra.Command {
 
 			ui.PrintBanner(version)
 
+			// Code scans need a signed-in account with a few tokens (the AI
+			// check spends them). --pre-commit above is exempt: it is scanners
+			// only and must never block a commit over an account.
+			requireScanAccess()
+
 			go config.NotifyIfOutdated(version)
 
 			if err := config.EnsureScanners(); err != nil {
@@ -200,6 +210,10 @@ func scanCmd() *cobra.Command {
 			runScan := func() (*normalizer.ScanResult, []normalizer.Finding) {
 				ui.PrintScanHeader(path)
 
+				// Desktop-only step progress (no-op outside --desktop).
+				stepProg := newCodeScanProgress(desktop, len(relevant), signedInForProgress())
+				stepProg.Preparing()
+
 				// Build ordered name list and start the progress display.
 				names := make([]string, len(relevant))
 				for i, s := range relevant {
@@ -209,6 +223,7 @@ func scanCmd() *cobra.Command {
 				progress.Start()
 
 				findings, scanResults := scanners.RunAll(path, relevant, func(name string, done bool, count int, err error) {
+					stepProg.ScannerEvent(name, done, count, err)
 					if done {
 						progress.Update(name, count, err)
 					}
@@ -249,13 +264,6 @@ func scanCmd() *cobra.Command {
 				normalizer.EnrichCompliance(findings)
 				enrichWithGraph(path, findings)
 
-				// Severity counts for results box.
-				counts := map[string]int{}
-				for _, f := range findings {
-					counts[string(f.Severity)]++
-				}
-				ui.PrintResultsBox(counts)
-
 				// Trojan Tokens: local scanning is free for everyone. Being
 				// signed in is the only precondition the client enforces for
 				// AI synthesis -- whether the balance can cover it is the
@@ -271,17 +279,28 @@ func scanCmd() *cobra.Command {
 				}
 				signedIn := accessToken != ""
 
+				triageNote := ""
 				if signedIn {
-					// Enrich findings with project context before synthesis.
-					// Framework and ProjectType are project-level — compute once.
+					// Enrich findings with project context before triage and
+					// synthesis. Framework and ProjectType are project-level.
 					framework := ai.DetectFramework(path)
 					projectType := ai.DetectProjectTypeName(path)
 					for i := range findings {
 						findings[i].Language = ai.DetectLanguage(findings[i].FilePath)
-						findings[i].SurroundingCode = ai.ExtractEnclosingContext(findings[i].FilePath, findings[i].LineNumber)
+						findings[i].SurroundingCode = ai.ExtractEnclosingContext(ai.ResolveFindingFile(path, findings[i].FilePath), findings[i].LineNumber)
 						findings[i].Framework = framework
 						findings[i].ProjectType = projectType
 					}
+					// AI false-alarm check on every finding, cached by code
+					// hash so a rescan of unchanged code is free (code_triage.go).
+					stepProg.DoubleCheck()
+					triageNote = triageCodeFindings(path, findings, accessToken)
+				}
+
+				// Severity counts for the results box, without hidden false alarms.
+				ui.PrintResultsBox(visibleSeverityCounts(findings))
+
+				if signedIn {
 
 					// Identify which findings are new since the last scan.
 					// On the initial scan prevFindingIDs is empty so all
@@ -290,7 +309,8 @@ func scanCmd() *cobra.Command {
 					// on disk at ~/.trojan/cache/ and skipped automatically.
 					var toSynthesize []int
 					for i, f := range findings {
-						if !prevFindingIDs[f.ID] {
+						// Hidden likely false alarms aren't worth explaining.
+						if !prevFindingIDs[f.ID] && !f.HiddenAsFalseAlarm() {
 							toSynthesize = append(toSynthesize, i)
 						}
 					}
@@ -314,6 +334,7 @@ func scanCmd() *cobra.Command {
 					}
 
 					// Signed in: persist findings to disk.
+					stepProg.BuildingReport()
 					scanResult, err := normalizer.SaveScanResult(path, findings)
 					if err != nil {
 						color.Yellow("Warning: could not save scan results: %s\n", err)
@@ -322,12 +343,14 @@ func scanCmd() *cobra.Command {
 						r.Privacy = scanners.RunPrivacyScan(path)
 						r.ScannerErrors = scannerErrs
 						r.CoverageNote = coverageNote
+						r.TriageNote = triageNote
 						return r, findings
 					}
 					scanResult.Packages = pkgs
 					scanResult.Privacy = scanners.RunPrivacyScan(path)
 					scanResult.ScannerErrors = scannerErrs
 					scanResult.CoverageNote = coverageNote
+					scanResult.TriageNote = triageNote
 					return scanResult, findings
 				}
 
@@ -337,6 +360,7 @@ func scanCmd() *cobra.Command {
 				// memory only -- nothing written to .trojan/scans/. This is
 				// the correct free experience: a clean scan, no upsell, no
 				// error noise.
+				stepProg.BuildingReport()
 				for i := range findings {
 					findings[i].Simply = ""
 					findings[i].Actions = nil
@@ -615,6 +639,10 @@ func dastCmd() *cobra.Command {
 			// orphaning it against the target.
 			installDastCancelHandler()
 
+			// Desktop-only step progress (no-op outside --desktop).
+			dastProg := newDastProgress(desktop)
+			dastStep(dastProg, 1)
+
 			// ── Step 3: Reachability check ─────────────────────────────────────────
 			httpClient := &http.Client{Timeout: 5 * time.Second}
 			if _, err := httpClient.Get(targetURL); err != nil { //nolint:noctx
@@ -673,6 +701,7 @@ func dastCmd() *cobra.Command {
 			}
 
 			// ── Step 6: Crawl ──────────────────────────────────────────────────────
+			dastStep(dastProg, 2)
 			fmt.Printf("  → Crawling application (depth %d)...\n", crawlDepth)
 			crawlResult := dast.Crawl(targetURL, crawlDepth, crawlTimeout)
 
@@ -686,6 +715,7 @@ func dastCmd() *cobra.Command {
 			fmt.Printf("  → Discovered %d endpoints and %d forms\n\n", endpointCount, formCount)
 
 			// ── Step 7: AI template generation ────────────────────────────────────
+			dastStep(dastProg, 3)
 			fmt.Printf("  → Generating AI attack templates...\n\n")
 
 			tmpDir, err := os.MkdirTemp("", "trojan-dast-*")
@@ -720,6 +750,7 @@ func dastCmd() *cobra.Command {
 			}
 
 			// ── Step 8: Nuclei scan ────────────────────────────────────────────────
+			dastStep(dastProg, 4)
 			customCount := len(nucleiScanner.ExtraTemplateDirs)
 			if customCount > 0 && templateResp != nil {
 				fmt.Printf("  → Running Nuclei (6,618 standard + %d custom templates)...\n", len(templateResp.Templates))
@@ -736,6 +767,7 @@ func dastCmd() *cobra.Command {
 
 			fmt.Println()
 
+			dastStep(dastProg, 5)
 			// ── Step 8.5: false-positive triage ────────────────────────────────────
 			// Adversarially verify each finding against its own evidence so real
 			// issues are separated from scanner noise (agentic DAST Phase 1).
@@ -798,6 +830,7 @@ func dastCmd() *cobra.Command {
 				fmt.Printf("\r      %d / %d complete\n\n", total, total)
 			}
 
+			dastStep(dastProg, 6)
 			// ── Step 10: Results ───────────────────────────────────────────────────
 			counts := map[normalizer.Severity]int{}
 			for _, f := range findings {
@@ -1076,6 +1109,8 @@ func installDastCancelHandler() {
 func runAgenticDast(p agenticParams) {
 	installDastCancelHandler()
 	fmt.Printf("\n  → Starting Trojan agentic pen-test\n\n")
+	penProg := newPenTestProgress(p.desktop)
+	penProg.Phase("reach", "Checking your site is reachable")
 
 	// Reachability.
 	httpClient := &http.Client{Timeout: 5 * time.Second}
@@ -1086,6 +1121,7 @@ func runAgenticDast(p agenticParams) {
 	}
 
 	// Crawl.
+	penProg.Phase("crawl", "Exploring the pages of your site")
 	fmt.Printf("  → Crawling application (depth %d)...\n", p.crawlDepth)
 	crawlResult := dast.Crawl(p.targetURL, p.crawlDepth, p.crawlTimeout)
 	fmt.Printf("  → Discovered %d endpoint(s)\n\n", len(crawlResult.Endpoints))
@@ -1100,6 +1136,7 @@ func runAgenticDast(p agenticParams) {
 	if err := config.EnsureDastScanners(); err != nil {
 		color.Yellow("Warning: could not install DAST scanners: %s\n", err)
 	}
+	penProg.Phase("baseline", "Running quick checks for known weaknesses")
 	fmt.Printf("  → Running Nuclei baseline...\n")
 	baseline := scanners.RunDast(p.targetURL, []scanners.DastScanner{scanners.Nuclei{}}, func(_ string, _ bool, _ int, _ error) {})
 	fmt.Printf("  → Baseline: %d finding(s)\n\n", len(baseline))
@@ -1220,6 +1257,9 @@ func runAgenticDast(p agenticParams) {
 				evt.Approval, evt.Approved = p.Approval, p.Approved
 			}
 			srv.BroadcastAgentEvent(evt)
+			if e.Type == agent.EventToolUse && e.Tool == "http_probe" {
+				penProg.Probe()
+			}
 			printAgentEvent(e)
 		},
 	})
@@ -1669,7 +1709,7 @@ func synthesizeConcurrently(findings []normalizer.Finding, idxs []int, accessTok
 // line per doomed finding.
 func printSynthesisSummary(res synthesisResult, total int) {
 	if res.outOfTokens {
-		fmt.Printf("\n  ⚠ Out of Trojan Tokens, balance: %d -- %d finding(s) left unexplained. Add tokens to see Simply/Actions for the rest.\n", res.balance, res.unexplained)
+		fmt.Printf("\n  ⚠ %s Add tokens to see the rest.\n", scangate.OutOfTokensNote(res.unexplained))
 		return
 	}
 	fmt.Printf("\r  → %d / %d complete\n", total, total)
@@ -2517,6 +2557,7 @@ func mcpCmd() *cobra.Command {
 		Hidden: true,
 		Args:   cobra.ExactArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
+			mcpserver.ScanTriage = scanOnceTriage
 			if _, err := mcpserver.ScanOnce(args[0]); err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				os.Exit(1)
@@ -2675,6 +2716,10 @@ Exits 1 if findings at or above --severity threshold are detected.`,
 			if len(args) > 0 {
 				path = args[0]
 			}
+			if err := scanners.ValidateProjectDir(path); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %s\n", err)
+				os.Exit(2)
+			}
 
 			// Auto-install missing scanners (quiet — errors go to stderr).
 			if err := config.EnsureScanners(); err != nil {
@@ -2695,10 +2740,19 @@ Exits 1 if findings at or above --severity threshold are detected.`,
 
 			// Run all scanners in parallel — no spinners, no UI.
 			findings, scanResults := scanners.RunAll(path, relevant, nil)
+			codeScanRan := false
 			for _, r := range scanResults {
 				if r.Err != nil {
 					fmt.Fprintf(os.Stderr, "trojan: warning: %s scanner did not run: %s\n", r.Scanner, r.Err)
+				} else if r.Scanner == "semgrep" || r.Scanner == "bearer" {
+					codeScanRan = true
 				}
+			}
+			// With every code scanner down, 0 findings means "not checked",
+			// not "clean": never let CI pass on that.
+			if !codeScanRan {
+				fmt.Fprintln(os.Stderr, "→ Failing: no code scanner ran, so nothing was checked. Run 'trojan doctor' to see why.")
+				os.Exit(2)
 			}
 			findings, reduceStats := normalizer.Reduce(findings)
 			if reduceStats.Any() {
@@ -2765,10 +2819,10 @@ Exits 1 if findings at or above --severity threshold are detected.`,
 
 			// Print result and exit with appropriate code.
 			if failing {
-				fmt.Fprintf(os.Stderr, "→ Failing: critical/high findings detected\n")
+				fmt.Fprintf(os.Stderr, "→ Failing: findings at or above %s severity\n", severityThreshold)
 				os.Exit(1)
 			}
-			fmt.Fprintf(os.Stderr, "→ Clean: no critical or high findings\n")
+			fmt.Fprintf(os.Stderr, "→ Passing: no findings at or above %s severity\n", severityThreshold)
 		},
 	}
 

@@ -15,8 +15,8 @@ import (
 )
 
 // trojanRulesFS holds Trojan's own Semgrep rules, shipped inside the binary.
-// Each rule file has a sibling test file (same name, .php) in semgreprules/
-// for `semgrep --test`; only the .yaml rules are embedded.
+// Each rule file has a sibling test file (same name, .php or .js) in
+// semgreprules/ for `semgrep --test`; only the .yaml rules are embedded.
 //
 //go:embed semgreprules/*.yaml
 var trojanRulesFS embed.FS
@@ -34,8 +34,7 @@ var phpRulePacks = []string{"p/php", "p/owasp-top-ten"}
 // Semgrep implements the Scanner interface for static analysis.
 //
 // PHP is set by RelevantScanners when the project contains PHP. It adds the
-// PHP rule packs and Trojan's own PHP rules; every other project runs with
-// exactly the same arguments as before.
+// PHP registry packs. Trojan's own rules (semgreprules/) run on every project.
 type Semgrep struct {
 	PHP bool
 }
@@ -108,12 +107,16 @@ func (s Semgrep) Run(projectPath string) ([]normalizer.Finding, error) {
 	var extra []string
 	if s.PHP {
 		extra = append(extra, phpRulePacks...)
-		// Trojan's own rules are best effort: if they can't be written, the
-		// scan still runs with the registry rules.
-		if dir, err := writeTrojanRules(); err == nil {
-			defer os.RemoveAll(dir)
-			extra = append(extra, dir)
-		}
+	}
+	// Trojan's own rules run on every project: each rule is scoped to its
+	// languages, so the PHP rules cost nothing on a JS app and vice versa.
+	// They cover bugs the registry has no rule for (secret fallbacks, mass
+	// assignment, IDOR overrides, case-sensitive path checks, guessable
+	// tokens, fast password hashes). Best effort: if they can't be written,
+	// the scan still runs with the registry rules.
+	if dir, err := writeTrojanRules(); err == nil {
+		defer os.RemoveAll(dir)
+		extra = append(extra, dir)
 	}
 	args := semgrepArgs(projectPath, extra)
 
@@ -152,7 +155,7 @@ func (s Semgrep) Run(projectPath string) ([]normalizer.Finding, error) {
 			ID:          fmt.Sprintf("semgrep-%d", i),
 			Scanner:     s.Name(),
 			Category:    s.Category(),
-			Severity:    normalizeSemgrepSeverity(r.Extra.Severity),
+			Severity:    semgrepFindingSeverity(r),
 			Title:       title,
 			RawMessage:  r.Extra.Message,
 			FilePath:    r.Path,
@@ -191,6 +194,12 @@ type semgrepResult struct {
 			OWASP stringOrList `json:"owasp"`
 			// TrojanTitle is the plain-English title on Trojan's own rules.
 			TrojanTitle string `json:"trojan-title"`
+			// TrojanSeverity lets Trojan's own rules mark a finding critical:
+			// Semgrep's own scale stops at ERROR, which maps to high.
+			TrojanSeverity string `json:"trojan-severity"`
+			// Impact and Likelihood are the registry's own risk ratings.
+			Impact     string `json:"impact"`
+			Likelihood string `json:"likelihood"`
 		} `json:"metadata"`
 	} `json:"extra"`
 }
@@ -244,6 +253,24 @@ func parseCWEIDs(raw []string) []string {
 		}
 	}
 	return ids
+}
+
+// semgrepFindingSeverity maps a Semgrep result to Trojan's scale. Semgrep has
+// no level above ERROR, so without this no code finding could ever be
+// critical and a dependency CVE would outrank "any user can become admin".
+// A result is critical when Trojan's rule says so, or when an ERROR rule is
+// rated HIGH impact and HIGH likelihood by its own registry metadata.
+func semgrepFindingSeverity(r semgrepResult) normalizer.Severity {
+	md := r.Extra.Metadata
+	if strings.EqualFold(md.TrojanSeverity, "critical") {
+		return normalizer.SeverityCritical
+	}
+	sev := normalizeSemgrepSeverity(r.Extra.Severity)
+	if sev == normalizer.SeverityHigh &&
+		strings.EqualFold(md.Impact, "HIGH") && strings.EqualFold(md.Likelihood, "HIGH") {
+		return normalizer.SeverityCritical
+	}
+	return sev
 }
 
 func normalizeSemgrepSeverity(s string) normalizer.Severity {

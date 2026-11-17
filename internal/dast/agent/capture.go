@@ -36,17 +36,27 @@ var tokenBodyFields = []string{
 }
 
 // autoCaptureFromResponse inspects a probe response for a session the agent can
-// reuse and registers it as a named identity. It looks at Set-Cookie (session/auth
+// reuse and registers it as a named identity. It looks at cookies (session/auth
 // cookies) first, then a bearer token in a JSON body. Returns the new identity's
 // name and a short source label, or "" if nothing capturable was found or it was a
 // duplicate. No secret ever appears in the returned label.
-func (t *Toolbox) autoCaptureFromResponse(method, url string, header http.Header, body string) (string, string) {
+//
+// jarCookies are the cookies the probe's per-request jar accumulated across the
+// whole redirect chain; they are preferred over the final response's headers
+// because a login often sets its session cookie on a 302 that the last hop no
+// longer carries. header is still consulted as a fallback for responses handled
+// without the jar (e.g. tests).
+func (t *Toolbox) autoCaptureFromResponse(method, url string, header http.Header, jarCookies []*http.Cookie, body string) (string, string) {
 	where := strings.ToUpper(strings.TrimSpace(method)) + " " + pathOf(url)
 
-	// 1) Set-Cookie: collect every cookie the response sets, and register them as
-	// one Cookie header when at least one looks like an auth session. A real
-	// session often spans more than one cookie, so we replay them together.
-	if cookies := (&http.Response{Header: header}).Cookies(); len(cookies) > 0 {
+	// 1) Cookies: collect every cookie the exchange set, and register them as one
+	// Cookie header when at least one looks like an auth session. A real session
+	// often spans more than one cookie, so we replay them together.
+	cookies := jarCookies
+	if len(cookies) == 0 {
+		cookies = (&http.Response{Header: header}).Cookies()
+	}
+	if len(cookies) > 0 {
 		var pairs []string
 		authy := false
 		for _, c := range cookies {

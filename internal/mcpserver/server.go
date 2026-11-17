@@ -14,7 +14,9 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 
 	"github.com/dev-zeph/trojan/internal/ai"
+	"github.com/dev-zeph/trojan/internal/config"
 	"github.com/dev-zeph/trojan/internal/normalizer"
+	"github.com/dev-zeph/trojan/internal/scangate"
 )
 
 // Serve starts the Trojan MCP server over stdio for the given project path.
@@ -40,6 +42,7 @@ const localInstructions = `Trojan is the user's security scanner. It holds findi
 
 - For code tools, always pass project_path: the absolute path of the project folder you are working in.
 - Many users aren't security experts. Explain findings in plain language: what could happen and to whom, before how to fix it.
+- For dependencies, call check_intel: it matches exact installed versions to Trojan's breach-aware intel (any signed-in account). Matches are proposals ("matched, unproven"), never say the app is vulnerable until prove_intel_match confirms it. Offer prove_intel_match after check_intel; its hosted test spends credits and needs the owner's explicit yes (owner_confirmed). Credentials never go in chat.
 - After fixing a finding, call verify_fix with its id to prove it is gone instead of just marking it fixed. verify_fix handles both kinds: for a code finding it re-runs the scanner; for a website / pen-test finding it replays the request that proved it (seconds, no credits) and marks it fixed only if the problem is really gone.
 - get_all_findings shows code and website findings in one list, each with a source and an id. To re-check several website findings at once (or a whole test) after a fix, use retest_website_findings instead of rerunning start_website_test.
 - start_website_test and generate_report spend the user's Trojan credits; say so when you use them. Never set owner_confirmed without the user's explicit yes.
@@ -138,6 +141,14 @@ func newServer(project projectFunc, perRequest bool, opts ...server.ServerOption
 		handleUpdateStatus(project, normalizer.StatusSuppressed),
 	)
 	s.AddTool(
+		tool("mark_real",
+			mcp.WithDescription("Mark a code finding as a real issue when Trojan's AI check called it a likely false alarm (verdict likely_fp). Confirm with the user first. "+
+				"Trojan remembers the decision, so the finding shows up again in the report and stays shown after later scans."),
+			idArg,
+		),
+		handleMarkReal(project),
+	)
+	s.AddTool(
 		tool("run_scan",
 			mcp.WithDescription("Run a fresh Trojan scan of the whole project (takes a minute or more). Use after larger changes, or for a project Trojan hasn't scanned yet."),
 		),
@@ -159,9 +170,29 @@ func newServer(project projectFunc, perRequest bool, opts ...server.ServerOption
 	)
 	s.AddTool(
 		tool("get_dependency_risks",
-			mcp.WithDescription("Packages with known vulnerabilities, their severity, and the version that fixes each. Use to upgrade dependencies."),
+			mcp.WithDescription("Packages with known vulnerabilities (Trivy's static CVE list), their severity, and the version that fixes each. Use to upgrade dependencies. For Trojan's curated, breach-aware intel matched to exact installed versions, with verify-and-fix, use check_intel."),
 		),
 		handleDependencyRisks(project),
+	)
+	s.AddTool(
+		tool("check_intel",
+			mcp.WithDescription("Match the project's exact installed dependency versions (from its lockfiles) against Trojan's curated, breach-aware advisory intel, including packages published by attackers. Needs a signed-in Trojan account. "+
+				"A match is a proposal, never a verdict: it is reported as \"matched, unproven\". Do not tell the user their app is vulnerable; offer to check whether it is actually affected with prove_intel_match. "+
+				"Returns each match with a match id, the fix version, packages scanned, lockfiles and how fresh the intel is, and saves match history in .trojan/intel/matches.json."),
+		),
+		handleCheckIntel(project),
+	)
+	s.AddTool(
+		tool("prove_intel_match",
+			mcp.WithDescription("Move a check_intel match forward. Always starts with a free version check: if the affected version is no longer installed the match is fixed; a malicious release is confirmed; a vulnerability with no playbook is confirmed by version only (whether the code is affected is not tested). "+
+				"Confirmed matches become findings (get_findings, verify_fix). "+
+				"If the advisory has a Trojan playbook AND you pass target_url, it starts a hosted verification test of that live site: that spends the user's Trojan credits, so without owner_confirmed=true it only returns the confirmation request and starts nothing. "+
+				"Set owner_confirmed only after the user explicitly says they own the site and OKs the credit spend. Call it again on a match in the proving state to read the result."),
+			mcp.WithString("match_id", mcp.Required(), mcp.Description("The match id from check_intel.")),
+			mcp.WithString("target_url", mcp.Description("Optional: the live site to verify against (only used when a playbook exists), e.g. https://myapp.com or http://localhost:3000.")),
+			mcp.WithBoolean("owner_confirmed", mcp.Description("Set only after the user has explicitly confirmed they own or may test this site and agreed to spend Trojan credits.")),
+		),
+		handleProveIntelMatch(project),
 	)
 
 	// ── Project context ──
@@ -307,11 +338,16 @@ func handleGetFindings(project projectFunc) server.ToolHandlerFunc {
 			Location string `json:"location,omitempty"`
 			Status   string `json:"status"`
 			Verdict  string `json:"verdict,omitempty"`
-			Exposure string `json:"exposure,omitempty"`
-			priority int
+			// VerdictReason is the AI check's (or the user's) reason. Likely
+			// false alarms are hidden in the report but listed here, so an AI
+			// tool can still see them and why.
+			VerdictReason string `json:"verdict_reason,omitempty"`
+			Exposure      string `json:"exposure,omitempty"`
+			priority      int
 		}
 		rows := []row{}
 		hiddenFP := 0
+		likelyFalseAlarms := 0
 		for _, f := range scan.Findings {
 			if (!all && f.Status != normalizer.StatusOpen) || severityRank[f.Severity] < minRank {
 				continue
@@ -327,7 +363,11 @@ func handleGetFindings(project projectFunc) server.ToolHandlerFunc {
 			if f.LineNumber > 0 {
 				loc = fmt.Sprintf("%s:%d", f.FilePath, f.LineNumber)
 			}
-			r := row{ID: f.ID, Source: "code", Severity: string(f.Severity), Title: f.Title, Location: loc, Status: string(f.Status), Verdict: f.Verdict}
+			if f.HiddenAsFalseAlarm() {
+				likelyFalseAlarms++
+			}
+			r := row{ID: f.ID, Source: "code", Severity: string(f.Severity), Title: f.Title, Location: loc, Status: string(f.Status),
+				Verdict: f.Verdict, VerdictReason: f.VerdictReason}
 			if f.Reach != nil {
 				r.Exposure, r.priority = exposureSummary(f.Reach), f.Reach.Priority
 			}
@@ -349,7 +389,9 @@ func handleGetFindings(project projectFunc) server.ToolHandlerFunc {
 			"total":                  len(scan.Findings),
 			"shown":                  len(rows),
 			"hidden_false_positives": hiddenFP,
-			"findings":               rows,
+			// Listed below with verdict "likely_fp"; the report hides them.
+			"likely_false_alarms": likelyFalseAlarms,
+			"findings":            rows,
 		}, "", "  ")
 		if err != nil {
 			return mcp.NewToolResultError("failed to serialize findings"), nil
@@ -402,8 +444,25 @@ func handleUpdateStatus(project projectFunc, status normalizer.Status) server.To
 	}
 }
 
+// runScanGate is the same sign-in and balance gate the desktop app and
+// `trojan scan` use. A var so tests can stand in for the account.
+var runScanGate = func() scangate.Result {
+	token := ""
+	if cfg, err := config.LoadConfig(); err == nil {
+		token = cfg.AccessToken
+	}
+	return scangate.Check(token, ai.FetchLicense)
+}
+
 func handleRunScan(project projectFunc) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if g := runScanGate(); !g.Allowed {
+			msg := g.Message
+			if g.Reason == scangate.ReasonSignedOut {
+				msg += " Open the Trojan desktop app and sign in, then try again."
+			}
+			return mcp.NewToolResultError("Trojan: " + msg), nil
+		}
 		projectPath, err := project(ctx, req)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil

@@ -16,6 +16,11 @@ export interface Finding {
   Simply?: string
   Actions?: string[]
   locked?: boolean
+  // Trojan's AI false-alarm check. "likely_fp" findings are hidden from the
+  // list and the counts, behind the "Trojan hid N false alarms" disclosure.
+  Verdict?: 'confirmed' | 'likely_fp' | 'needs_manual'
+  VerdictReason?: string
+  VerdictConfidence?: number
 }
 
 export interface PackageAdvisory {
@@ -45,4 +50,6 @@ export interface ScanResult {
   // Set when the project has source in a language the code-graph checks don't
   // parse (e.g. PHP): those files were covered by the rule scanners instead.
   coverage_note?: string
+  // Set when the false-alarm check couldn't finish; everything is shown.
+  triage_note?: string
 }

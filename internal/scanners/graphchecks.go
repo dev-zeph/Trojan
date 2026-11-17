@@ -82,6 +82,9 @@ func detectionsToFindings(projectPath, root string, ds []graph.Detection) []norm
 		case graph.DetectSQLInjection:
 			f.CWEIDs = []string{"CWE-89"}
 			f.OWASP = []string{"A03:2021 - Injection"}
+			// The graph only reports this when request input reaches the
+			// query: that is a database read or wipe away, so critical.
+			f.Severity = normalizer.SeverityCritical
 		case graph.DetectStoredXSS:
 			f.CWEIDs = []string{"CWE-79"}
 			f.OWASP = []string{"A03:2021 - Injection"}

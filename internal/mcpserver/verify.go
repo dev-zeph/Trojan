@@ -117,6 +117,14 @@ func handleVerifyFix(project projectFunc) server.ToolHandlerFunc {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 
+		// Findings promoted from Trojan intel are re-checked in-process against
+		// the lockfiles (no scanner to re-run).
+		if strings.HasPrefix(id, "intel-") {
+			if text, ok := verifyIntelFinding(projectPath, id); ok {
+				return mcp.NewToolResultText(text), nil
+			}
+		}
+
 		exe, err := os.Executable()
 		if err != nil {
 			return mcp.NewToolResultError("could not locate the Trojan binary: " + err.Error()), nil

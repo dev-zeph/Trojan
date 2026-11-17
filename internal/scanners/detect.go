@@ -1,6 +1,7 @@
 package scanners
 
 import (
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -173,8 +174,8 @@ func RelevantScanners(all []Scanner, p ProjectType) []Scanner {
 	for _, s := range all {
 		switch s.Name() {
 		case "semgrep":
-			// Always run SAST. PHP projects also get the PHP rule packs and
-			// Trojan's own PHP rules (see Semgrep.PHP).
+			// Always run SAST, with Trojan's own rules. PHP projects also get
+			// the PHP registry packs (see Semgrep.PHP).
 			if sg, ok := s.(Semgrep); ok && p.HasPHP {
 				sg.PHP = true
 				s = sg
@@ -185,9 +186,11 @@ func RelevantScanners(all []Scanner, p ProjectType) []Scanner {
 		case "trivy":
 			relevant = append(relevant, s) // always run SCA
 		case "gitleaks":
-			if p.HasGitHistory {
-				relevant = append(relevant, s)
-			}
+			// Always scan for secrets. Gitleaks reads the files on disk and,
+			// when there is a .git folder, the commit history too. Gating on
+			// .git used to skip secrets scanning entirely for folders that
+			// were never committed.
+			relevant = append(relevant, s)
 		case "checkov":
 			if p.HasIaC {
 				relevant = append(relevant, s)
@@ -204,6 +207,23 @@ func RelevantScanners(all []Scanner, p ProjectType) []Scanner {
 		}
 	}
 	return relevant
+}
+
+// ValidateProjectDir reports an error when path is not an existing folder.
+// Without it, scanning a moved or mistyped folder ran every scanner against
+// nothing and reported "0 findings", which reads as a clean project.
+func ValidateProjectDir(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("folder not found: %s (was it moved or renamed?)", path)
+		}
+		return fmt.Errorf("cannot open %s: %w", path, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s is a file, not a project folder", path)
+	}
+	return nil
 }
 
 func exists(path string) bool {

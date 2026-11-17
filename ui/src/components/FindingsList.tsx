@@ -1,5 +1,7 @@
 import { useState } from 'react'
 import { SeverityDot, SeverityBadge } from './SeverityBadge'
+import { HiddenFalseAlarms } from './HiddenFalseAlarms'
+import { hiddenFalseAlarms, shownOpenFindings } from '@/lib/falseAlarms'
 import type { Finding, Severity } from '@/types'
 
 const SEVERITIES: Severity[] = ['critical', 'high', 'medium', 'low', 'info']
@@ -8,14 +10,19 @@ const SEVERITY_ORDER: Record<Severity, number> = { critical: 0, high: 1, medium:
 interface Props {
   findings: Finding[]
   onSelect: (finding: Finding) => void
+  // Reload after the user changes a false-alarm decision.
+  onChanged?: () => void
+  triageNote?: string
 }
 
-export function FindingsList({ findings, onSelect }: Props) {
+export function FindingsList({ findings, onSelect, onChanged = () => {}, triageNote }: Props) {
   const [severityFilter, setSeverityFilter] = useState<Severity | 'all'>('all')
   const [scannerFilter, setScannerFilter] = useState<string>('all')
 
-  // Only show open findings — resolved/suppressed are gone from view
-  const openFindings = findings.filter(f => f.Status === 'open')
+  // Only show open findings (resolved/suppressed are gone from view), minus
+  // likely false alarms, which are listed separately below.
+  const openFindings = shownOpenFindings(findings)
+  const hidden = hiddenFalseAlarms(findings)
 
   const scanners = [...new Set(openFindings.map(f => f.Scanner))]
 
@@ -82,6 +89,12 @@ export function FindingsList({ findings, onSelect }: Props) {
           </p>
         )}
       </div>
+
+      {triageNote && (
+        <p className="text-xs text-muted-foreground" data-testid="triage-note">{triageNote}</p>
+      )}
+
+      <HiddenFalseAlarms hidden={hidden} onChanged={onChanged} />
 
     </div>
   )

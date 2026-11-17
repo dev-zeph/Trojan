@@ -1,5 +1,6 @@
 mod notifications;
 mod pentest_notify;
+mod progress;
 use tauri::{AppHandle, Emitter, Manager, async_runtime::Receiver};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_shell::ShellExt;
@@ -118,7 +119,13 @@ async fn await_ready_mut(app: &AppHandle, rx: &mut Receiver<CommandEvent>) -> Re
     while let Some(event) = rx.recv().await {
         match event {
             CommandEvent::Stdout(bytes) => {
-                let raw = String::from_utf8_lossy(&bytes);
+                let raw_all = String::from_utf8_lossy(&bytes);
+                // PROGRESS lines become `scan-progress` events and stay out of
+                // the developer terminal (they would only repeat the scanner
+                // lines already printed there). Everything else is unchanged.
+                let (progress_updates, raw_rest) = progress::extract_progress(&raw_all);
+                progress::emit_progress(app, progress_updates);
+                let raw: String = raw_rest;
 
                 // Forward raw bytes (ANSI colors preserved) to the terminal panel.
                 let terminal_chunk = raw.trim_end_matches('\n').replace('\n', "\r\n");
@@ -881,6 +888,8 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .setup(|app| {
             // Store for keeping Go sidecar child processes alive.
             app.manage(ActiveScans(Mutex::new(Vec::new())));

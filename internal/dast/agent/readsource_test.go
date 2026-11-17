@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -164,6 +165,80 @@ func TestRunChainingFacts(t *testing.T) {
 	}
 	if !credNode || !dataflowEdge || !chainEdge {
 		t.Errorf("chaining graph incomplete: credNode=%v dataflowEdge=%v chainEdge=%v", credNode, dataflowEdge, chainEdge)
+	}
+}
+
+// countingSource returns a distinct handler for every distinct request, so each
+// first-time read is "new ground"; a request it can't resolve yields a note with
+// no chunks (as the real reader does when there is no code index).
+type countingSource struct{ seen map[string]int }
+
+func (c *countingSource) ReadSource(req greybox.ReadSourceRequest) (greybox.ReadSourceResult, error) {
+	if c.seen == nil {
+		c.seen = map[string]int{}
+	}
+	key := ""
+	switch {
+	case req.Endpoint != nil:
+		key = req.Endpoint.Method + " " + req.Endpoint.Path
+	case req.Symbol != "":
+		key = "sym:" + req.Symbol
+	}
+	if key == "" { // e.g. a query with no index: no source resolved
+		return greybox.ReadSourceResult{Note: "no code index"}, nil
+	}
+	if _, ok := c.seen[key]; !ok {
+		c.seen[key] = len(c.seen) + 1
+	}
+	return greybox.ReadSourceResult{Chunks: []greybox.SourceChunk{{File: "routes.js", Line: c.seen[key]}}}, nil
+}
+
+// Reading distinct handlers is grey-box recon — new ground — so a run that reads
+// source past the stall limit before probing must NOT be killed as stalled.
+// Regression: a disciplined read-the-source-first pen test stopped at step 6
+// with zero probes.
+func TestRunReadingDistinctHandlersDefersStall(t *testing.T) {
+	tb, _ := newTestbox(t, DefaultLimits(), http.NotFoundHandler())
+	tb.SetSource(&countingSource{})
+
+	var turns []*TurnResult
+	for i := 0; i < StallSteps+2; i++ {
+		turns = append(turns, turn("tool_use", toolUseBlock("r", toolReadSource, greybox.ReadSourceRequest{
+			Endpoint: &greybox.EndpointRef{Method: "GET", Path: "/e" + strconv.Itoa(i)},
+		})))
+	}
+	turns = append(turns, turn("tool_use", toolUseBlock("f", toolFinish, map[string]any{"summary": "done"})))
+
+	res, err := Run(context.Background(), tb, &fakeTransport{turns: turns}, RunOptions{Task: "go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StopReason == StopStalled {
+		t.Fatalf("run stalled after reading %d distinct handlers; grey-box recon should defer the stall guard", StallSteps+2)
+	}
+	if res.EndedBy != EventFinish {
+		t.Errorf("EndedBy = %q, want finish", res.EndedBy)
+	}
+}
+
+// A read that resolves to no source (e.g. a query with no code index) is not new
+// ground, so a run doing only those must still stall — otherwise failed index
+// lookups would mask a genuinely stuck agent.
+func TestRunEmptyReadsStillStall(t *testing.T) {
+	tb, _ := newTestbox(t, DefaultLimits(), http.NotFoundHandler())
+	tb.SetSource(&countingSource{})
+
+	query := turn("tool_use", toolUseBlock("q", toolReadSource, greybox.ReadSourceRequest{Query: "where is the auth check"}))
+	var turns []*TurnResult
+	for i := 0; i < 50; i++ {
+		turns = append(turns, query)
+	}
+	res, err := Run(context.Background(), tb, &fakeTransport{turns: turns}, RunOptions{Task: "go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StopReason != StopStalled || res.Steps != StallSteps {
+		t.Errorf("StopReason = %q Steps = %d, want %q after %d", res.StopReason, res.Steps, StopStalled, StallSteps)
 	}
 }
 

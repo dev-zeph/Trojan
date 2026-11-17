@@ -135,10 +135,57 @@ func TestPrintSynthesisSummary_ReportsOutOfTokensOnce(t *testing.T) {
 	out, _ := io.ReadAll(r)
 	text := string(out)
 
-	if strings.Count(text, "Out of Trojan Tokens") != 1 {
+	if strings.Count(text, "Out of tokens") != 1 {
 		t.Fatalf("expected exactly one out-of-tokens message, got: %q", text)
 	}
-	if !strings.Contains(text, "12") {
+	if !strings.Contains(text, "12 findings weren't double-checked") {
 		t.Fatalf("expected the unexplained count (12) in the message, got: %q", text)
+	}
+}
+
+// TestSynthesizeConcurrently_RunsOutMidScanKeepsScannerResults: the balance
+// dies partway through. Every finding must keep its scanner fields, the ones
+// already explained keep their explanation, and the unchecked count is exact.
+func TestSynthesizeConcurrently_RunsOutMidScanKeepsScannerResults(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	var n int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt64(&n, 1) <= 3 {
+			_, _ = w.Write([]byte(`{"simply":"explained","actions":["fix it"]}`))
+			return
+		}
+		w.WriteHeader(http.StatusPaymentRequired)
+		_, _ = w.Write([]byte(`{"error":"insufficient_tokens","message":"out","balance":0}`))
+	}))
+	defer srv.Close()
+	defer ai.OverrideSynthesizeURL(srv.URL)()
+
+	const total = 20
+	findings := make([]normalizer.Finding, total)
+	idxs := make([]int, total)
+	for i := range findings {
+		findings[i] = normalizer.Finding{
+			RuleID: "rule", Scanner: "test", FilePath: "file.go", Title: "T" + strconv.Itoa(i),
+			Severity: normalizer.SeverityHigh, CodeSnippet: "mid-" + strconv.Itoa(i),
+		}
+		idxs[i] = i
+	}
+	res := synthesizeConcurrently(findings, idxs, "token", 1, "")
+
+	if !res.outOfTokens || res.completed != 3 || res.unexplained != total-3 {
+		t.Fatalf("unexpected result %+v", res)
+	}
+	explained := 0
+	for i, f := range findings {
+		if f.Title != "T"+strconv.Itoa(i) || f.Severity != normalizer.SeverityHigh || f.FilePath != "file.go" {
+			t.Fatalf("scanner fields must survive: %+v", f)
+		}
+		if f.Simply != "" {
+			explained++
+		}
+	}
+	if explained != 3 {
+		t.Fatalf("expected the 3 completed explanations to be kept, got %d", explained)
 	}
 }

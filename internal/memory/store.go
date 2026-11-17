@@ -90,6 +90,11 @@ func (s *Store) migrate() error {
 	if _, err := tx.Exec(schemaV1); err != nil {
 		return fmt.Errorf("memory: create schema: %w", err)
 	}
+	// Added after v1 shipped. CREATE IF NOT EXISTS, so older files gain the
+	// table on their next open without a version bump.
+	if _, err := tx.Exec(schemaVerdictCache); err != nil {
+		return fmt.Errorf("memory: create verdict cache: %w", err)
+	}
 	var n int
 	if err := tx.QueryRow(`SELECT COUNT(*) FROM schema_version`).Scan(&n); err != nil {
 		return fmt.Errorf("memory: read schema version: %w", err)

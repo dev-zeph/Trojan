@@ -1,0 +1,12 @@
+{
+    "_meta": { "hash": { "sha256": "abc" }, "pipfile-spec": 6, "requires": {}, "sources": [] },
+    "default": {
+        "flask": { "hashes": ["sha256:a"], "index": "pypi", "version": "==2.0.1" },
+        "werkzeug": { "hashes": ["sha256:b"], "version": "==2.0.2" },
+        "pyyaml": { "version": "==5.3" },
+        "mypkg": { "editable": true, "path": "." }
+    },
+    "develop": {
+        "black": { "version": "==23.1.0" }
+    }
+}

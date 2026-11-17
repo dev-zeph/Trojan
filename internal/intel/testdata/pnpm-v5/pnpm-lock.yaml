@@ -1,0 +1,27 @@
+lockfileVersion: 5.4
+
+specifiers:
+  axios: ^0.21.0
+  '@babel/core': ^7.0.0
+
+dependencies:
+  axios: 0.21.1
+
+devDependencies:
+  '@babel/core': 7.12.3_supports-color@7.2.0
+
+packages:
+
+  /axios/0.21.1:
+    resolution: {integrity: sha512-a}
+    dependencies:
+      follow-redirects: 1.14.0
+    dev: false
+
+  /follow-redirects/1.14.0:
+    resolution: {integrity: sha512-b}
+    dev: false
+
+  /@babel/core/7.12.3_supports-color@7.2.0:
+    resolution: {integrity: sha512-c}
+    dev: true

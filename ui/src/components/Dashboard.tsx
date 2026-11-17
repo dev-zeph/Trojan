@@ -1,4 +1,5 @@
 import { SeverityDot, SeverityBadge } from './SeverityBadge'
+import { falseAlarmLabel, hiddenFalseAlarms, isHiddenFalseAlarm, shownOpenFindings } from '@/lib/falseAlarms'
 import type { Finding, ScanResult, Severity } from '@/types'
 
 const SEVERITIES: Severity[] = ['critical', 'high', 'medium', 'low', 'info']
@@ -11,8 +12,13 @@ interface Props {
 }
 
 export function Dashboard({ scan, onViewFindings, onSelectFinding }: Props) {
+  // Likely false alarms don't count. They're listed on the Findings page.
+  const counted = scan.findings.filter(f => !isHiddenFalseAlarm(f))
+  const hiddenCount = hiddenFalseAlarms(scan.findings).length
+  // Honest privacy line: once AI checked or explained findings, code left.
+  const usedAI = scan.findings.some(f => !!f.Verdict || !!f.Simply)
   const counts = SEVERITIES.reduce((acc, sev) => {
-    acc[sev] = scan.findings.filter(f => f.Severity === sev).length
+    acc[sev] = counted.filter(f => f.Severity === sev).length
     return acc
   }, {} as Record<Severity, number>)
 
@@ -25,7 +31,7 @@ export function Dashboard({ scan, onViewFindings, onSelectFinding }: Props) {
 
   // Show the most critical open findings first as preview
   const severityOrder: Record<Severity, number> = { critical: 0, high: 1, medium: 2, low: 3, info: 4 }
-  const openFindings = scan.findings.filter(f => f.Status === 'open')
+  const openFindings = shownOpenFindings(scan.findings)
   const preview = [...openFindings]
     .sort((a, b) => severityOrder[a.Severity] - severityOrder[b.Severity])
     .slice(0, PREVIEW_COUNT)
@@ -37,16 +43,30 @@ export function Dashboard({ scan, onViewFindings, onSelectFinding }: Props) {
       <div className="space-y-3">
         <p className="text-xs uppercase tracking-widest text-muted-foreground">{scanDate}</p>
         <h1 className="text-4xl font-bold tracking-tight">
-          {scan.findings.length === 0
+          {counted.length === 0
             ? 'No issues found.'
-            : `${scan.findings.length} issue${scan.findings.length === 1 ? '' : 's'} found.`}
+            : `${counted.length} issue${counted.length === 1 ? '' : 's'} found.`}
         </h1>
         <p className="text-muted-foreground text-sm max-w-lg leading-relaxed">
           Scanned with {scanners.length > 0 ? scanners.join(', ') : '—'}.
-          Results are local and have not left your machine.
+          {usedAI
+            ? 'Scanning ran on your machine. The code around each finding was sent to Trojan’s AI to check and explain it.'
+            : 'Results are local and have not left your machine.'}
         </p>
         {scan.coverage_note && (
           <p className="text-xs text-muted-foreground">{scan.coverage_note}</p>
+        )}
+        {hiddenCount > 0 && (
+          <button
+            type="button"
+            onClick={onViewFindings}
+            className="text-sm text-muted-foreground underline underline-offset-4 hover:text-foreground transition-colors"
+          >
+            {falseAlarmLabel(hiddenCount)}. See why →
+          </button>
+        )}
+        {scan.triage_note && (
+          <p className="text-xs text-muted-foreground">{scan.triage_note}</p>
         )}
       </div>
 
@@ -75,7 +95,7 @@ export function Dashboard({ scan, onViewFindings, onSelectFinding }: Props) {
         </div>
         <div className="flex gap-2">
           <span className="text-foreground font-medium w-28">Open</span>
-          <span>{scan.findings.filter(f => f.Status === 'open').length} of {scan.findings.length}</span>
+          <span>{openFindings.length} of {counted.length}</span>
         </div>
       </div>
 
@@ -111,7 +131,7 @@ export function Dashboard({ scan, onViewFindings, onSelectFinding }: Props) {
             onClick={onViewFindings}
             className="text-sm font-medium underline underline-offset-4 hover:text-muted-foreground transition-colors"
           >
-            View all {scan.findings.length} findings →
+            View all {openFindings.length} findings →
           </button>
         </div>
       )}

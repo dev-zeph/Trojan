@@ -137,6 +137,11 @@ jobs:
           APPLE_ID: ${{ matrix.os == 'macos-14' && secrets.APPLE_ID || '' }}
           APPLE_PASSWORD: ${{ matrix.os == 'macos-14' && secrets.APPLE_PASSWORD || '' }}
           APPLE_TEAM_ID: ${{ matrix.os == 'macos-14' && secrets.APPLE_TEAM_ID || '' }}
+          # Auto-update signing (both platforms). This is the Tauri updater's own
+          # key, unrelated to Apple codesigning. Required because
+          # bundle.createUpdaterArtifacts is on: without it the build fails.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
       # Fail the build rather than ship another unsigned release. Seven public
       # desktop releases went out unsigned because nothing ever checked, and the
@@ -211,3 +216,56 @@ jobs:
             desktop/src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
             desktop/src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe
             desktop/src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi
+            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz
+            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz.sig
+            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe.sig
+            desktop/src-tauri/target/${{ matrix.target }}/release/bundle/msi/*.msi.sig
+
+  # Builds latest.json, the file installed apps poll to learn about new
+  # versions. It needs the signatures from BOTH matrix legs, so it runs after
+  # them. The release stays a draft until published by hand; once published it
+  # becomes the "latest" release and installed apps start seeing it.
+  updater-manifest:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build latest.json
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${{ github.repository }}/releases?per_page=30" > releases.json
+          python3 - <<'PY'
+          import json, os, subprocess, datetime
+          tag, repo = os.environ["TAG"], os.environ["GITHUB_REPOSITORY"]
+          rel = next(r for r in json.load(open("releases.json")) if r["tag_name"] == tag)
+          assets = {a["name"]: a for a in rel["assets"]}
+          def sig(name):
+              a = assets[name + ".sig"]
+              return subprocess.check_output(
+                  ["gh", "api", "-H", "Accept: application/octet-stream",
+                   f"repos/{repo}/releases/assets/{a['id']}"], text=True).strip()
+          def entry(name):
+              return {"signature": sig(name),
+                      "url": f"https://github.com/{repo}/releases/download/{tag}/{name}"}
+          mac = next(n for n in assets if n.endswith(".app.tar.gz"))
+          win = next(n for n in assets if n.endswith("-setup.exe"))
+          manifest = {
+              "version": tag.removeprefix("desktop-v"),
+              "notes": rel.get("body") or "",
+              "pub_date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "platforms": {
+                  "darwin-aarch64": entry(mac),
+                  "windows-x86_64": entry(win),
+              },
+          }
+          json.dump(manifest, open("latest.json", "w"), indent=2)
+          PY
+          cat latest.json
+
+      - name: Upload latest.json to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: latest.json

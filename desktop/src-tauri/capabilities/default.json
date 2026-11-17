@@ -19,6 +19,8 @@
     "deep-link:default",
     "notification:default",
     "opener:allow-open-url",
-    "core:webview:allow-print"
+    "core:webview:allow-print",
+    "updater:default",
+    "process:allow-restart"
   ]
 }

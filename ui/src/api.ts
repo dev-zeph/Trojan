@@ -16,6 +16,18 @@ export async function suppressFinding(id: string): Promise<void> {
   await fetch(`${BASE}/findings/${id}/suppress`, { method: 'POST' })
 }
 
+// The user overrides Trojan's false-alarm check. Saved in the project's
+// memory, so every later scan honors it.
+export async function markReal(id: string): Promise<void> {
+  const res = await fetch(`${BASE}/findings/${encodeURIComponent(id)}/real`, { method: 'POST' })
+  if (!res.ok) throw new Error('Could not save your choice.')
+}
+
+export async function markFalseAlarm(id: string): Promise<void> {
+  const res = await fetch(`${BASE}/findings/${encodeURIComponent(id)}/false-alarm`, { method: 'POST' })
+  if (!res.ok) throw new Error('Could not save your choice.')
+}
+
 export interface AuthStatus {
   loggedIn: boolean
   isPro: boolean
