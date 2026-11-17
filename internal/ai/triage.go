@@ -268,7 +268,11 @@ func triageBatch(findings []normalizer.Finding, accessToken string) (map[int]Ver
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 60 * time.Second}
+	// Sonnet judging a full batch of findings (each with its enclosing code and
+	// graph context) regularly runs past a minute; the edge function aborts at
+	// 90s. A short client timeout here silently dropped the whole batch to
+	// untriaged before the edge could answer, so give Sonnet the time it needs.
+	client := &http.Client{Timeout: 180 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("triage request failed: %w", err)
