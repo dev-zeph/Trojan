@@ -96,7 +96,7 @@ func (g Gitleaks) Run(projectPath string) ([]normalizer.Finding, error) {
 			Scanner:     g.Name(),
 			Category:    g.Category(),
 			Severity:    secretSeverity(r),
-			Title:       fmt.Sprintf("Leaked %s", r.Description),
+			Title:       secretTitle(r),
 			RawMessage:  msg,
 			FilePath:    r.File,
 			LineNumber:  r.StartLine,
@@ -246,6 +246,47 @@ func mergeGitleaksResults(files, history []gitleaksResult) []gitleaksResult {
 		files = append(files, r)
 	}
 	return files
+}
+
+// secretAcronyms are rule-id words that read better fully capitalized in a
+// title ("aws" → "AWS", "github" → "GitHub").
+var secretAcronyms = map[string]string{
+	"aws": "AWS", "gcp": "GCP", "api": "API", "pat": "PAT", "jwt": "JWT",
+	"ssh": "SSH", "url": "URL", "id": "ID", "oauth": "OAuth", "pgp": "PGP",
+	"npm": "npm", "pypi": "PyPI", "gitlab": "GitLab", "github": "GitHub",
+	"db": "DB", "sql": "SQL", "gpg": "GPG",
+}
+
+// secretTitle is a clean, plain-English title for a leaked secret. Gitleaks'
+// own Description is a full risk sentence — and some rules' descriptions start
+// with "Found a ..." (e.g. the Stripe rule) — so building the title from it
+// produced garbled text like "Leaked Found a Stripe Access Token ...". The
+// secret's type is taken from the stable rule id instead:
+// "stripe-access-token" → "Hardcoded secret: Stripe Access Token".
+func secretTitle(r gitleaksResult) string {
+	t := ruleIDToSecretType(r.RuleID)
+	if t == "" {
+		return "Hardcoded secret found in code"
+	}
+	return "Hardcoded secret: " + t
+}
+
+// ruleIDToSecretType turns a Gitleaks rule id into a readable type name, fixing
+// up common acronyms: "aws-access-token" → "AWS Access Token".
+func ruleIDToSecretType(ruleID string) string {
+	parts := strings.Split(ruleID, "-")
+	out := parts[:0]
+	for _, p := range parts {
+		if p == "" {
+			continue
+		}
+		if a, ok := secretAcronyms[strings.ToLower(p)]; ok {
+			out = append(out, a)
+		} else {
+			out = append(out, strings.ToUpper(p[:1])+p[1:])
+		}
+	}
+	return strings.Join(out, " ")
 }
 
 // criticalSecretRules are Gitleaks rules whose match is a working credential

@@ -1,7 +1,10 @@
 package scanners
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/dev-zeph/trojan/internal/normalizer"
@@ -41,6 +44,24 @@ func TestMergeGitleaksResults(t *testing.T) {
 	}
 }
 
+// secretTitle must read cleanly from the rule id — never the old garbled
+// "Leaked Found a Stripe Access Token ..." built from Gitleaks' Description.
+func TestSecretTitle(t *testing.T) {
+	cases := map[string]string{
+		"stripe-access-token": "Hardcoded secret: Stripe Access Token",
+		"aws-access-token":    "Hardcoded secret: AWS Access Token",
+		"github-pat":          "Hardcoded secret: GitHub PAT",
+		"generic-api-key":     "Hardcoded secret: Generic API Key",
+		"private-key":         "Hardcoded secret: Private Key",
+		"":                    "Hardcoded secret found in code",
+	}
+	for ruleID, want := range cases {
+		if got := secretTitle(gitleaksResult{RuleID: ruleID, Description: "Found a Stripe Access Token, posing a risk"}); got != want {
+			t.Errorf("secretTitle(%q) = %q, want %q", ruleID, got, want)
+		}
+	}
+}
+
 func TestSecretSeverity(t *testing.T) {
 	cases := []struct {
 		r    gitleaksResult
@@ -76,6 +97,74 @@ func TestSemgrepFindingSeverity(t *testing.T) {
 	}
 	if got := semgrepFindingSeverity(plainError); got != normalizer.SeverityHigh {
 		t.Errorf("registry HIGH/LOW ERROR: got %s", got)
+	}
+}
+
+// semgrepSnippet reads the matched line(s) from the file, not semgrep's
+// unreliable extra.lines. The reported range must win over a bogus fallback.
+func TestSemgrepSnippet(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mw.js")
+	src := "line one\n" +
+		"  if (req.path.startsWith(\"/admin\")) {\n" +
+		"    return res.status(403).send(\"requires login\");\n" +
+		"  }\n"
+	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Semgrep reported the admin check on line 2 but its extra.lines carried the
+	// nested error string. The snippet must follow the reported line.
+	got := semgrepSnippet(path, 2, 2, "requires login")
+	if got != `if (req.path.startsWith("/admin")) {` {
+		t.Errorf("snippet = %q, want the admin-check line", got)
+	}
+	// Fallback only when the file can't be read.
+	if got := semgrepSnippet(filepath.Join(dir, "missing.js"), 2, 2, "fallback text"); got != "fallback text" {
+		t.Errorf("missing file snippet = %q, want fallback", got)
+	}
+}
+
+// End-to-end: the case-sensitive-path-check rule must not report "requires
+// login" as the snippet — the snippet comes from the matched admin-check line.
+// Skipped without semgrep.
+func TestCaseSensitivePathSnippetNotErrorString(t *testing.T) {
+	if _, err := exec.LookPath("semgrep"); err != nil {
+		t.Skip("semgrep not installed")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "target.js")
+	src := "const express = require(\"express\");\n" +
+		"const app = express();\n" +
+		"app.use((req, res, next) => {\n" +
+		"  if (req.path.startsWith(\"/admin\")) {\n" +
+		"    if (!req.user || req.user.role !== \"admin\") {\n" +
+		"      return res.status(403).send(\"requires login\");\n" +
+		"    }\n" +
+		"  }\n" +
+		"  next();\n" +
+		"});\n"
+	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	findings, err := Semgrep{}.Run(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hit *normalizer.Finding
+	for i := range findings {
+		if strings.Contains(findings[i].RuleID, "case-sensitive-path-check") {
+			hit = &findings[i]
+			break
+		}
+	}
+	if hit == nil {
+		t.Fatalf("rule did not fire; findings = %+v", findings)
+	}
+	if strings.TrimSpace(hit.CodeSnippet) == "requires login" {
+		t.Errorf("snippet is the error string, not the admin check: %q", hit.CodeSnippet)
+	}
+	if !strings.Contains(hit.CodeSnippet, "req.path") {
+		t.Errorf("snippet %q should contain the matched admin check (req.path...)", hit.CodeSnippet)
 	}
 }
 
