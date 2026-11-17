@@ -65,6 +65,54 @@ type triageFindingWire struct {
 	// (from cross-scanner dedup — internal/normalizer/dedup.go). More than one is
 	// corroboration the edge prompt weights toward "confirmed" (A2).
 	AgreedScanners []string `json:"agreedScanners,omitempty"`
+
+	// GraphContext carries the facts Trojan's code graph already computed about
+	// this finding's location: whether a public entrypoint reaches it, whether
+	// that path passes a login check, which datastores it reads/writes, and
+	// whether it touches sensitive data. For a code (SAST) finding there is no
+	// HTTP response to prove exploitation, so this reachability/taint context is
+	// what lets the triage model judge a plausible attack path instead of
+	// guessing from a snippet. Empty when the finding has no graph node
+	// (dependencies, config files) or no graph was built.
+	GraphContext string `json:"graphContext,omitempty"`
+}
+
+// graphContext renders a finding's code-graph facts (internal/reach) into a
+// compact line for the triage model. Returns "" when there is nothing to say.
+func graphContext(f normalizer.Finding) string {
+	r := f.Reach
+	if r == nil {
+		return ""
+	}
+	var parts []string
+	switch {
+	case r.Reachable && !r.Guarded:
+		parts = append(parts, "reachable from a PUBLIC entrypoint with NO login check")
+	case r.Reachable && r.Guarded:
+		parts = append(parts, "reachable only behind a login check")
+	default:
+		parts = append(parts, "not reached by any known public entrypoint")
+	}
+	if len(r.Entrypoints) > 0 {
+		parts = append(parts, "entrypoints: "+strings.Join(r.Entrypoints, "; "))
+	}
+	if len(r.Reads) > 0 {
+		parts = append(parts, "reads: "+strings.Join(r.Reads, ", "))
+	}
+	if len(r.Writes) > 0 {
+		parts = append(parts, "writes: "+strings.Join(r.Writes, ", "))
+	}
+	if r.Sensitive {
+		s := "touches sensitive data"
+		if len(r.Categories) > 0 {
+			s += " (" + strings.Join(r.Categories, ", ") + ")"
+		}
+		parts = append(parts, s)
+	}
+	if r.ClientSide {
+		parts = append(parts, "runs in / is called from browser code")
+	}
+	return strings.Join(parts, "; ")
 }
 
 // TriageFindings asks the backend to adversarially verify each finding against
@@ -172,6 +220,7 @@ func buildTriageWire(findings []normalizer.Finding) []triageFindingWire {
 			SourceFile:      f.SourceFile,
 			SourceLine:      f.SourceLine,
 			AgreedScanners:  f.AgreedScanners,
+			GraphContext:    graphContext(f),
 		}
 	}
 	return wire
