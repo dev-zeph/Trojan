@@ -698,6 +698,12 @@ func (b *jsBuilder) detectSinks(ctx context.Context, n tswasm.Node, curFn int, c
 				break
 			}
 		}
+		// A statement that only looks string-built because of a bound
+		// ?-placeholder list or a constant-whitelist member is parameterized, not
+		// injection: drop the injection sink so it is not a false positive.
+		if concat && b.sqlDynamicPartsSanitized(ctx, curFn, argNodes) {
+			concat = false
+		}
 		if concat {
 			rule := RuleSQLConcat
 			if b.sqlFromRequest(ctx, curFn, argNodes) {

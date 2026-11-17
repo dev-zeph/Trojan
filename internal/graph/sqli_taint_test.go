@@ -107,3 +107,77 @@ func TestRequestTainted_Flows(t *testing.T) {
 		}
 	}
 }
+
+// hasInjectionSink reports whether any SQL sink on the file carries an injection
+// rule (concat or request-input), i.e. whether the statement is flagged as SQLi.
+func hasInjectionSink(rules map[int]string) bool {
+	for _, r := range rules {
+		if r == RuleSQLFromInput || r == RuleSQLConcat {
+			return true
+		}
+	}
+	return false
+}
+
+// TestSQLiPlaceholderJoinNotFlaggedAtAll mirrors ashgrove-portal routes/api.js:59.
+// A WHERE id IN (${marks}) whose marks is a ?-placeholder list bound via
+// .all(...ids) is parameterized, so it must carry NO injection sink — not even
+// the string-concatenation rule.
+func TestSQLiPlaceholderJoinNotFlaggedAtAll(t *testing.T) {
+	src := "const express = require(\"express\");\n" +
+		"const router = express.Router();\n" +
+		"router.post(\"/export\", (req, res) => {\n" +
+		"  const ids = (Array.isArray(req.body.ids) ? req.body.ids : []).map(Number).filter(Number.isInteger);\n" +
+		"  const marks = ids.map(() => \"?\").join(\",\");\n" +
+		"  const rows = db\n" +
+		"    .prepare(`SELECT i.number, c.bank_ref FROM invoices i WHERE i.id IN (${marks})`)\n" +
+		"    .all(...ids);\n" +
+		"  res.json(rows);\n" +
+		"});\n"
+	if hasInjectionSink(sinkRulesByLine(t, src)) {
+		t.Error("placeholder-join IN clause must not be flagged as SQL injection at all")
+	}
+}
+
+// TestSQLiConstSetMembershipIsSafe mirrors ashgrove-portal lib/db.js:84. The
+// interpolated ${table} is guarded by a membership check against a constant Set
+// (if (!COUNTABLE.has(table)) throw), so it can only be one of a fixed set of
+// table names and must NOT be flagged as SQL injection.
+func TestSQLiConstSetMembershipIsSafe(t *testing.T) {
+	src := "const COUNTABLE = new Set([\"clients\", \"users\", \"invoices\"]);\n" +
+		"function count(table) {\n" +
+		"  if (!COUNTABLE.has(table)) throw new Error(`unknown table ${table}`);\n" +
+		"  return db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n;\n" +
+		"}\n"
+	if hasInjectionSink(sinkRulesByLine(t, src)) {
+		t.Error("a value whitelisted against a constant Set must not be flagged as SQL injection")
+	}
+}
+
+// TestSQLiArrayIncludesMembershipIsSafe covers the array/.includes form of the
+// whitelist guard (if (!FILTERABLE.includes(column)) continue).
+func TestSQLiArrayIncludesMembershipIsSafe(t *testing.T) {
+	src := "const FILTERABLE = [\"status\", \"budget\"];\n" +
+		"function build(col) {\n" +
+		"  if (!FILTERABLE.includes(col)) return;\n" +
+		"  return db.prepare(`SELECT id FROM t ORDER BY ${col}`).all();\n" +
+		"}\n"
+	if hasInjectionSink(sinkRulesByLine(t, src)) {
+		t.Error("a value whitelisted against a constant array must not be flagged as SQL injection")
+	}
+}
+
+// TestSQLiMembershipAgainstRequestCollectionStillInjection makes sure the
+// whitelist exception is narrow: when the "whitelist" is built from the request
+// it is not trustworthy, so the interpolation is still a real injection.
+func TestSQLiMembershipAgainstRequestCollectionStillInjection(t *testing.T) {
+	src := "function build(req) {\n" +
+		"  const allow = new Set(req.query.cols);\n" +
+		"  const col = req.query.sort;\n" +
+		"  if (!allow.has(col)) return;\n" +
+		"  return db.prepare(`SELECT id FROM t ORDER BY ${col}`).all();\n" +
+		"}\n"
+	if !hasInjectionSink(sinkRulesByLine(t, src)) {
+		t.Error("membership against a request-built collection must NOT be treated as sanitized")
+	}
+}

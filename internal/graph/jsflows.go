@@ -168,6 +168,101 @@ func (b *jsBuilder) sqlFromRequest(ctx context.Context, fnID int, args []tswasm.
 	return false
 }
 
+// membershipGuardRe matches a whitelist guard that bails out when a value is
+// NOT a member of a collection: `if (!COUNTABLE.has(table)) throw ...` or
+// `if (!FILTERABLE.includes(column)) continue`. It captures the collection and
+// the guarded value. The negated form with a throw/return/continue/break is the
+// safe shape — the value can only reach the code below as a member of the
+// collection, so if that collection is a constant whitelist the value is one of
+// a fixed, non-attacker-chosen set.
+var membershipGuardRe = regexp.MustCompile(
+	`if\s*\(\s*!\s*([A-Za-z_$][\w$.]*)\s*\.\s*(?:has|includes)\s*\(\s*([A-Za-z_$][\w$]*)\s*\)\s*\)\s*\{?\s*(?:throw|return|continue|break)`)
+
+// constCollDeclRe matches a collection declared from a constant literal:
+// `const COUNTABLE = new Set([...])`, `const FILTERABLE = [...]`, an object or a
+// Map. It captures the name and the initializer so the initializer can be
+// checked for request data (a collection built from the request is not a
+// trustworthy whitelist).
+var constCollDeclRe = regexp.MustCompile(
+	`(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(new\s+(?:Set|Map)\s*\([\s\S]*?\)|\[[\s\S]*?\]|\{[\s\S]*?\})\s*;`)
+
+// constCollections returns the names in fileSrc declared from a constant
+// Set/Map/array/object literal that contains no request data — i.e. collections
+// safe to treat as whitelists.
+func constCollections(fileSrc string) map[string]bool {
+	out := map[string]bool{}
+	for _, m := range constCollDeclRe.FindAllStringSubmatch(fileSrc, -1) {
+		name, init := m[1], m[2]
+		if !mentionsRequest(init) {
+			out[name] = true
+		}
+	}
+	return out
+}
+
+// sanitizedSQLNames returns the local names that are safe to interpolate into a
+// SQL string even though the interpolation reads like string building:
+//
+//	(b) a ?-placeholder list (const marks = ids.map(() => "?").join(",")): the
+//	    real values are bound separately via .all(...ids), so ${marks} is a
+//	    constant parameter list; and
+//	(a) a value guarded by membership in a constant whitelist collection
+//	    (if (!COUNTABLE.has(table)) throw): it can only be one of a fixed set of
+//	    constants, so it cannot carry SQL.
+//
+// body is the enclosing function's source (where the decls and guards live);
+// fileSrc is the whole file (where the whitelist collections are declared, often
+// at module scope).
+func sanitizedSQLNames(body, fileSrc string) map[string]bool {
+	safe := map[string]bool{}
+	for _, d := range declRe.FindAllStringSubmatch(body, -1) {
+		if placeholderJoinRe.MatchString(d[2]) {
+			for _, id := range identRe.FindAllString(d[1], -1) {
+				safe[id] = true
+			}
+		}
+	}
+	consts := constCollections(fileSrc)
+	for _, m := range membershipGuardRe.FindAllStringSubmatch(body, -1) {
+		coll := m[1]
+		if dot := strings.IndexByte(coll, '.'); dot >= 0 {
+			coll = coll[:dot] // this.X / ns.X -> base identifier
+		}
+		if consts[coll] {
+			safe[m[2]] = true
+		}
+	}
+	return safe
+}
+
+// sqlDynamicPartsSanitized reports whether every dynamic value interpolated into
+// a SQL call's arguments is provably safe (a bound ?-placeholder list, or a
+// constant-whitelist member — see sanitizedSQLNames). When it is, the call is
+// not string-built injection at all and gets no injection sink, so a safe query
+// like `WHERE id IN (${marks})` or `FROM ${table}` (table whitelisted) is not a
+// false positive. A single unsanitized dynamic part keeps the sink, so a real
+// injection in the same statement (e.g. an interpolated operator) still fires.
+func (b *jsBuilder) sqlDynamicPartsSanitized(ctx context.Context, fnID int, args []tswasm.Node) bool {
+	var refs []string
+	for _, a := range args {
+		collectRefs(ctx, b.f, a, &refs, 0)
+	}
+	if len(refs) == 0 {
+		return false
+	}
+	body := ""
+	if r, ok := b.fnRange[fnID]; ok && int(r[1]) <= len(b.f.src) && r[0] <= r[1] {
+		body = string(b.f.src[r[0]:r[1]])
+	}
+	safe := sanitizedSQLNames(body, string(b.f.src))
+	for _, ref := range refs {
+		if !safe[ref] {
+			return false
+		}
+	}
+	return true
+}
+
 // collectRefs appends the text of identifiers and member expressions under n,
 // skipping tagged templates (their values are bound, not concatenated).
 func collectRefs(ctx context.Context, f *tsFile, n tswasm.Node, out *[]string, depth int) {
