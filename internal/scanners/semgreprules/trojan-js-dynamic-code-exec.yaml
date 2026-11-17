@@ -1,0 +1,59 @@
+rules:
+  - id: trojan-js-dynamic-code-exec
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      Text that came from the request is turned into live code and run on the
+      server, with new Function(), eval(), or the Function() constructor. An
+      attacker controls what that code is, so they can run any JavaScript on
+      your server: read your database and secrets, change or delete data, or
+      take over the machine (remote code execution). Even the names of request
+      fields are dangerous here, because new Function() treats its earlier
+      arguments as the code's parameter list. Never build code from request
+      data. Look the value up in a fixed table you wrote, or compute the
+      result with ordinary code instead of generating a function.
+    metadata:
+      trojan-title: Request data is run as server code (remote code execution)
+      trojan-severity: critical
+      cwe:
+        - "CWE-94: Improper Control of Generation of Code ('Code Injection')"
+      owasp:
+        - "A03:2021 - Injection"
+      category: security
+      confidence: MEDIUM
+    mode: taint
+    options:
+      taint_assume_safe_functions: false
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: $REQ.body
+              - pattern: $REQ.query
+              - pattern: $REQ.params
+              - pattern: $REQ.headers
+              - pattern: $REQ.cookies
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^(req|request|ctx)$
+      # The attacker-controlled field NAMES are a source too: Object.keys of a
+      # request object becomes new Function()'s parameter list.
+      - patterns:
+          - pattern-either:
+              - pattern: Object.keys($REQ.$SRC)
+              - pattern: Object.values($REQ.$SRC)
+              - pattern: Object.entries($REQ.$SRC)
+              - pattern: Object.keys($REQ.$SRC.$F)
+              - pattern: Object.values($REQ.$SRC.$F)
+              - pattern: Object.entries($REQ.$SRC.$F)
+          - metavariable-regex:
+              metavariable: $REQ
+              regex: ^(req|request|ctx)$
+          - metavariable-regex:
+              metavariable: $SRC
+              regex: ^(body|query|params|headers|cookies)$
+    pattern-sinks:
+      - pattern: new Function(...)
+      - pattern: eval(...)
+      - patterns:
+          - pattern: Function(...)
+          - pattern-not: new Function(...)
