@@ -1,0 +1,36 @@
+rules:
+  - id: trojan-js-partial-ownership-check
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      Only the first ID (ids[0]) is ownership-checked, but the whole array is
+      then used in the query (...ids / IN (...)). A caller who owns one record
+      can read every other record by listing someone else's IDs after their
+      own. Check ownership of every ID, or scope the query to the caller.
+    metadata:
+      cwe: "CWE-639: Authorization Bypass Through User-Controlled Key"
+      owasp: "A01:2021 - Broken Access Control"
+      category: security
+      confidence: MEDIUM
+      trojan-severity: high
+      trojan-title: "Bulk query authorizes only the first item (IDOR)"
+    patterns:
+      - pattern: $Q.all(...$IDS)
+      - pattern-either:
+          - pattern-inside: |
+              $DB.prepare(...).get($IDS[0]);
+              ...
+          - pattern-inside: |
+              if (...) {
+                ...
+                $DB.prepare(...).get($IDS[0]);
+                ...
+              }
+              ...
+          - pattern-inside: |
+              if (...) {
+                ...
+                $V = $DB.prepare(...).get($IDS[0]);
+                ...
+              }
+              ...
