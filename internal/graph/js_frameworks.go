@@ -126,6 +126,11 @@ func (p *jsProject) resolveExpress(routeGuarded map[int]bool) {
 			if id < 0 {
 				id = p.resolveHandlerRef(b, r.handlerRef)
 			}
+			if id < 0 && r.handlerSpec != "" {
+				// app.get("/x", require("./routes/x")): the module's default
+				// export (module.exports = function ...) is the handler.
+				id = p.exportID(p.resolveSpec(b, r.handlerSpec), "default", 0)
+			}
 			if id < 0 {
 				continue
 			}
@@ -150,7 +155,7 @@ func (p *jsProject) resolveExpress(routeGuarded map[int]bool) {
 			}
 			seen[id] = true
 			routeGuarded[id] = guarded
-			if r.handlerID >= 0 {
+			if r.handlerID >= 0 || r.handlerSpec != "" {
 				p.g.Nodes[id].Name = b.qualify(r.method + " " + joinURLPath(mounts[0].prefix, r.path))
 			}
 		}

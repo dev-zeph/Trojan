@@ -160,6 +160,7 @@ type jsRoute struct {
 	middleware             []string // names of the middle arguments
 	handlerID              int      // inline handler node, or -1
 	handlerRef             string   // identifier/member text of a by-reference handler
+	handlerSpec            string   // require("./x") spec when the handler is an inline module require
 	pos                    uint32
 }
 
@@ -608,6 +609,11 @@ func (b *jsBuilder) handleCall(ctx context.Context, n tswasm.Node, curFn int) er
 				}
 				if lastKind == "identifier" || lastKind == "member_expression" {
 					r.handlerRef = strings.TrimSpace(b.f.text(ctx, last))
+				}
+				// app.get("/x", require("./routes/x")) where the module's
+				// export is the handler function itself.
+				if spec, ok := b.requireSpec(ctx, last); ok {
+					r.handlerSpec = spec
 				}
 			}
 		}
