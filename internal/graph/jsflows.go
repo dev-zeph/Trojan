@@ -41,6 +41,28 @@ var declRe = regexp.MustCompile(`(?:const|let|var)\s+(\{[^}]*\}|\[[^\]]*\]|[A-Za
 
 var identRe = regexp.MustCompile(`[A-Za-z_$][\w$]*`)
 
+// placeholderJoinRe matches a value built as a list of "?" placeholders joined
+// into a string: ids.map(() => "?").join(",") or Array(n).fill("?").join(", ").
+// The result is a constant parameter list (?,?,?), not attacker data, even when
+// the array it was derived from came from the request — the real values are
+// passed separately to .all(...)/.run(...) and bound as parameters. Without
+// this, WHERE id IN (${marks}) looks like request-interpolated SQL and is
+// reported as a false-positive injection.
+var placeholderJoinRe = regexp.MustCompile(
+	"(?:\\.map\\(\\s*(?:\\([^)]*\\)|[\\w$]+)?\\s*=>\\s*[\"'`]\\?[\"'`]\\s*\\)|\\.fill\\(\\s*[\"'`]\\?[\"'`]\\s*\\))\\s*\\.join\\(")
+
+// forOfRe matches a for...of loop that binds loop variables:
+// for (const [k, v] of EXPR) or for (const x of EXPR). The iterable EXPR stops
+// at the first ")", which still captures enough to spot a request source such
+// as Object.entries(req.query).
+var forOfRe = regexp.MustCompile(
+	`for\s*\(\s*(?:const|let|var)\s+(\[[^\]]*\]|[A-Za-z_$][\w$]*)\s+of\s+([^)]+)`)
+
+// pushRe matches arr.push(ARG): a mutation that carries ARG's taint into the
+// array, so a tainted clause pushed onto an array and later join()ed into SQL
+// is tracked. ARG runs to the end of the statement/line.
+var pushRe = regexp.MustCompile(`([A-Za-z_$][\w$]*)\s*\.\s*push\(([^;\n]*)`)
+
 func mentionsRequest(s string) bool {
 	for _, m := range requestMarkers {
 		if strings.Contains(s, m) {
@@ -51,30 +73,69 @@ func mentionsRequest(s string) bool {
 }
 
 // requestTainted returns the local names in body that hold request data:
-// declared from a request expression, or from another such name.
+// declared from a request expression, bound by a for...of over one, or carried
+// into an array by a push of a tainted value. Taint flows through several hops
+// (a loop variable taints a destructured name, which taints a pushed clause,
+// which taints the array a later statement join()s into SQL), so it iterates to
+// a fixpoint rather than a fixed number of passes.
 func requestTainted(body string) map[string]bool {
 	tainted := map[string]bool{}
 	decls := declRe.FindAllStringSubmatch(body, -1)
-	// Two passes so `const body = await req.json(); const { email } = body`
-	// taints email too.
-	for pass := 0; pass < 2; pass++ {
-		for _, d := range decls {
-			rhs := d[2]
-			hit := mentionsRequest(rhs)
-			if !hit {
-				for _, id := range identRe.FindAllString(rhs, -1) {
-					if tainted[id] {
-						hit = true
-						break
-					}
+	forOfs := forOfRe.FindAllStringSubmatch(body, -1)
+	pushes := pushRe.FindAllStringSubmatch(body, -1)
+
+	// refsTainted: the expression reads the request directly or references a
+	// name already known to be tainted.
+	refsTainted := func(expr string) bool {
+		if mentionsRequest(expr) {
+			return true
+		}
+		for _, id := range identRe.FindAllString(expr, -1) {
+			if tainted[id] {
+				return true
+			}
+		}
+		return false
+	}
+
+	for i := 0; i < 8; i++ {
+		changed := false
+		mark := func(names string) {
+			for _, id := range identRe.FindAllString(names, -1) {
+				if !tainted[id] {
+					tainted[id] = true
+					changed = true
 				}
 			}
-			if !hit {
+		}
+		for _, d := range decls {
+			lhs, rhs := d[1], d[2]
+			// A list of "?" placeholders is a constant parameter list, not
+			// attacker data, even when built from a request-sourced array.
+			if placeholderJoinRe.MatchString(rhs) {
 				continue
 			}
-			for _, id := range identRe.FindAllString(d[1], -1) {
-				tainted[id] = true
+			if refsTainted(rhs) {
+				mark(lhs)
 			}
+		}
+		for _, fo := range forOfs {
+			lhs, iterable := fo[1], fo[2]
+			if refsTainted(iterable) {
+				mark(lhs)
+			}
+		}
+		for _, p := range pushes {
+			arr, arg := p[1], p[2]
+			if placeholderJoinRe.MatchString(arg) {
+				continue
+			}
+			if refsTainted(arg) {
+				mark(arr)
+			}
+		}
+		if !changed {
+			break
 		}
 	}
 	return tainted
