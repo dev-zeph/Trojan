@@ -50,15 +50,45 @@ func handleSecuritySummary(project projectFunc) server.ToolHandlerFunc {
 				open = append(open, f)
 			}
 		}
-		sort.SliceStable(open, func(i, j int) bool { return severityRank[open[i].Severity] > severityRank[open[j].Severity] })
+		// Only high/critical findings are candidates for most_urgent.
+		var highPlus []normalizer.Finding
+		for _, f := range open {
+			if severityRank[f.Severity] >= severityRank[normalizer.SeverityHigh] {
+				highPlus = append(highPlus, f)
+			}
+		}
+		// Rank non-false-alarms above likely-FPs, then by severity, so a
+		// likely_fp is never placed above a confirmed/needs_manual/untriaged
+		// finding.
+		sort.SliceStable(highPlus, func(i, j int) bool {
+			fi, fj := highPlus[i].HiddenAsFalseAlarm(), highPlus[j].HiddenAsFalseAlarm()
+			if fi != fj {
+				return !fi // non-FP first
+			}
+			return severityRank[highPlus[i].Severity] > severityRank[highPlus[j].Severity]
+		})
+		// most_urgent should surface the real work: exclude likely-FPs
+		// entirely when any non-FP high+ finding exists. Only if every high+
+		// finding is a likely-FP do we fall back to showing them, so the list
+		// is never empty when there is something.
+		hasRealHigh := false
+		for _, f := range highPlus {
+			if !f.HiddenAsFalseAlarm() {
+				hasRealHigh = true
+				break
+			}
+		}
 
 		type urgent struct {
 			ID, Severity, Title, Location, Explanation string
 		}
 		var top []urgent
-		for _, f := range open {
-			if len(top) == 5 || severityRank[f.Severity] < severityRank[normalizer.SeverityHigh] {
+		for _, f := range highPlus {
+			if len(top) == 5 {
 				break
+			}
+			if hasRealHigh && f.HiddenAsFalseAlarm() {
+				continue // real findings exist; drop likely-FPs from the list
 			}
 			top = append(top, urgent{f.ID, string(f.Severity), f.Title, fmt.Sprintf("%s:%d", f.FilePath, f.LineNumber), f.Simply})
 		}
