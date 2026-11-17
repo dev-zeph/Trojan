@@ -130,15 +130,25 @@ rules:
       - metavariable-regex:
           metavariable: $X
           regex: ^["'`]/
-      # Only when the match gates an access decision: the branch rejects the
-      # request (401/403/redirect to login).
+      # Only when the match gates an authorization DENY: the branch rejects
+      # the request with 401/403, or redirects to a login/sign-in route. A
+      # generic status like 500 (an error handler) is NOT an access check.
       - pattern-inside: |
           if (<... $REQ.$P ...>) $BODY
       - metavariable-pattern:
           metavariable: $BODY
           pattern-either:
-            - pattern: $RES.status(...)
-            - pattern: $RES.sendStatus(...)
-            - pattern: $RES.redirect(...)
+            - patterns:
+                - pattern-either:
+                    - pattern: $RES.status($CODE)
+                    - pattern: $RES.sendStatus($CODE)
+                - metavariable-regex:
+                    metavariable: $CODE
+                    regex: ^(401|403)$
+            - patterns:
+                - pattern: $RES.redirect($LOGIN)
+                - metavariable-regex:
+                    metavariable: $LOGIN
+                    regex: (?i).*(login|signin|sign-in|log-in|logon)
       # Lower-casing the path first makes the comparison safe.
       - pattern-not: $REQ.$P.toLowerCase().startsWith($X)

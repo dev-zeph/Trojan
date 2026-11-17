@@ -73,6 +73,16 @@ app.use((req, res, next) => {
   next();
 });
 
+// A 500 error handler is not an access-control gate: a generic status must
+// not trip the rule.
+app.use((err, req, res, next) => {
+  // ok: trojan-js-case-sensitive-path-check
+  if (req.path.startsWith("/api/")) {
+    return res.status(500).json({ error: err.message, detail: err.stack });
+  }
+  next(err);
+});
+
 app.use((req, res, next) => {
   // ok: trojan-js-case-sensitive-path-check
   if (req.path.toLowerCase().startsWith("/admin") && !req.user) {
