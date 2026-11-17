@@ -17,7 +17,7 @@ import (
 // httptest server instead of the real edge function.
 var triageURL = "https://dtmocojzvgsswjdsrmqr.supabase.co/functions/v1/triage"
 
-const triageBatchSize = 40 // must match MAX_FINDINGS in the triage edge function
+const triageBatchSize = 12 // must match MAX_FINDINGS in the triage edge function
 
 // noVerdictRationale is what a finding gets when the model returned no usable
 // verdict for it. It is deliberately generic and never copied from another
