@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/dev-zeph/trojan/internal/memory"
@@ -81,10 +82,7 @@ func TriageCodeScan(findings []normalizer.Finding, opts CodeTriageOptions) (Code
 	normalizer.EnsureUniqueIDs(findings)
 
 	d := loadMemoryDecisions(opts.Memory)
-	keys := make([]string, len(findings))
-	for i, f := range findings {
-		keys[i] = VerdictCacheKey(f, opts.ProjectRoot)
-	}
+	keys := buildVerdictKeys(findings, opts.ProjectRoot)
 	var cached map[string]memory.CachedVerdict
 	if opts.Cache != nil {
 		cached, _ = opts.Cache.CachedVerdicts(keys) // a broken cache only costs money
@@ -152,9 +150,53 @@ func applyVerdict(f *normalizer.Finding, v Verdict) {
 	f.VerdictConfidence = v.Confidence
 }
 
+// buildVerdictKeys returns the cache key for every finding, guaranteeing that
+// two DISTINCT findings never share a key.
+//
+// VerdictCacheKey alone is deliberately coarse: it hashes only the rule, the
+// file, the flagged snippet and a ±cacheWindowRadius line window, and leaves
+// the line number out so that moving code up or down the file is a cache hit.
+// The triage model, however, judges a finding on its full enclosing block
+// (withTriageContext / ExtractEnclosingContext) plus any retrieved RAG context
+// — far more than the ±3-line key window. So two genuinely different findings
+// of the same rule in the same file whose narrow windows happen to be
+// byte-identical (duplicated code, or two matches inside one small block) hash
+// to the SAME key while legitimately deserving DIFFERENT verdicts. The cache
+// then hands both one stored verdict+rationale, and on a rescan one finding
+// wears the other finding's explanation — which can flip a real critical to
+// "likely_fp". (A collision whose wider context is ALSO identical is harmless:
+// the model would return the same verdict either way.)
+//
+// The fix keeps the move-is-free optimisation for the overwhelmingly common
+// case (a key seen once is used verbatim) and only disambiguates the findings
+// that actually collide, by folding their line number into the key. Colliding
+// findings are rare, so the extra re-triage when such a finding moves is a fair
+// price for never binding a verdict to the wrong finding.
+func buildVerdictKeys(findings []normalizer.Finding, projectRoot string) []string {
+	bases := make([]string, len(findings))
+	count := make(map[string]int, len(findings))
+	for i, f := range findings {
+		bases[i] = VerdictCacheKey(f, projectRoot)
+		count[bases[i]]++
+	}
+	keys := make([]string, len(findings))
+	for i := range findings {
+		if count[bases[i]] > 1 {
+			keys[i] = bases[i] + "#L" + strconv.Itoa(findings[i].LineNumber)
+		} else {
+			keys[i] = bases[i]
+		}
+	}
+	return keys
+}
+
 // VerdictCacheKey identifies a finding for the verdict cache: the rule, the
 // project-relative file, and a hash of the flagged code plus the lines around
 // it. Findings without a line (dependencies) hash their message instead.
+//
+// It can collide for two distinct findings (see buildVerdictKeys); callers that
+// cache a whole scan's findings must go through buildVerdictKeys so collisions
+// are disambiguated and no finding inherits another's verdict.
 func VerdictCacheKey(f normalizer.Finding, projectRoot string) string {
 	file := relFile(projectRoot, f.FilePath)
 	window := ""
