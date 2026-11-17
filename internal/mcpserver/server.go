@@ -498,7 +498,7 @@ func handleRunScan(project projectFunc) server.ToolHandlerFunc {
 		if g := runScanGate(); !g.Allowed {
 			msg := g.Message
 			if g.Reason == scangate.ReasonSignedOut {
-				msg += " Open the Trojan desktop app and sign in, then try again."
+				msg += " Sign in with `trojan login` (or in the Trojan desktop app), then try again."
 			}
 			return mcp.NewToolResultError("Trojan: " + msg), nil
 		}
