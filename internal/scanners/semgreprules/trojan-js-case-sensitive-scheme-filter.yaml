@@ -1,0 +1,58 @@
+rules:
+  - id: trojan-js-case-sensitive-scheme-filter
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >-
+      A link or redirect URL is checked for a dangerous scheme (javascript:,
+      data:, vbscript:) in a case-sensitive way, so an attacker can slip past
+      it with JavaScript:, JAVASCRIPT:, or any mixed case. The URL is then put
+      into an href or used as a redirect, which runs the attacker's script in
+      the victim's browser (cross-site scripting) or sends them to a hostile
+      page. Lower-case the URL before comparing (url.trim().toLowerCase()), or
+      use a case-insensitive regex (add the i flag). Best of all, allow-list the
+      schemes you permit (http:, https:, mailto:) instead of blocking bad ones.
+    metadata:
+      trojan-title: Dangerous-link check is case-sensitive and can be bypassed
+      trojan-severity: high
+      cwe:
+        - "CWE-79: Improper Neutralization of Input During Web Page Generation (Cross-site Scripting)"
+      owasp:
+        - "A03:2021 - Injection"
+      category: security
+      confidence: MEDIUM
+    patterns:
+      - pattern-either:
+          # A case-sensitive regex (no i flag) matching a dangerous scheme,
+          # run against a URL/href value.
+          - patterns:
+              - pattern-either:
+                  - pattern: $RE.test($URL)
+                  - pattern: $URL.match($RE)
+                  - pattern: $URL.replace($RE, ...)
+                  - pattern: $URL.search($RE)
+              - metavariable-regex:
+                  metavariable: $RE
+                  regex: (?i)^/\^?(javascript|data|vbscript):.*/[gmsuy]*$
+              - metavariable-regex:
+                  metavariable: $URL
+                  regex: (?i)(url|href|link|uri|src|redirect|location|target|dest|next|return)
+          # A case-sensitive string comparison against a dangerous scheme,
+          # where the URL was not lower-cased first.
+          - patterns:
+              - pattern-either:
+                  - pattern: $URL.startsWith($SCHEME)
+                  - pattern: $URL.indexOf($SCHEME) == 0
+                  - pattern: $URL.indexOf($SCHEME) === 0
+                  - pattern: $URL === $SCHEME
+                  - pattern: $URL == $SCHEME
+              - metavariable-regex:
+                  metavariable: $SCHEME
+                  regex: (?i)^["'`](javascript|data|vbscript):.*["'`]$
+              - metavariable-regex:
+                  metavariable: $URL
+                  regex: (?i)(url|href|link|uri|src|redirect|location|target|dest|next|return)
+              - pattern-not: $Y.toLowerCase().startsWith($SCHEME)
+              - pattern-not: $Y.toLowerCase().indexOf($SCHEME) == 0
+              - pattern-not: $Y.toLowerCase().indexOf($SCHEME) === 0
+              - pattern-not: $Y.toLowerCase() === $SCHEME
+              - pattern-not: $Y.toLowerCase() == $SCHEME
