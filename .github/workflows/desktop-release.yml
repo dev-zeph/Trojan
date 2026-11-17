@@ -14,7 +14,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14          # Apple Silicon (M1/M2/M3)
+          - os: macos-15          # Apple Silicon (M1/M2/M3)
             target: aarch64-apple-darwin
             goos: darwin
             go-arch: arm64
@@ -95,7 +95,7 @@ jobs:
       # stderr message is the only reliable signal -- do not "simplify" this
       # into a bare codesign call and trust its exit code.
       - name: Check entitlements parse
-        if: matrix.os == 'macos-14'
+        if: matrix.os == 'macos-15'
         working-directory: desktop/src-tauri
         run: |
           set -euo pipefail
@@ -131,12 +131,12 @@ jobs:
           # auth error, regenerate it at appleid.apple.com first. Moving to an
           # App Store Connect API key (APPLE_API_ISSUER / APPLE_API_KEY /
           # APPLE_API_KEY_PATH) removes that failure mode.
-          APPLE_CERTIFICATE: ${{ matrix.os == 'macos-14' && secrets.APPLE_CERTIFICATE || '' }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ matrix.os == 'macos-14' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
-          APPLE_SIGNING_IDENTITY: ${{ matrix.os == 'macos-14' && secrets.APPLE_SIGNING_IDENTITY || '' }}
-          APPLE_ID: ${{ matrix.os == 'macos-14' && secrets.APPLE_ID || '' }}
-          APPLE_PASSWORD: ${{ matrix.os == 'macos-14' && secrets.APPLE_PASSWORD || '' }}
-          APPLE_TEAM_ID: ${{ matrix.os == 'macos-14' && secrets.APPLE_TEAM_ID || '' }}
+          APPLE_CERTIFICATE: ${{ matrix.os == 'macos-15' && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ matrix.os == 'macos-15' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ matrix.os == 'macos-15' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_ID: ${{ matrix.os == 'macos-15' && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ matrix.os == 'macos-15' && secrets.APPLE_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ matrix.os == 'macos-15' && secrets.APPLE_TEAM_ID || '' }}
           # Auto-update signing (both platforms). This is the Tauri updater's own
           # key, unrelated to Apple codesigning. Required because
           # bundle.createUpdaterArtifacts is on: without it the build fails.
@@ -154,7 +154,7 @@ jobs:
       # image itself is not necessarily stapled and failing on that would be
       # wrong.
       - name: Verify signature and notarization
-        if: matrix.os == 'macos-14'
+        if: matrix.os == 'macos-15'
         working-directory: desktop
         run: |
           set -euo pipefail
@@ -199,7 +199,7 @@ jobs:
       # artifact so the fix can be verified without paying that again. Workflow
       # artifacts are not the release, so nothing reaches users this way.
       - name: Preserve bundle on verification failure
-        if: failure() && matrix.os == 'macos-14'
+        if: failure() && matrix.os == 'macos-15'
         uses: actions/upload-artifact@v4
         with:
           name: macos-bundle-unverified
