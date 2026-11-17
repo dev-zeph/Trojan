@@ -311,7 +311,9 @@ func handleAttackPaths(project projectFunc) server.ToolHandlerFunc {
 		// Merge in the latest scan's high/critical code findings so this tool
 		// agrees with get_findings (Semgrep-detected RCE, prototype pollution,
 		// path traversal, etc.), not just the graph's end-to-end detections.
-		flaws = append(flaws, b.scanCodeFlaws(flaws)...)
+		// A scan finding at the same file:line as a graph flaw is reconciled,
+		// not duplicated, so one bug never shows twice at two severities.
+		flaws = b.mergeScanFlaws(flaws)
 		return fitJSON(25, func(n int) any {
 			out := map[string]any{
 				"code_flaws":        capN(flaws, n),
@@ -416,19 +418,20 @@ func (b *brain) codeFlaws() []flawView {
 // too, not only in get_findings. Best-effort: with no scan yet (or only
 // graph-covered findings) it returns nothing, so graph-only callers are
 // unaffected.
-func (b *brain) scanCodeFlaws(existing []flawView) []flawView {
+func (b *brain) mergeScanFlaws(flaws []flawView) []flawView {
 	scan, err := loadLatestScan(b.root)
 	if err != nil {
-		return nil
+		return flaws
 	}
-	seen := map[string]bool{}
-	for _, f := range existing {
+	idxByLoc := map[string]int{}
+	for i, f := range flaws {
 		if f.At != "" {
-			seen[f.At] = true
+			idxByLoc[baseLoc(f.At)] = i
 		}
 	}
 	isFP := rememberedFalsePositives(b.root, false)
-	out := []flawView{}
+	added := map[string]bool{}
+	var extra []flawView
 	for _, f := range scan.Findings {
 		// Code findings only: website/DAST findings carry a URL in FilePath.
 		if f.URL != "" || f.Status != normalizer.StatusOpen {
@@ -444,10 +447,20 @@ func (b *brain) scanCodeFlaws(existing []flawView) []flawView {
 		if f.LineNumber > 0 {
 			loc = fmt.Sprintf("%s:%d", f.FilePath, f.LineNumber)
 		}
-		if seen[loc] {
+		nloc := baseLoc(loc)
+		if i, ok := idxByLoc[nloc]; ok {
+			// Same bug as a graph flaw: don't list it twice, and let the
+			// triaged scan severity win so get_attack_paths and get_findings
+			// report the one bug at the same severity.
+			if severityRank[f.Severity] > severityRank[normalizer.Severity(flaws[i].Severity)] {
+				flaws[i].Severity = string(f.Severity)
+			}
 			continue
 		}
-		seen[loc] = true
+		if added[nloc] {
+			continue
+		}
+		added[nloc] = true
 		v := flawView{
 			Rule: f.RuleID, Severity: string(f.Severity), Title: f.Title,
 			At: loc, Detail: f.Title, Key: "", Source: "scan",
@@ -464,13 +477,43 @@ func (b *brain) scanCodeFlaws(existing []flawView) []flawView {
 				v.Store = strings.Join(f.Reach.Reads, ", ")
 			}
 		}
-		out = append(out, v)
+		extra = append(extra, v)
 	}
-	// Critical before high; otherwise keep the scan's order.
+	out := append(flaws, extra...)
+	// Critical before high; otherwise keep the existing order.
 	sort.SliceStable(out, func(i, j int) bool {
 		return severityRank[normalizer.Severity(out[i].Severity)] > severityRank[normalizer.Severity(out[j].Severity)]
 	})
 	return out
+}
+
+// baseLoc reduces a "path:line" (or bare "path") location to "basename:line",
+// so the same finding reported once with an absolute path (graph) and once with
+// a project-relative path (scan) compares equal and is not listed twice.
+func baseLoc(s string) string {
+	path, line := s, ""
+	if i := strings.LastIndex(s, ":"); i >= 0 && isAllDigits(s[i+1:]) {
+		path, line = s[:i], s[i+1:]
+	}
+	if j := strings.LastIndexAny(path, "/\\"); j >= 0 {
+		path = path[j+1:]
+	}
+	if line != "" {
+		return path + ":" + line
+	}
+	return path
+}
+
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // --- trace_dataflow ---

@@ -43,12 +43,22 @@ func withScan(project projectFunc, fn func(projectPath string, scan *normalizer.
 func handleSecuritySummary(project projectFunc) server.ToolHandlerFunc {
 	return withScan(project, func(projectPath string, scan *normalizer.ScanResult) (*mcp.CallToolResult, error) {
 		bySeverity := map[string]int{}
+		hiddenFP := 0
 		var open []normalizer.Finding
 		for _, f := range scan.Findings {
-			if f.Status == normalizer.StatusOpen {
-				bySeverity[string(f.Severity)]++
-				open = append(open, f)
+			if f.Status != normalizer.StatusOpen {
+				continue
 			}
+			open = append(open, f)
+			// Don't inflate the headline counts with findings Trojan has
+			// already judged a likely false alarm: the "critical" total should
+			// be the real work, not a number padded by a placeholder secret the
+			// scanner itself hid. They're reported separately as hidden_false_alarms.
+			if f.HiddenAsFalseAlarm() {
+				hiddenFP++
+				continue
+			}
+			bySeverity[string(f.Severity)]++
 		}
 		// Only high/critical findings are candidates for most_urgent.
 		var highPlus []normalizer.Finding
@@ -110,6 +120,7 @@ func handleSecuritySummary(project projectFunc) server.ToolHandlerFunc {
 			"project":               projectPath,
 			"scanned_at":            scan.Timestamp,
 			"open_by_severity":      bySeverity,
+			"hidden_false_alarms":   hiddenFP,
 			"most_urgent":           top,
 			"personal_data_handled": personalData,
 			"vulnerable_packages":   vulnerable,
