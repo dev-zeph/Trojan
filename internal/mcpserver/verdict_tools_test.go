@@ -8,6 +8,35 @@ import (
 	"github.com/dev-zeph/trojan/internal/normalizer"
 )
 
+// The likely_false_alarms counter must equal the number of findings carrying
+// verdict likely_fp, even when nearly every finding is one (regression for the
+// counter that used to report 0 regardless of per-finding verdicts).
+func TestGetFindingsLikelyFalseAlarmCounter(t *testing.T) {
+	project, root := brainFixture(t, "vibeapp")
+	findings := []normalizer.Finding{
+		{ID: "a", Severity: normalizer.SeverityHigh, Title: "A", RuleID: "r.a", FilePath: "a.ts", LineNumber: 1, Status: normalizer.StatusOpen, Verdict: "likely_fp", VerdictReason: "noise"},
+		{ID: "b", Severity: normalizer.SeverityMedium, Title: "B", RuleID: "r.b", FilePath: "b.ts", LineNumber: 1, Status: normalizer.StatusOpen, Verdict: "likely_fp", VerdictReason: "noise"},
+		{ID: "c", Severity: normalizer.SeverityLow, Title: "C", RuleID: "r.c", FilePath: "c.ts", LineNumber: 1, Status: normalizer.StatusOpen, Verdict: "needs_manual", VerdictReason: "unsure"},
+		{ID: "d", Severity: normalizer.SeverityHigh, Title: "D", RuleID: "r.d", FilePath: "d.ts", LineNumber: 1, Status: normalizer.StatusOpen, Verdict: "confirmed", VerdictReason: "real"},
+	}
+	if _, err := normalizer.SaveScanResult(root, findings); err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		LikelyFalseAlarms int `json:"likely_false_alarms"`
+		Shown             int `json:"shown"`
+	}
+	if err := json.Unmarshal([]byte(mustCall(t, handleGetFindings(project), nil)), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.LikelyFalseAlarms != 2 {
+		t.Errorf("likely_false_alarms = %d, want 2 (the two likely_fp findings)", out.LikelyFalseAlarms)
+	}
+	if out.Shown != 4 {
+		t.Errorf("shown = %d, want all 4 findings listed", out.Shown)
+	}
+}
+
 // get_findings lists AI likely false alarms (with the reason) instead of
 // hiding them, and mark_real flips one to confirmed and remembers it.
 func TestGetFindingsShowsVerdictsAndMarkReal(t *testing.T) {
