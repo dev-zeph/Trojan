@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 
@@ -61,7 +62,7 @@ func mustCall(t *testing.T, h func(context.Context, mcp.CallToolRequest) (*mcp.C
 
 type attackPathsOut struct {
 	Flaws []struct {
-		Rule, Severity, Title, At, Entry, Store string
+		Rule, Severity, Title, At, Entry, Store, Source string
 	} `json:"code_flaws"`
 	Paths []struct {
 		Route, Entry, Reaches, At, Severity string
@@ -466,5 +467,82 @@ func TestAttackPathsCodeFlaws(t *testing.T) {
 	}
 	if fl := attackPaths(t, "vibeapp").Flaws; len(fl) != 1 || fl[0].Rule != "trojan.sql-injection" {
 		t.Errorf("vibeapp: want only the export SQL injection (#5), got %+v", fl)
+	}
+}
+
+// TestAttackPathsMergesScanFindings checks that get_attack_paths folds in the
+// latest scan's high/critical code findings (e.g. a Semgrep-detected RCE) that
+// the graph's end-to-end detections don't cover, so it agrees with
+// get_findings. Low-severity findings and website findings are left out.
+func TestAttackPathsMergesScanFindings(t *testing.T) {
+	project, dst := brainFixture(t, "storeapp")
+	scan := normalizer.ScanResult{
+		Timestamp:   time.Now(),
+		ProjectPath: dst,
+		Findings: []normalizer.Finding{
+			{
+				ID: "f-rce-1", Scanner: "semgrep", Category: "sast",
+				Severity: normalizer.SeverityHigh, Title: "Code injection via new Function",
+				FilePath: "lib/render.ts", LineNumber: 42,
+				RuleID: "trojan.dynamic-code-exec", Status: normalizer.StatusOpen,
+			},
+			{
+				ID: "f-low-1", Scanner: "semgrep", Category: "sast",
+				Severity: normalizer.SeverityLow, Title: "Minor style nit",
+				FilePath: "lib/style.ts", LineNumber: 5,
+				RuleID: "trojan.style", Status: normalizer.StatusOpen,
+			},
+			{
+				ID: "f-site-1", Scanner: "dast", Category: "dast",
+				Severity: normalizer.SeverityHigh, Title: "Reflected XSS",
+				FilePath: "https://example.com/search", URL: "https://example.com/search",
+				RuleID: "trojan.reflected-xss", Status: normalizer.StatusOpen,
+			},
+		},
+	}
+	data, err := json.Marshal(scan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scansDir := filepath.Join(dst, ".trojan", "scans")
+	if err := os.MkdirAll(scansDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scansDir, "scan-0001.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out attackPathsOut
+	if err := json.Unmarshal([]byte(mustCall(t, handleAttackPaths(project), nil)), &out); err != nil {
+		t.Fatal(err)
+	}
+
+	var sawRCE bool
+	for _, f := range out.Flaws {
+		if f.Rule == "trojan.dynamic-code-exec" {
+			sawRCE = true
+			if f.At != "lib/render.ts:42" || f.Source != "scan" || f.Severity != "high" {
+				t.Errorf("merged RCE flaw wrong shape: %+v", f)
+			}
+		}
+		if f.Rule == "trojan.style" {
+			t.Error("low-severity finding should not be merged into code_flaws")
+		}
+		if f.Rule == "trojan.reflected-xss" {
+			t.Error("website/DAST finding should not be merged into code_flaws")
+		}
+	}
+	if !sawRCE {
+		t.Errorf("high-severity Semgrep RCE not merged into code_flaws: %+v", out.Flaws)
+	}
+	// The graph's own end-to-end detections (storeapp has 2) are still present.
+	var graphFlaws int
+	for _, f := range out.Flaws {
+		if f.Source == "graph" {
+			graphFlaws++
+		}
+	}
+	if graphFlaws != 2 {
+		t.Errorf("want 2 graph-sourced flaws preserved, got %d: %+v", graphFlaws, out.Flaws)
 	}
 }
