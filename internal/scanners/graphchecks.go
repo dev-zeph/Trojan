@@ -88,6 +88,9 @@ func detectionsToFindings(projectPath, root string, ds []graph.Detection) []norm
 		case graph.DetectStoredXSS:
 			f.CWEIDs = []string{"CWE-79"}
 			f.OWASP = []string{"A03:2021 - Injection"}
+		case graph.DetectUnauthSensitiveData:
+			f.CWEIDs = []string{"CWE-862"}
+			f.OWASP = []string{"A01:2021 - Broken Access Control"}
 		}
 		out = append(out, f)
 	}
