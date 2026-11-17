@@ -20,7 +20,7 @@ package graph
 // builder starts producing different nodes or edges for the same source (a
 // new sink, a changed rule), so graphstore.Refresh rebuilds cached graphs
 // instead of serving ones built by older detection logic.
-const BuilderVersion = "3"
+const BuilderVersion = "5"
 
 // NodeKind classifies a graph node.
 type NodeKind string

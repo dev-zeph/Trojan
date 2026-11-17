@@ -1,0 +1,70 @@
+rules:
+  - id: trojan-js-prototype-pollution
+    languages: [javascript, typescript]
+    severity: WARNING
+    message: >-
+      This recursive merge copies every key from one object into another,
+      including keys named __proto__, constructor, or prototype, without
+      skipping them. When the source object comes from the request body, an
+      attacker can send {"__proto__": {"isAdmin": true}} and change the
+      built-in prototype that every object in the app shares, so unrelated
+      code starts seeing fields the attacker chose (prototype pollution). This
+      can bypass permission checks or crash the server. Before assigning, skip
+      the dangerous keys, for example: if (key === "__proto__" || key ===
+      "constructor" || key === "prototype") continue; or use a vetted merge
+      library and merge into Object.create(null).
+    metadata:
+      trojan-title: Request can poison shared object defaults (prototype pollution)
+      trojan-severity: high
+      cwe:
+        - "CWE-1321: Improperly Controlled Modification of Object Prototype Attributes ('Prototype Pollution')"
+      owasp:
+        - "A08:2021 - Software and Data Integrity Failures"
+      category: security
+      confidence: MEDIUM
+    patterns:
+      # Inside a function that takes a target + source and calls itself: the
+      # recursive-merge shape, not a one-off copy.
+      - pattern-either:
+          - pattern-inside: |
+              function $FN($TGT, $SRC) { ... }
+          - pattern-inside: |
+              $FN = function ($TGT, $SRC) { ... }
+          - pattern-inside: |
+              $FN = ($TGT, $SRC) => { ... }
+      - pattern-inside: |
+          { ... $FN(...); ... }
+      # Iterating the keys of the source parameter...
+      - pattern-either:
+          - pattern-inside: |
+              for (const $K of Object.keys($SRC)) { ... }
+          - pattern-inside: |
+              for (let $K of Object.keys($SRC)) { ... }
+          - pattern-inside: |
+              for (const $K in $SRC) { ... }
+          - pattern-inside: |
+              for (let $K in $SRC) { ... }
+          - pattern-inside: |
+              Object.keys($SRC).forEach(...)
+      # ...and assigning straight into the target under that key.
+      - pattern-either:
+          - pattern: $TGT[$KEY] = $VAL
+          - pattern: $TGT[$KEY] = {}
+      - metavariable-regex:
+          metavariable: $TGT
+          regex: ^(?!.*(__proto__|prototype)).*$
+      # Already guards the dangerous keys -> safe, do not flag.
+      - pattern-not-inside: |
+          for (...) {
+            ...
+            if (<... "__proto__" ...>) { ... }
+            ...
+          }
+      - pattern-not-inside: |
+          for (...) {
+            ...
+            if (<... "constructor" ...>) { ... }
+            ...
+          }
+      - pattern-not-inside: |
+          Object.keys($SRC).filter(...).forEach(...)

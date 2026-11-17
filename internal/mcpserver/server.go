@@ -3,12 +3,15 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -454,12 +457,48 @@ var runScanGate = func() scangate.Result {
 	return scangate.Check(token, ai.FetchLicense)
 }
 
+// scanFailureMessage turns a failed scan-once child into something a user can
+// act on. A SIGKILL (ctx deadline hit, or the OS out-of-memory killer) arrives
+// as the opaque "signal: killed"; name the likely cause and the ways forward,
+// and surface an earlier saved scan if one exists rather than implying there
+// are no results at all.
+func scanFailureMessage(runErr error, scanCtx context.Context, projectPath string, out []byte) string {
+	killed := false
+	var exitErr *exec.ExitError
+	if errors.As(runErr, &exitErr) {
+		if ws, ok := exitErr.Sys().(syscall.WaitStatus); ok && ws.Signaled() && ws.Signal() == syscall.SIGKILL {
+			killed = true
+		}
+	}
+
+	var b strings.Builder
+	if killed {
+		if scanCtx.Err() == context.DeadlineExceeded {
+			b.WriteString("Trojan: the scan ran past its 15-minute limit and was stopped. This usually means a very large project; scan a subfolder, or run `trojan ci` in a terminal where there is no time limit.")
+		} else {
+			b.WriteString("Trojan: the scan was killed before it finished, most likely low memory on this machine (the system out-of-memory killer). Close some other apps and try again, or run `trojan ci` in a terminal.")
+		}
+	} else {
+		b.WriteString("Trojan: the scan did not finish: " + runErr.Error())
+		if trimmed := strings.TrimSpace(string(out)); trimmed != "" {
+			b.WriteString("\n" + trimmed)
+		}
+	}
+
+	// A scan from before this attempt is better than nothing.
+	if scan, err := loadLatestScan(projectPath); err == nil {
+		b.WriteString(fmt.Sprintf("\n\nShowing the last saved scan instead — %d finding(s), %d open.",
+			len(scan.Findings), countOpen(scan.Findings)))
+	}
+	return b.String()
+}
+
 func handleRunScan(project projectFunc) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		if g := runScanGate(); !g.Allowed {
 			msg := g.Message
 			if g.Reason == scangate.ReasonSignedOut {
-				msg += " Open the Trojan desktop app and sign in, then try again."
+				msg += " Sign in with `trojan login` (or in the Trojan desktop app), then try again."
 			}
 			return mcp.NewToolResultError("Trojan: " + msg), nil
 		}
@@ -474,10 +513,20 @@ func handleRunScan(project projectFunc) server.ToolHandlerFunc {
 		if err != nil {
 			return mcp.NewToolResultError("could not locate the Trojan binary: " + err.Error()), nil
 		}
-		cmd := exec.CommandContext(ctx, exe, "mcp", "scan-once", projectPath)
+		// A full scan (all scanners + code graph + triage) can take 30s or
+		// more. The inbound MCP request often carries a short per-call
+		// deadline from the client; binding the child to it makes a legitimate
+		// scan get SIGKILLed partway through, which Go reports as the opaque
+		// "signal: killed". Give the scan its own generous deadline instead,
+		// keeping request values (tracing) but dropping the inherited one. The
+		// scan writes results to disk, so even a client that gave up waiting
+		// gets them on the next call.
+		scanCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Minute)
+		defer cancel()
+		cmd := exec.CommandContext(scanCtx, exe, "mcp", "scan-once", projectPath)
 		cmd.Dir = projectPath
 		if out, err := cmd.CombinedOutput(); err != nil {
-			return mcp.NewToolResultError("scan failed: " + err.Error() + "\n" + string(out)), nil
+			return mcp.NewToolResultError(scanFailureMessage(err, scanCtx, projectPath, out)), nil
 		}
 
 		scan, err := loadLatestScan(projectPath)
@@ -625,7 +674,9 @@ func handleGetFixableFindings(project projectFunc) server.ToolHandlerFunc {
 			}
 		}
 
-		var results []findingContext
+		// Collect the fixable findings: open, at or above min_severity, and not a
+		// likely false alarm (fixing a false positive wastes the agent's turn).
+		var fixable []normalizer.Finding
 		for _, f := range scan.Findings {
 			if f.Status != normalizer.StatusOpen {
 				continue
@@ -633,14 +684,65 @@ func handleGetFixableFindings(project projectFunc) server.ToolHandlerFunc {
 			if severityRank[f.Severity] < minRank {
 				continue
 			}
-			results = append(results, buildFindingContext(f, projectPath))
+			if f.HiddenAsFalseAlarm() {
+				continue
+			}
+			fixable = append(fixable, f)
+		}
+
+		// Order so the agent fixes the most actionable first: confirmed before
+		// needs_manual before un-triaged, then by severity, stably.
+		sort.SliceStable(fixable, func(i, j int) bool {
+			if a, b := verdictPriority(fixable[i].Verdict), verdictPriority(fixable[j].Verdict); a != b {
+				return a < b
+			}
+			return severityRank[fixable[i].Severity] > severityRank[fixable[j].Severity]
+		})
+
+		// Returning all findings at full detail overflows the MCP response limit
+		// (the client then has to fall back to a file), so return a prioritised,
+		// capped subset: at most fixableMaxCount entries and roughly
+		// fixableMaxBytes of JSON, whichever comes first, with a note of how many
+		// more remain. Each entry keeps all its fix-relevant fields.
+		const (
+			fixableMaxCount = 15
+			fixableMaxBytes = 40000
+		)
+		results := make([]findingContext, 0, min(len(fixable), fixableMaxCount))
+		size := 0
+		for _, f := range fixable {
+			if len(results) >= fixableMaxCount {
+				break
+			}
+			fc := buildFindingContext(f, projectPath)
+			b, err := json.Marshal(fc)
+			if err != nil {
+				continue
+			}
+			if len(results) > 0 && size+len(b) > fixableMaxBytes {
+				break
+			}
+			size += len(b)
+			results = append(results, fc)
+		}
+
+		omitted := len(fixable) - len(results)
+		note := ""
+		if omitted > 0 {
+			note = fmt.Sprintf("Showing the %d highest-priority fixable finding(s); %d more are not shown. Fix these, mark them, then call get_fixable_findings again — or raise min_severity to narrow the list. Use get_finding(id) for a single finding's full detail.", len(results), omitted)
 		}
 
 		summary := struct {
 			Total    int              `json:"total"`
+			Returned int              `json:"returned"`
+			Omitted  int              `json:"omitted"`
+			Note     string           `json:"note,omitempty"`
 			Findings []findingContext `json:"findings"`
 		}{
-			Total:    len(results),
+			Total:    len(fixable),
+			Returned: len(results),
+			Omitted:  omitted,
+			Note:     note,
 			Findings: results,
 		}
 
@@ -649,6 +751,20 @@ func handleGetFixableFindings(project projectFunc) server.ToolHandlerFunc {
 			return mcp.NewToolResultError("failed to serialize findings"), nil
 		}
 		return mcp.NewToolResultText(string(out)), nil
+	}
+}
+
+// verdictPriority ranks findings for get_fixable_findings: a human/AI-confirmed
+// finding is the most actionable, then one that needs manual review, then one
+// with no verdict yet. likely_fp is filtered out before this is used.
+func verdictPriority(verdict string) int {
+	switch verdict {
+	case "confirmed":
+		return 0
+	case "needs_manual":
+		return 1
+	default:
+		return 2
 	}
 }
 

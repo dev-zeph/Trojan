@@ -164,8 +164,12 @@ func handleGetAllFindings(project projectFunc) func(context.Context, mcp.CallToo
 
 		rows := []unifiedRow{}
 
+		// Resolve the project once: it scopes BOTH the code scan and which
+		// website tests may be included below.
+		projectPath, perr := project(ctx, req)
+
 		// Code findings (best-effort: skip quietly when no project/scan).
-		if projectPath, err := project(ctx, req); err == nil {
+		if perr == nil {
 			if scan, err := loadLatestScan(projectPath); err == nil {
 				for _, f := range scan.Findings {
 					if !keep(f) {
@@ -181,18 +185,28 @@ func handleGetAllFindings(project projectFunc) func(context.Context, mcp.CallToo
 			}
 		}
 
-		// Website findings across every tested site.
-		for _, dir := range normalizer.WebsiteSiteDirs() {
-			scan, err := loadLatestScan(dir)
-			if err != nil {
-				continue
-			}
-			for _, f := range scan.Findings {
-				if !keep(f) {
+		// Website findings — only for sites whose pen-test was run against THIS
+		// project's source folder. A site tested for a different project (or one
+		// with no recorded source folder) would expose unrelated hosts' and
+		// apps' vulnerability details, so it is left out. Previously every tested
+		// site on the machine was merged in regardless of project_path, leaking
+		// other projects' findings.
+		if perr == nil {
+			for _, dir := range normalizer.WebsiteSiteDirs() {
+				if !websiteRunMatchesProject(dir, projectPath) {
 					continue
 				}
-				rows = append(rows, unifiedRow{ID: f.ID, Source: "website", Site: scan.ProjectPath,
-					Severity: string(f.Severity), Title: f.Title, Location: f.FilePath, Status: string(f.Status), Verdict: f.Verdict})
+				scan, err := loadLatestScan(dir)
+				if err != nil {
+					continue
+				}
+				for _, f := range scan.Findings {
+					if !keep(f) {
+						continue
+					}
+					rows = append(rows, unifiedRow{ID: f.ID, Source: "website", Site: scan.ProjectPath,
+						Severity: string(f.Severity), Title: f.Title, Location: f.FilePath, Status: string(f.Status), Verdict: f.Verdict})
+				}
 			}
 		}
 
@@ -205,6 +219,29 @@ func handleGetAllFindings(project projectFunc) func(context.Context, mcp.CallToo
 		}
 		return mcp.NewToolResultText(string(out)), nil
 	}
+}
+
+// websiteRunMatchesProject reports whether the site in siteDir was last
+// pen-tested against projectPath's source folder. Website findings are surfaced
+// in get_all_findings only for their own project: a site tested for another
+// project, or with no recorded source folder, must not leak into this project's
+// list (it would expose unrelated hosts' vulnerability details).
+func websiteRunMatchesProject(siteDir, projectPath string) bool {
+	if projectPath == "" {
+		return false
+	}
+	r := loadRun(siteDir)
+	if r == nil || r.ProjectPath == "" {
+		return false
+	}
+	if filepath.Clean(r.ProjectPath) == filepath.Clean(projectPath) {
+		return true
+	}
+	// Tolerate project_path pointing at a subfolder of the scanned root (or
+	// vice versa): both walk up to the same scanned project folder.
+	a, aok := findScannedProject(r.ProjectPath)
+	b, bok := findScannedProject(projectPath)
+	return aok && bok && a == b
 }
 
 // resolveSiteDir maps a URL or host to a tested site's folder. An empty want

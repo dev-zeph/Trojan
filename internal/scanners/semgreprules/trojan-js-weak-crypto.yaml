@@ -3,13 +3,18 @@ rules:
     languages: [javascript, typescript]
     severity: ERROR
     message: >-
-      Passwords are stored with a fast general-purpose hash (MD5 or SHA). If
-      the user table ever leaks (a backup, an injection bug, a stolen laptop),
-      an attacker can crack most of these hashes in minutes on a gaming GPU,
-      then reuse those passwords on your users' other accounts. Use a password
-      hashing function built for this: bcrypt, argon2, or scrypt.
+      This code protects passwords with a method that is far too easy to crack.
+      Either a fast general-purpose hash (MD5 or SHA) is used on a password, or
+      PBKDF2 is called with far too few iterations (OWASP recommends about
+      600,000 for PBKDF2-HMAC-SHA256; anything under 100,000 is weak). If the
+      user table ever leaks (a backup, an injection bug, a stolen laptop), an
+      attacker can crack most of these passwords quickly on a gaming GPU, then
+      reuse them on your users' other accounts. Use a password hashing function
+      with a strong work factor: bcrypt, argon2, scrypt, or PBKDF2 with at
+      least 600,000 iterations.
     metadata:
-      trojan-title: Passwords stored with a fast, crackable hash
+      trojan-title: Passwords protected with a weak, crackable hash
+      trojan-severity: high
       cwe:
         - "CWE-916: Use of Password Hash With Insufficient Computational Effort"
       owasp:
@@ -18,30 +23,53 @@ rules:
       confidence: MEDIUM
     patterns:
       - pattern-either:
-          # The hashed value is named like a password...
-          - patterns:
-              - pattern: $C.createHash($ALG).update($PW, ...)
-              - metavariable-regex:
-                  metavariable: $PW
-                  regex: (?i)^[\w.\[\]"']*(passw|pwd|passphrase)[\w\]"']*$
-          # ...or the hashing happens inside a password helper.
+          # A fast general-purpose hash (MD5/SHA) used on a password.
           - patterns:
               - pattern-either:
-                  - pattern-inside: |
-                      function $FN(...) { ... }
-                  - pattern-inside: |
-                      $FN = (...) => { ... }
-                  - pattern-inside: |
-                      $FN = (...) => $BODY
-                  - pattern-inside: |
-                      $FN(...) { ... }
+                  # The hashed value is named like a password...
+                  - patterns:
+                      - pattern: $C.createHash($ALG).update($PW, ...)
+                      - metavariable-regex:
+                          metavariable: $PW
+                          regex: (?i)^[\w.\[\]"']*(passw|pwd|passphrase)[\w\]"']*$
+                  # ...or the hashing happens inside a password helper.
+                  - patterns:
+                      - pattern-either:
+                          - pattern-inside: |
+                              function $FN(...) { ... }
+                          - pattern-inside: |
+                              $FN = (...) => { ... }
+                          - pattern-inside: |
+                              $FN = (...) => $BODY
+                          - pattern-inside: |
+                              $FN(...) { ... }
+                      - metavariable-regex:
+                          metavariable: $FN
+                          regex: (?i).*(hash|verify|check|compare|encrypt|store)_?(user)?_?(passw|pwd).*
+                      - pattern: $C.createHash($ALG).update(...)
               - metavariable-regex:
-                  metavariable: $FN
-                  regex: (?i).*(hash|verify|check|compare|encrypt|store)_?(user)?_?(passw|pwd).*
-              - pattern: $C.createHash($ALG).update(...)
-      - metavariable-regex:
-          metavariable: $ALG
-          regex: (?i)^["'`](md4|md5|sha-?1|sha-?224|sha-?256|sha-?384|sha-?512|sha3-\d+|ripemd160)["'`]$
+                  metavariable: $ALG
+                  regex: (?i)^["'`](md4|md5|sha-?1|sha-?224|sha-?256|sha-?384|sha-?512|sha3-\d+|ripemd160)["'`]$
+          # PBKDF2 called with too few iterations to slow an attacker down.
+          - patterns:
+              - pattern-either:
+                  - pattern: $C.pbkdf2Sync($PW, $SALT, $ITER, ...)
+                  - pattern: $C.pbkdf2($PW, $SALT, $ITER, ...)
+              - metavariable-comparison:
+                  metavariable: $ITER
+                  comparison: $ITER < 100000
+          # A PBKDF2 iteration count set far too low in a config object, where
+          # the call site reads it by name (so constant propagation can't see
+          # it). A value of 32..99999 cannot be a bcrypt cost (max 31), so this
+          # is unambiguously a weak key-derivation work factor.
+          - patterns:
+              - pattern: "$K: $N"
+              - metavariable-regex:
+                  metavariable: $K
+                  regex: (?i)^(password_?rounds|password_?iterations|pbkdf2?_?(iterations|rounds)|hash_?iterations|kdf_?iterations)$
+              - metavariable-comparison:
+                  metavariable: $N
+                  comparison: $N >= 32 and $N < 100000
 
   - id: trojan-js-predictable-token
     languages: [javascript, typescript]

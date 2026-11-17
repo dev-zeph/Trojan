@@ -160,6 +160,7 @@ type jsRoute struct {
 	middleware             []string // names of the middle arguments
 	handlerID              int      // inline handler node, or -1
 	handlerRef             string   // identifier/member text of a by-reference handler
+	handlerSpec            string   // require("./x") spec when the handler is an inline module require
 	pos                    uint32
 }
 
@@ -609,6 +610,11 @@ func (b *jsBuilder) handleCall(ctx context.Context, n tswasm.Node, curFn int) er
 				if lastKind == "identifier" || lastKind == "member_expression" {
 					r.handlerRef = strings.TrimSpace(b.f.text(ctx, last))
 				}
+				// app.get("/x", require("./routes/x")) where the module's
+				// export is the handler function itself.
+				if spec, ok := b.requireSpec(ctx, last); ok {
+					r.handlerSpec = spec
+				}
 			}
 		}
 
@@ -643,14 +649,41 @@ func (b *jsBuilder) handleCall(ctx context.Context, n tswasm.Node, curFn int) er
 	return nil
 }
 
+// pathTraversalConstant reports whether a file-op sink ("... path traversal")
+// should be skipped because its path argument holds no request-derived input.
+// A write/read to a constant or config-derived path (fs.writeFileSync(
+// path.join(DATA_DIR, ".session-key"), ...)) cannot be steered by an attacker,
+// so flagging it as path traversal — and, for a module-init file op, fanning
+// that finding out across every route that transitively requires the module —
+// is a false positive. Only file ops are gated (by the "path traversal" rule
+// text); other sinks are unaffected.
+func (b *jsBuilder) pathTraversalConstant(ctx context.Context, fnID int, rule string, argNodes []tswasm.Node) bool {
+	if !strings.Contains(rule, "path traversal") {
+		return false
+	}
+	if len(argNodes) == 0 {
+		return true // no path argument to be attacker-controlled
+	}
+	// sqlFromRequest is a generic "do these argument subtrees read request data,
+	// directly or through a local tainted in this function" check; here it is
+	// applied to the path argument only.
+	return !b.sqlFromRequest(ctx, fnID, argNodes[:1])
+}
+
 // detectSinks classifies one call inside a function.
 func (b *jsBuilder) detectSinks(ctx context.Context, n tswasm.Node, curFn int, calleeNode tswasm.Node, calleeKind, calleeText string, argNodes []tswasm.Node, argsText string) {
 	canon := b.canonicalCallee(calleeText)
 	if s, ok := jsKnownSinks[calleeText]; ok {
+		if b.pathTraversalConstant(ctx, curFn, s.rule, argNodes) {
+			return
+		}
 		b.addSink(ctx, n, curFn, calleeText, s.rule, s.sev)
 		return
 	}
 	if s, ok := jsKnownSinks[canon]; ok {
+		if b.pathTraversalConstant(ctx, curFn, s.rule, argNodes) {
+			return
+		}
 		b.addSink(ctx, n, curFn, calleeText, s.rule, s.sev)
 		return
 	}
@@ -691,6 +724,12 @@ func (b *jsBuilder) detectSinks(ctx context.Context, n tswasm.Node, curFn int, c
 				concat = true
 				break
 			}
+		}
+		// A statement that only looks string-built because of a bound
+		// ?-placeholder list or a constant-whitelist member is parameterized, not
+		// injection: drop the injection sink so it is not a false positive.
+		if concat && b.sqlDynamicPartsSanitized(ctx, curFn, argNodes) {
+			concat = false
 		}
 		if concat {
 			rule := RuleSQLConcat

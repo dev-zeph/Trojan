@@ -90,6 +90,33 @@ func TestSecuritySummary(t *testing.T) {
 	if isErr || !strings.Contains(text, "Hard-coded password") || strings.Contains(text, "Old issue") || !strings.Contains(text, `"exists": false`) {
 		t.Errorf("summary = %s", text)
 	}
+	// BUG D: h1 is a high-severity likely_fp and c1 is a confirmed critical.
+	// most_urgent must drop the likely_fp when a real finding exists. The
+	// "SQL injection" title only appears in most_urgent, not in the counts.
+	if strings.Contains(text, "SQL injection") {
+		t.Errorf("most_urgent still includes the likely_fp: %s", text)
+	}
+}
+
+// TestSecuritySummaryFallbackAllFP: when every high+ finding is a likely_fp,
+// most_urgent should still show them rather than be empty.
+func TestSecuritySummaryFallbackAllFP(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	os.MkdirAll(filepath.Join(home, ".trojan"), 0700)                                                                   //nolint:errcheck
+	os.WriteFile(filepath.Join(home, ".trojan", "config.json"), []byte(`{"access_token":"tok","familiarity":0}`), 0600) //nolint:errcheck
+	proj := filepath.Join(home, "app")
+	if _, err := normalizer.SaveScanResult(proj, []normalizer.Finding{
+		{ID: "c1", Severity: normalizer.SeverityCritical, Title: "Only critical is FP", FilePath: "a.ts", LineNumber: 1, Status: normalizer.StatusOpen, Verdict: "likely_fp"},
+		{ID: "l1", Severity: normalizer.SeverityLow, Title: "Low real", Status: normalizer.StatusOpen},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	project := func(context.Context, mcp.CallToolRequest) (string, error) { return proj, nil }
+	text, isErr := callTool(t, handleSecuritySummary(project), nil)
+	if isErr || !strings.Contains(text, "Only critical is FP") {
+		t.Errorf("all-FP fallback should still surface the FP critical: %s", text)
+	}
 }
 
 func TestStartWebsiteTestNeedsOwnerConfirmation(t *testing.T) {

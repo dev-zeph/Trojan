@@ -17,7 +17,7 @@ import (
 // httptest server instead of the real edge function.
 var triageURL = "https://dtmocojzvgsswjdsrmqr.supabase.co/functions/v1/triage"
 
-const triageBatchSize = 40 // must match MAX_FINDINGS in the triage edge function
+const triageBatchSize = 12 // must match MAX_FINDINGS in the triage edge function
 
 // noVerdictRationale is what a finding gets when the model returned no usable
 // verdict for it. It is deliberately generic and never copied from another
@@ -65,6 +65,54 @@ type triageFindingWire struct {
 	// (from cross-scanner dedup — internal/normalizer/dedup.go). More than one is
 	// corroboration the edge prompt weights toward "confirmed" (A2).
 	AgreedScanners []string `json:"agreedScanners,omitempty"`
+
+	// GraphContext carries the facts Trojan's code graph already computed about
+	// this finding's location: whether a public entrypoint reaches it, whether
+	// that path passes a login check, which datastores it reads/writes, and
+	// whether it touches sensitive data. For a code (SAST) finding there is no
+	// HTTP response to prove exploitation, so this reachability/taint context is
+	// what lets the triage model judge a plausible attack path instead of
+	// guessing from a snippet. Empty when the finding has no graph node
+	// (dependencies, config files) or no graph was built.
+	GraphContext string `json:"graphContext,omitempty"`
+}
+
+// graphContext renders a finding's code-graph facts (internal/reach) into a
+// compact line for the triage model. Returns "" when there is nothing to say.
+func graphContext(f normalizer.Finding) string {
+	r := f.Reach
+	if r == nil {
+		return ""
+	}
+	var parts []string
+	switch {
+	case r.Reachable && !r.Guarded:
+		parts = append(parts, "reachable from a PUBLIC entrypoint with NO login check")
+	case r.Reachable && r.Guarded:
+		parts = append(parts, "reachable only behind a login check")
+	default:
+		parts = append(parts, "not reached by any known public entrypoint")
+	}
+	if len(r.Entrypoints) > 0 {
+		parts = append(parts, "entrypoints: "+strings.Join(r.Entrypoints, "; "))
+	}
+	if len(r.Reads) > 0 {
+		parts = append(parts, "reads: "+strings.Join(r.Reads, ", "))
+	}
+	if len(r.Writes) > 0 {
+		parts = append(parts, "writes: "+strings.Join(r.Writes, ", "))
+	}
+	if r.Sensitive {
+		s := "touches sensitive data"
+		if len(r.Categories) > 0 {
+			s += " (" + strings.Join(r.Categories, ", ") + ")"
+		}
+		parts = append(parts, s)
+	}
+	if r.ClientSide {
+		parts = append(parts, "runs in / is called from browser code")
+	}
+	return strings.Join(parts, "; ")
 }
 
 // TriageFindings asks the backend to adversarially verify each finding against
@@ -172,6 +220,7 @@ func buildTriageWire(findings []normalizer.Finding) []triageFindingWire {
 			SourceFile:      f.SourceFile,
 			SourceLine:      f.SourceLine,
 			AgreedScanners:  f.AgreedScanners,
+			GraphContext:    graphContext(f),
 		}
 	}
 	return wire
@@ -219,7 +268,11 @@ func triageBatch(findings []normalizer.Finding, accessToken string) (map[int]Ver
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 60 * time.Second}
+	// Sonnet judging a full batch of findings (each with its enclosing code and
+	// graph context) regularly runs past a minute; the edge function aborts at
+	// 90s. A short client timeout here silently dropped the whole batch to
+	// untriaged before the edge could answer, so give Sonnet the time it needs.
+	client := &http.Client{Timeout: 180 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("triage request failed: %w", err)

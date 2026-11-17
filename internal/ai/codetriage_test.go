@@ -332,3 +332,96 @@ func TestTriageCodeScan_SendsCodeContextForStaticFindings(t *testing.T) {
 		t.Fatalf("static finding wire is missing context: %+v", w)
 	}
 }
+
+// Two distinct findings of the same rule in the same file whose ±3-line cache
+// windows are byte-identical (duplicated code) once shared a single cache key,
+// so one finding wore the other's verdict+rationale on a rescan. buildVerdictKeys
+// must give them distinct keys, and each must keep its own verdict across a
+// cache-served rescan.
+func TestTriageCodeScan_CollidingWindowsKeepOwnVerdict(t *testing.T) {
+	root := t.TempDir()
+	// 24 identical lines: any ±3 window away from the edges is byte-identical,
+	// so the two findings below share a bare VerdictCacheKey.
+	var body strings.Builder
+	for i := 0; i < 24; i++ {
+		body.WriteString("merge(target, src)\n")
+	}
+	if err := os.WriteFile(filepath.Join(root, "util.js"), []byte(body.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Each finding carries an 8+ line SurroundingCode (so withTriageContext keeps
+	// it) with a distinct marker; the stub judges on that marker, standing in for
+	// the model seeing the wider enclosing block the narrow key window omits.
+	ctx := func(marker string) string {
+		var b strings.Builder
+		for i := 0; i < 9; i++ {
+			b.WriteString(marker + "\n")
+		}
+		return b.String()
+	}
+	mk := func(id string, line int, marker string) normalizer.Finding {
+		return normalizer.Finding{
+			ID: id, Scanner: "semgrep", Category: "sast", Severity: normalizer.SeverityHigh,
+			Title: "Prototype pollution", RuleID: "trojan-js-prototype-pollution",
+			FilePath: "util.js", LineNumber: line, CodeSnippet: "merge(target, src)",
+			SurroundingCode: ctx(marker), Status: normalizer.StatusOpen,
+		}
+	}
+	findings := []normalizer.Finding{
+		mk("pp-real", 6, "REAL_SINK"),
+		mk("pp-safe", 18, "SAFE_GUARDED"),
+	}
+
+	// The two findings must collide on the bare key but get distinct final keys.
+	if VerdictCacheKey(findings[0], root) != VerdictCacheKey(findings[1], root) {
+		t.Fatal("test setup: expected the two windows to collide on VerdictCacheKey")
+	}
+	keys := buildVerdictKeys(findings, root)
+	if keys[0] == keys[1] {
+		t.Fatalf("buildVerdictKeys must disambiguate colliding findings, got %q twice", keys[0])
+	}
+
+	srv := &fakeTriageServer{reply: func(fs []triageFindingWire, _ int) []Verdict {
+		out := make([]Verdict, len(fs))
+		for i, f := range fs {
+			if strings.Contains(f.ResponseSnippet, "REAL_SINK") {
+				out[i] = Verdict{ID: f.ID, Verdict: "confirmed", Confidence: 0.95, Rationale: "reachable prototype-pollution sink"}
+			} else {
+				out[i] = Verdict{ID: f.ID, Verdict: "likely_fp", Confidence: 0.95, Rationale: "guarded by an isPlainObject check"}
+			}
+		}
+		return out
+	}}
+	srv.start(t)
+	store := openStore(t, root)
+
+	// First scan primes the cache; each finding gets its own verdict by ID.
+	if _, err := TriageCodeScan(findings, opts(root, store)); err != nil {
+		t.Fatal(err)
+	}
+	if findings[0].Verdict != "confirmed" || findings[1].Verdict != "likely_fp" {
+		t.Fatalf("first scan verdicts wrong: %q / %q", findings[0].Verdict, findings[1].Verdict)
+	}
+	callsAfterFirst := len(srv.calls)
+
+	// Rescan: both must be served from the cache (no AI call) AND each must keep
+	// ITS OWN verdict and rationale, not the other's.
+	rescan := []normalizer.Finding{
+		mk("pp-real", 6, "REAL_SINK"),
+		mk("pp-safe", 18, "SAFE_GUARDED"),
+	}
+	stats, err := TriageCodeScan(rescan, opts(root, store))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Cached != 2 || stats.Checked != 0 || len(srv.calls) != callsAfterFirst {
+		t.Fatalf("rescan should be fully cached: %+v calls=%d", stats, len(srv.calls))
+	}
+	if rescan[0].Verdict != "confirmed" || !strings.Contains(rescan[0].VerdictReason, "reachable") {
+		t.Fatalf("real sink lost its own verdict on rescan: %q / %q", rescan[0].Verdict, rescan[0].VerdictReason)
+	}
+	if !rescan[1].HiddenAsFalseAlarm() || !strings.Contains(rescan[1].VerdictReason, "guarded") {
+		t.Fatalf("safe finding lost its own verdict on rescan: %q / %q", rescan[1].Verdict, rescan[1].VerdictReason)
+	}
+}

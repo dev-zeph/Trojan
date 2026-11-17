@@ -17,6 +17,7 @@ import (
 	"github.com/dev-zeph/trojan/internal/config"
 	"github.com/dev-zeph/trojan/internal/graph"
 	"github.com/dev-zeph/trojan/internal/memory"
+	"github.com/dev-zeph/trojan/internal/normalizer"
 	"github.com/dev-zeph/trojan/internal/orgcontext"
 	"github.com/dev-zeph/trojan/internal/rag"
 	"github.com/dev-zeph/trojan/internal/reach"
@@ -307,16 +308,22 @@ func handleAttackPaths(project projectFunc) server.ToolHandlerFunc {
 	return withBrain(project, func(b *brain, req mcp.CallToolRequest) *mcp.CallToolResult {
 		paths, exposures := b.attackPaths()
 		flaws := b.codeFlaws()
+		// Merge in the latest scan's high/critical code findings so this tool
+		// agrees with get_findings (Semgrep-detected RCE, prototype pollution,
+		// path traversal, etc.), not just the graph's end-to-end detections.
+		// A scan finding at the same file:line as a graph flaw is reconciled,
+		// not duplicated, so one bug never shows twice at two severities.
+		flaws = b.mergeScanFlaws(flaws)
 		return fitJSON(25, func(n int) any {
 			out := map[string]any{
 				"code_flaws":        capN(flaws, n),
 				"unprotected_paths": capN(paths, n),
 				"browser_exposures": capN(exposures, n),
 				"total":             len(flaws) + len(paths) + len(exposures),
-				"meaning":           "Each code flaw is a vulnerability the code graph traced end to end (request input built into SQL, public input stored and rendered as raw HTML). Each unprotected path is a public route that reaches the listed data or call with no login check on the way. Each browser exposure ships a secret or privileged client to users' browsers.",
+				"meaning":           "Each code flaw is a serious (high/critical) code vulnerability: those with source \"graph\" were traced end to end (request input built into SQL, public input stored and rendered as raw HTML), those with source \"scan\" are high/critical findings confirmed by the rule scanners (e.g. Semgrep-detected RCE, prototype pollution, path traversal) and also listed by get_findings. Each unprotected path is a public route that reaches the listed data or call with no login check on the way. Each browser exposure ships a secret or privileged client to users' browsers.",
 				"next":              "Fix by checking the signed-in user at the route (see get_security_rules), then run_scan or verify_fix.",
 			}
-			if len(paths) > n || len(exposures) > n {
+			if len(flaws) > n || len(paths) > n || len(exposures) > n {
 				out["truncated"] = fmt.Sprintf("showing up to %d of each, most urgent first", n)
 			}
 			return out
@@ -381,6 +388,11 @@ type flawView struct {
 	Store    string `json:"store,omitempty"`
 	Detail   string `json:"detail"`
 	Key      string `json:"node_key"`
+	// Source says how the flaw was found: "graph" for an end-to-end graph
+	// detection, "scan" for a high/critical finding merged in from the latest
+	// scan (Semgrep and the other rule scanners) so this tool agrees with
+	// get_findings.
+	Source string `json:"source,omitempty"`
 }
 
 // codeFlaws returns the graph's end-to-end detections (graph.Detect).
@@ -389,7 +401,7 @@ func (b *brain) codeFlaws() []flawView {
 	for _, d := range graph.Detect(b.a.G, b.a.Root) {
 		v := flawView{
 			Rule: d.Rule, Severity: d.Severity, Title: d.Title, At: b.a.Loc(d.Sink),
-			Store: d.Store, Detail: d.Message, Key: d.Sink.Key,
+			Store: d.Store, Detail: d.Message, Key: d.Sink.Key, Source: "graph",
 		}
 		if d.Entry.Kind != "" {
 			v.Entry = b.a.Label(d.Entry)
@@ -397,6 +409,111 @@ func (b *brain) codeFlaws() []flawView {
 		out = append(out, v)
 	}
 	return out
+}
+
+// scanCodeFlaws merges the latest scan's high/critical code findings that the
+// end-to-end graph detections (codeFlaws) don't already cover, deduplicated by
+// file:line. This keeps get_attack_paths in agreement with get_findings: the
+// Semgrep-confirmed RCE, prototype pollution and path traversal appear here
+// too, not only in get_findings. Best-effort: with no scan yet (or only
+// graph-covered findings) it returns nothing, so graph-only callers are
+// unaffected.
+func (b *brain) mergeScanFlaws(flaws []flawView) []flawView {
+	scan, err := loadLatestScan(b.root)
+	if err != nil {
+		return flaws
+	}
+	idxByLoc := map[string]int{}
+	for i, f := range flaws {
+		if f.At != "" {
+			idxByLoc[baseLoc(f.At)] = i
+		}
+	}
+	isFP := rememberedFalsePositives(b.root, false)
+	added := map[string]bool{}
+	var extra []flawView
+	for _, f := range scan.Findings {
+		// Code findings only: website/DAST findings carry a URL in FilePath.
+		if f.URL != "" || f.Status != normalizer.StatusOpen {
+			continue
+		}
+		if severityRank[f.Severity] < severityRank[normalizer.SeverityHigh] {
+			continue
+		}
+		if f.HiddenAsFalseAlarm() || isFP(f) {
+			continue
+		}
+		loc := f.FilePath
+		if f.LineNumber > 0 {
+			loc = fmt.Sprintf("%s:%d", f.FilePath, f.LineNumber)
+		}
+		nloc := baseLoc(loc)
+		if i, ok := idxByLoc[nloc]; ok {
+			// Same bug as a graph flaw: don't list it twice, and let the
+			// triaged scan severity win so get_attack_paths and get_findings
+			// report the one bug at the same severity.
+			if severityRank[f.Severity] > severityRank[normalizer.Severity(flaws[i].Severity)] {
+				flaws[i].Severity = string(f.Severity)
+			}
+			continue
+		}
+		if added[nloc] {
+			continue
+		}
+		added[nloc] = true
+		v := flawView{
+			Rule: f.RuleID, Severity: string(f.Severity), Title: f.Title,
+			At: loc, Detail: f.Title, Key: "", Source: "scan",
+		}
+		if f.Reach != nil {
+			v.Key = f.Reach.NodeKey
+			if len(f.Reach.Entrypoints) > 0 {
+				v.Entry = f.Reach.Entrypoints[0]
+			}
+			switch {
+			case len(f.Reach.Writes) > 0:
+				v.Store = strings.Join(f.Reach.Writes, ", ")
+			case len(f.Reach.Reads) > 0:
+				v.Store = strings.Join(f.Reach.Reads, ", ")
+			}
+		}
+		extra = append(extra, v)
+	}
+	out := append(flaws, extra...)
+	// Critical before high; otherwise keep the existing order.
+	sort.SliceStable(out, func(i, j int) bool {
+		return severityRank[normalizer.Severity(out[i].Severity)] > severityRank[normalizer.Severity(out[j].Severity)]
+	})
+	return out
+}
+
+// baseLoc reduces a "path:line" (or bare "path") location to "basename:line",
+// so the same finding reported once with an absolute path (graph) and once with
+// a project-relative path (scan) compares equal and is not listed twice.
+func baseLoc(s string) string {
+	path, line := s, ""
+	if i := strings.LastIndex(s, ":"); i >= 0 && isAllDigits(s[i+1:]) {
+		path, line = s[:i], s[i+1:]
+	}
+	if j := strings.LastIndexAny(path, "/\\"); j >= 0 {
+		path = path[j+1:]
+	}
+	if line != "" {
+		return path + ":" + line
+	}
+	return path
+}
+
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // --- trace_dataflow ---

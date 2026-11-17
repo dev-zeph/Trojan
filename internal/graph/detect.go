@@ -33,9 +33,52 @@ type Detection struct {
 
 // Detection rule ids.
 const (
-	DetectSQLInjection = "trojan.sql-injection"
-	DetectStoredXSS    = "trojan.stored-xss"
+	DetectSQLInjection        = "trojan.sql-injection"
+	DetectStoredXSS           = "trojan.stored-xss"
+	DetectUnauthSensitiveData = "trojan.unauth-sensitive-data"
 )
+
+// tagSensitiveCategory mirrors orgcontext.TagSensitiveCategory. The graph
+// package cannot import internal/orgcontext (orgcontext imports graph), so the
+// key is duplicated here; it is a stable, documented contract (see the Tags
+// field on Node).
+const tagSensitiveCategory = "sensitive_data_category"
+
+// nodeSensitive reports whether a node holds sensitive data: either the PII/PHI
+// heuristic tagged it, an org-context overlay marked it with a sensitive data
+// category, or (for a datastore) its name reads as a financial / personal
+// records table. The name check matters because column names that reveal
+// sensitivity (contact_email, bank_ref) often live inside a SQL string literal,
+// which the identifier-based PII heuristic never sees.
+func nodeSensitive(n Node) bool {
+	if n.PII {
+		return true
+	}
+	for _, c := range strings.Split(n.Tags[tagSensitiveCategory], ",") {
+		if strings.TrimSpace(c) != "" {
+			return true
+		}
+	}
+	return n.Kind == KindDataStore && sensitiveStoreName(n.Name)
+}
+
+// sensitiveStoreName reports whether a datastore name reads as a table of
+// financial records or personal data. Kept deliberately narrow (no generic
+// "users"/"orders"/"messages") so it flags clear money/PII stores without
+// turning every public route into a finding.
+func sensitiveStoreName(name string) bool {
+	l := strings.ToLower(name)
+	for _, k := range []string{
+		"invoice", "client", "customer", "payment", "account", "card",
+		"bank", "ssn", "patient", "salary", "payroll", "billing",
+		"credential", "passport", "taxid", "tax_id",
+	} {
+		if strings.Contains(l, k) {
+			return true
+		}
+	}
+	return false
+}
 
 // Detect runs the graph-level detectors:
 //
@@ -53,8 +96,10 @@ const (
 // fetch() URLs; node files may be absolute or relative to it.
 func Detect(g *Graph, root string) []Detection {
 	var out []Detection
-	out = append(out, detectSQLInjection(g)...)
+	sqli := detectSQLInjection(g)
+	out = append(out, sqli...)
 	out = append(out, detectStoredXSS(g, root)...)
+	out = append(out, detectUnauthSensitiveData(g, sqli)...)
 	rank := map[string]int{"critical": 0, "high": 1}
 	sort.SliceStable(out, func(i, j int) bool { return rank[out[i].Severity] < rank[out[j].Severity] })
 	return out
@@ -104,6 +149,137 @@ func detectSQLInjection(g *Graph) []Detection {
 		out = append(out, d)
 	}
 	return out
+}
+
+// detectUnauthSensitiveData flags a public (unguarded) route that reaches a
+// datastore holding sensitive data with no login check on the way: either it
+// reads sensitive data (a leak) or writes to a sensitive datastore (tampering).
+// It reuses UnguardedPaths, which only yields entrypoints reachable without
+// passing an auth check, so the "no login" part is already established.
+//
+// Two filters keep this precise instead of a false-positive flood:
+//
+//   - Intended-public routes (login, logout, sign-up, password reset, OAuth
+//     callbacks, webhooks, health checks) are excluded: they are SUPPOSED to be
+//     reachable without a session, and reading the users table or writing a
+//     reset token is exactly their job. Flagging them would bury the real bug.
+//   - Writes performed by a lazy schema/seed helper are excluded (the same
+//     getDb()-seeds-on-first-use artifact detectStoredXSS guards against, which
+//     would otherwise make every public route a "writer" of every table).
+//
+// Writes to NON-sensitive datastores are also not flagged on their own: public
+// writes are routine (a contact form writing messages is public by design), so
+// only genuinely unauthenticated access to SENSITIVE data is reported. One
+// finding is emitted per route, anchored on the route itself (where the fix —
+// an auth check — belongs).
+func detectUnauthSensitiveData(g *Graph, sqli []Detection) []Detection {
+	// A route already reported as SQL injection carries the same
+	// "public route reaches this with no login" story (plus a worse bug), so
+	// skip it here to avoid double-reporting the same route.
+	sqlRoutes := map[string]bool{}
+	for _, d := range sqli {
+		if d.Entry.Key != "" {
+			sqlRoutes[d.Entry.Key] = true
+		}
+	}
+	type agg struct {
+		route    Node
+		stores   map[string]bool
+		anyWrite bool
+	}
+	bySource := map[int]*agg{}
+	var order []int
+	for _, p := range g.UnguardedPaths() {
+		if p.Sink.Kind != KindDataStore {
+			continue
+		}
+		if p.Access != EdgeReads && p.Access != EdgeWrites {
+			continue
+		}
+		if !(p.TouchPII || nodeSensitive(p.Sink)) {
+			continue // only sensitive reads/writes
+		}
+		if intendedPublicRoute(p.Source) {
+			continue // login / signup / reset / webhook etc. are public by design
+		}
+		if sqlRoutes[p.Source.Key] {
+			continue // already reported as SQL injection on the same route
+		}
+		// Drop writes (and reads) that only happen inside a seed/setup helper:
+		// a getDb() that seeds on first use would otherwise make every route a
+		// writer of every table.
+		if len(p.Via) > 0 && isSetupFunc(p.Via[len(p.Via)-1]) {
+			continue
+		}
+		a := bySource[p.Source.ID]
+		if a == nil {
+			a = &agg{route: p.Source, stores: map[string]bool{}}
+			bySource[p.Source.ID] = a
+			order = append(order, p.Source.ID)
+		}
+		a.stores[p.Sink.Name] = true
+		if p.Access == EdgeWrites {
+			a.anyWrite = true
+		}
+	}
+
+	var out []Detection
+	for _, id := range order {
+		a := bySource[id]
+		stores := make([]string, 0, len(a.stores))
+		for s := range a.stores {
+			stores = append(stores, s)
+		}
+		sort.Strings(stores)
+		verb := "reads"
+		sev := "high"
+		if a.anyWrite {
+			verb = "reads or writes"
+			sev = "critical"
+		}
+		msg := "Anyone can reach this without logging in: " + entryLabel(a.route) +
+			". From there it " + verb + " sensitive data in " + strings.Join(stores, ", ") +
+			" with no auth check in the way, so an attacker can read (or change) other people's records. " +
+			"Check the signed-in user at this route (or mount it behind the auth middleware) before it touches this data."
+		out = append(out, Detection{
+			Rule:      DetectUnauthSensitiveData,
+			Severity:  sev,
+			Title:     "Unauthenticated route reaches sensitive data",
+			Message:   msg,
+			Sink:      a.route, // anchor on the route: that is where the auth check goes
+			Entry:     a.route,
+			Unguarded: true,
+			Store:     strings.Join(stores, ", "),
+		})
+	}
+	return out
+}
+
+// intendedPublicRoute reports whether a route is one that is meant to be
+// reachable without a logged-in session, so an unauthenticated reach of
+// sensitive data through it is by design rather than a missing auth check:
+// authentication endpoints (login, logout, sign-up, password reset), OAuth
+// callbacks, webhooks, and health/status probes.
+func intendedPublicRoute(n Node) bool {
+	hay := ""
+	if _, p, ok := routeOf(n); ok {
+		hay = p
+	}
+	if hay == "" {
+		hay = n.Name + " " + n.Key
+	}
+	hay = strings.ToLower(hay)
+	for _, k := range []string{
+		"login", "logout", "signin", "sign-in", "signup", "sign-up",
+		"register", "forgot", "reset", "password", "/auth", "oauth",
+		"callback", "webhook", "health", "healthz", "readyz", "liveness",
+		"/ping", "/status", "public",
+	} {
+		if strings.Contains(hay, k) {
+			return true
+		}
+	}
+	return false
 }
 
 func detectStoredXSS(g *Graph, root string) []Detection {

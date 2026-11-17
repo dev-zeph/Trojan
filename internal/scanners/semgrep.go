@@ -160,7 +160,7 @@ func (s Semgrep) Run(projectPath string) ([]normalizer.Finding, error) {
 			RawMessage:  r.Extra.Message,
 			FilePath:    r.Path,
 			LineNumber:  r.Start.Line,
-			CodeSnippet: strings.TrimSpace(r.Extra.Lines),
+			CodeSnippet: semgrepSnippet(r.Path, r.Start.Line, r.End.Line, r.Extra.Lines),
 			RuleID:      ruleID,
 			Status:      normalizer.StatusOpen,
 			CWEIDs:      parseCWEIDs(r.Extra.Metadata.CWE),
@@ -169,6 +169,44 @@ func (s Semgrep) Run(projectPath string) ([]normalizer.Finding, error) {
 	}
 
 	return findings, nil
+}
+
+// semgrepSnippet returns the source text of the matched range (startLine..
+// endLine of path). Semgrep's own extra.lines field is unreliable for rules
+// that use metavariable-pattern: it can report the text of a nested sub-match
+// (for trojan-js-case-sensitive-path-check, the error string deep inside the
+// matched `if`, e.g. "requires login") instead of the matched line, producing
+// a snippet that does not match the finding's reported LineNumber. Reading the
+// snippet straight from the file at the reported range keeps it consistent with
+// LineNumber. extra.lines is the fallback when the file can't be read.
+func semgrepSnippet(path string, startLine, endLine int, fallback string) string {
+	fallback = strings.TrimSpace(fallback)
+	if path == "" || startLine <= 0 {
+		return fallback
+	}
+	if endLine < startLine {
+		endLine = startLine
+	}
+	// Cap a very large matched range so the snippet stays readable.
+	if endLine-startLine > 20 {
+		endLine = startLine + 20
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fallback
+	}
+	lines := strings.Split(string(data), "\n")
+	if startLine > len(lines) {
+		return fallback
+	}
+	if endLine > len(lines) {
+		endLine = len(lines)
+	}
+	snippet := strings.TrimSpace(strings.Join(lines[startLine-1:endLine], "\n"))
+	if snippet == "" {
+		return fallback
+	}
+	return snippet
 }
 
 // semgrepOutput matches the JSON structure that Semgrep produces.
@@ -185,6 +223,9 @@ type semgrepResult struct {
 	Start   struct {
 		Line int `json:"line"`
 	} `json:"start"`
+	End struct {
+		Line int `json:"line"`
+	} `json:"end"`
 	Extra struct {
 		Message  string `json:"message"`
 		Severity string `json:"severity"`
