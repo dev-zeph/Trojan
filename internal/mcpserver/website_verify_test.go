@@ -137,6 +137,8 @@ func TestRetestWebsiteFindingsAll(t *testing.T) {
 }
 
 // get_all_findings returns code and website findings with distinct sources.
+// The website finding is only surfaced because the site was tested against
+// this project's folder (recorded in its last-run.json).
 func TestGetAllFindingsUnified(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	root := t.TempDir()
@@ -146,6 +148,8 @@ func TestGetAllFindingsUnified(t *testing.T) {
 	normalizer.SaveWebsiteTest("https://shop.example.com", []normalizer.Finding{ //nolint:errcheck
 		{ID: "agentic-eeeeeeeeeeee", Severity: normalizer.SeverityHigh, Title: "IDOR", FilePath: "https://shop.example.com/api/orders/2", Status: normalizer.StatusOpen},
 	})
+	shopDir, _ := normalizer.WebsiteDir("https://shop.example.com")
+	saveRun(shopDir, &websiteRun{URL: "https://shop.example.com", State: "finished", ProjectPath: root})
 	project := func(context.Context, mcp.CallToolRequest) (string, error) { return root, nil }
 
 	text, isErr := callTool(t, handleGetAllFindings(project), nil)
@@ -162,5 +166,50 @@ func TestGetAllFindingsUnified(t *testing.T) {
 	}
 	if src["code1"] != "code" || src["agentic-eeeeeeeeeeee"] != "website" || len(src) != 2 {
 		t.Errorf("unified findings = %s", text)
+	}
+}
+
+// get_all_findings must NOT leak website findings from a site that was tested
+// for a DIFFERENT project. Only the current project's own site is included.
+func TestGetAllFindingsScopesWebsiteToProject(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	projA := t.TempDir()
+	projB := t.TempDir()
+	normalizer.SaveScanResult(projA, []normalizer.Finding{ //nolint:errcheck
+		{ID: "codeA", Severity: normalizer.SeverityHigh, Title: "SQLi A", FilePath: "a.go", LineNumber: 1, Status: normalizer.StatusOpen},
+	})
+
+	// Site tested while working on project A.
+	normalizer.SaveWebsiteTest("https://a.example.com", []normalizer.Finding{ //nolint:errcheck
+		{ID: "agentic-aaaaaaaaaaaa", Severity: normalizer.SeverityHigh, Title: "IDOR A", FilePath: "https://a.example.com/x", Status: normalizer.StatusOpen},
+	})
+	dirA, _ := normalizer.WebsiteDir("https://a.example.com")
+	saveRun(dirA, &websiteRun{URL: "https://a.example.com", State: "finished", ProjectPath: projA})
+
+	// Unrelated site tested while working on project B — must stay hidden.
+	normalizer.SaveWebsiteTest("https://b.example.com", []normalizer.Finding{ //nolint:errcheck
+		{ID: "agentic-bbbbbbbbbbbb", Severity: normalizer.SeverityHigh, Title: "SECRET B", FilePath: "https://b.example.com/y", Status: normalizer.StatusOpen},
+	})
+	dirB, _ := normalizer.WebsiteDir("https://b.example.com")
+	saveRun(dirB, &websiteRun{URL: "https://b.example.com", State: "finished", ProjectPath: projB})
+
+	project := func(context.Context, mcp.CallToolRequest) (string, error) { return projA, nil }
+	text, isErr := callTool(t, handleGetAllFindings(project), nil)
+	if isErr {
+		t.Fatal(text)
+	}
+	var out struct {
+		Findings []struct{ ID, Source string }
+	}
+	json.Unmarshal([]byte(text), &out) //nolint:errcheck
+	ids := map[string]bool{}
+	for _, f := range out.Findings {
+		ids[f.ID] = true
+	}
+	if !ids["codeA"] || !ids["agentic-aaaaaaaaaaaa"] {
+		t.Errorf("project A's own findings missing: %s", text)
+	}
+	if ids["agentic-bbbbbbbbbbbb"] {
+		t.Errorf("leaked project B's website finding into project A: %s", text)
 	}
 }
