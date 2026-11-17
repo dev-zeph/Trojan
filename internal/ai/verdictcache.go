@@ -49,6 +49,7 @@ type CodeTriageStats struct {
 	Memory  int // resolved by a person's earlier decision (free)
 	Cached  int // resolved from the verdict cache (free)
 	Checked int // sent to the AI
+	Skipped int // below high severity: shown untriaged, not sent to the AI
 	Hidden  int // likely false alarms (hidden from the list and the score)
 }
 
@@ -100,6 +101,15 @@ func TriageCodeScan(findings []normalizer.Finding, opts CodeTriageOptions) (Code
 		if c, ok := cached[keys[i]]; ok {
 			applyVerdict(f, Verdict{Verdict: c.Verdict, Confidence: c.Confidence, Rationale: c.Rationale})
 			stats.Cached++
+			continue
+		}
+		// Only AI-check high and critical findings. Their confirmed/false-alarm
+		// verdict is what changes what a user fixes first; lower-severity
+		// findings stay visible (untriaged), which also keeps the triage call
+		// small and the scan fast. A cached or remembered verdict above still
+		// applies to any severity.
+		if f.Severity != normalizer.SeverityCritical && f.Severity != normalizer.SeverityHigh {
+			stats.Skipped++
 			continue
 		}
 		keyByID[f.ID] = keys[i]
