@@ -2380,7 +2380,7 @@ export default function App() {
                   }),
                 });
 
-                if (res.status === 403) throw new Error("Sign in to generate a compliance report. Costs 50 tokens.");
+                if (res.status === 403) throw new Error("Sign in to generate a compliance report. It uses tokens based on the AI work it takes.");
                 if (res.status === 429) throw new Error("Daily limit reached. Try again tomorrow.");
                 if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error((err as { error?: string }).error ?? `Request failed (${res.status})`); }
 
@@ -2428,7 +2428,7 @@ export default function App() {
                 {!signedIn && (
                   <div className="lab-state-card lab-pro-gate">
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-                    Sign in to generate a compliance report. Costs 50 tokens.
+                    Sign in to generate a compliance report. It uses tokens based on the AI work it takes.
                     <button className="lab-upgrade-btn" onClick={() => setShowAuthForm(true)}>Sign in →</button>
                   </div>
                 )}
