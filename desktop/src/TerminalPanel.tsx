@@ -72,7 +72,7 @@ export function TerminalPanel({ height, onScan, onDast, onDeps }: TerminalPanelP
     fitRef.current  = fit;
 
     // Welcome
-    term.writeln("\x1b[1;35m  Trojan Terminal\x1b[0m  \x1b[2m– type \x1b[0mhelp\x1b[2m for commands\x1b[0m");
+    term.writeln("\x1b[1;35m  Trojan Terminal\x1b[0m  \x1b[2m: type \x1b[0mhelp\x1b[2m for commands\x1b[0m");
     term.write(PROMPT);
 
     // ── Input handling ──────────────────────────────────────────────────────

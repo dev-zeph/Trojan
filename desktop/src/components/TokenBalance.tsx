@@ -49,7 +49,7 @@ export function TokenBalance({ balance, lowThreshold = 400, onTopUp, compact }: 
         <path d="M12 7v10M9.5 9.5h5M9.5 14.5h5" strokeLinecap="round" />
       </svg>
       <span style={{ flex: 1, textAlign: "left" }}>
-        {loading ? "-" : balance.toLocaleString()}
+        {loading ? "…" : balance.toLocaleString()}
       </span>
       <span style={{ opacity: 0.65, fontSize: 10 }}>
         {empty ? "TOP UP" : "TOKENS"}

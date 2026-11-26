@@ -213,7 +213,7 @@ export function PrintCertificate({
                     <span className="cert-sev-dot" style={{ background: severityColor(v.severity) }} />
                     {v.severity}
                   </td>
-                  <td>{(v as { exploitability?: string }).exploitability ?? "-"}</td>
+                  <td>{(v as { exploitability?: string }).exploitability ?? "Not rated"}</td>
                 </tr>
               ))}
             </tbody>

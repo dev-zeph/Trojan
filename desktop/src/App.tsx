@@ -203,7 +203,7 @@ export default function App() {
   const [currentServerUrl, setCurrentServerUrl] = useState<string | null>(null);
   const [authStatus, setAuthStatus]       = useState<AuthStatus | null>(null);
   // Trojan Token balance -- the BILLING unit, not LLM tokens. null = not yet
-  // loaded, which renders as "—" rather than 0 (0 would read as "you are out").
+  // loaded, which renders as "…" rather than 0 (0 would read as "you are out").
   const [tokenBalance, setTokenBalance]   = useState<number | null>(null);
   const [scanSummary, setScanSummary]         = useState<ScanSummary | null>(null);
   // Security Score history lives per project on disk (see lib/scoreHistory).
@@ -1491,25 +1491,25 @@ export default function App() {
                     <div className="stat-grid">
                       <div className="stat-card">
                         <span className="stat-label">SCANS RUN</span>
-                        <span className="stat-value">{recent.length || "-"}</span>
+                        <span className="stat-value">{recent.length}</span>
                         <span className="stat-sub">all time</span>
                       </div>
                       <div className="stat-card">
                         <span className="stat-label">LAST SCAN</span>
-                        <span className="stat-value" style={{ fontSize: recent.length ? 16 : 24, marginTop: recent.length ? 4 : 0 }}>
-                          {recent.length ? timeAgo(recent[0].scannedAt) : "-"}
+                        <span className="stat-value" style={{ fontSize: 16, marginTop: 4 }}>
+                          {recent.length ? timeAgo(recent[0].scannedAt) : "Never"}
                         </span>
                         <span className="stat-sub">{recent[0]?.name ?? "no history"}</span>
                       </div>
                       <div className="stat-card">
                         <span className="stat-label">PACKAGES</span>
-                        <span className="stat-value">{packages.length || "-"}</span>
+                        <span className="stat-value">{packages.length}</span>
                         <span className="stat-sub">audited</span>
                       </div>
                       <div className="stat-card">
                         <span className="stat-label">CVEs</span>
-                        <span className="stat-value" style={{ color: vulnPkgs > 0 ? "var(--warning)" : undefined }}>
-                          {packages.length ? vulnPkgs : "-"}
+                        <span className="stat-value" style={{ color: vulnPkgs > 0 ? "var(--warning)" : undefined, fontSize: packages.length ? undefined : 16, marginTop: packages.length ? undefined : 4 }}>
+                          {packages.length ? vulnPkgs : "Not checked"}
                         </span>
                         <span className="stat-sub">vulnerable pkgs</span>
                       </div>
@@ -1621,7 +1621,7 @@ export default function App() {
                 <h1 className="page-header-title">{simple ? "Codebase Scanning" : "Static Analysis"}</h1>
                 <p className="page-header-desc">
                   {simple
-                    ? "Check your project folder for leaked passwords and keys, weak spots, and places where user data could get out. Your code stays on your computer."
+                    ? "Check your project folder for leaked passwords and keys, weak spots, and places where user data could get out. Scans run on your computer. Code snippets go to our AI provider to check and explain findings."
                     : "Scan a local project for vulnerabilities, secrets, and misconfigurations."}
                 </p>
               </div>
@@ -1634,7 +1634,7 @@ export default function App() {
                 </span>
                 <span className="oc-feature-text">
                   <span className="oc-feature-title">Context-aware scanning</span>
-                  <span className="oc-feature-sub">Tell Trojan what you are building and it tests intentionally, for security and privacy. Stored on your machine, never uploaded.</span>
+                  <span className="oc-feature-sub">Tell Trojan what you are building and it tests intentionally, for security and privacy. Saved in your project, and only sent to our AI provider if you let Trojan look at your app.</span>
                 </span>
                 <span className="oc-feature-cta">Set up context {"→"}</span>
               </button>}
@@ -1660,7 +1660,7 @@ export default function App() {
                       <path d="M3 7c0-1.1.9-2 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/>
                     </svg>
                     <p className="sast-drop-title">Drop your project folder here</p>
-                    <p className="sast-drop-or">- or -</p>
+                    <p className="sast-drop-or">or</p>
                     <button className="card-btn primary-btn sast-choose-btn" onClick={(e) => { e.stopPropagation(); handlePickFolder(); }}>
                       Choose folder
                     </button>
@@ -1855,7 +1855,7 @@ export default function App() {
                     <div style={{ fontSize: "0.85em", opacity: 0.7, marginTop: 4 }}>
                       {agGreyBox && greyBoxProject
                         ? `Using code from ${greyBoxProject.split("/").pop()}.`
-                        : "Pick your app's folder to give the AI more context. Snippets around findings are sent to our AI provider to check and explain them. We keep reports and explanations, not your code."}
+                        : "Pick your app's folder so the AI can read its code while it tests. The code it reads and your app's responses, including any login tokens or personal data in them, are sent to our AI provider. We keep the test report, not your code."}
                       <button type="button" className="pt-chip" style={{ marginLeft: 8 }} disabled={isScanning}
                         onClick={async () => { const picked = await invoke<string | null>("pick_folder"); if (picked) { setGreyBoxFolder(picked); setAgGreyBox(true); } }}>
                         {agGreyBox && greyBoxProject ? "Change folder" : "Choose folder"}
@@ -1945,7 +1945,7 @@ export default function App() {
                         <div className="pt-card">
                           <div className="pt-row">
                             <span className="pt-card-h" style={{ margin: 0 }}>Grey-box
-                              <span className="pt-info" data-tip="Reads this project's source to find the missing check (IDOR, SQLi, authz gaps) instead of guessing. Index, vectors and source stay on your machine; the code the agent reads and your app's responses, including any tokens in them, are sent to our AI provider so it can reason about attacks.">i</span>
+                              <span className="pt-info" data-tip="Reads this project's source to find the missing check (IDOR, SQLi, authz gaps) instead of guessing. Index, vectors and source stay on your machine; the code the agent reads and your app's responses, including any login tokens in them, are sent to our AI provider so it can reason about attacks.">i</span>
                             </span>
                             <button
                               type="button"
@@ -1999,7 +1999,7 @@ export default function App() {
                     {/* Identities — for authorization (IDOR/BOLA) testing */}
                     <div className="pt-idhead">
                       <span className="scanner-grid-label" style={{ margin: 0 }}>TEST LOGINS</span>
-                      <span className="pt-info" data-tip="Supply two or more logged-in sessions (name + an auth header like 'Authorization: Bearer ...' or 'Cookie: session=...'). The agent requests the same resource as each and compares, to catch broken object-level authorization. These are kept in memory and passed to the scanner privately, never written to disk.">i</span>
+                      <span className="pt-info" data-tip="Supply two or more logged-in sessions (name + an auth header like 'Authorization: Bearer ...' or 'Cookie: session=...'). The agent requests the same resource as each and compares, to catch broken object-level authorization. Sessions are passed to the scanner privately, not on the command line. During a run they're saved in a private file on your machine so the run can resume, and that file is deleted when the run finishes. The AI sees each session's name and any login tokens that appear in your app's responses.">i</span>
                     </div>
                     <div className="pt-card">
                       <p className="pt-idhint" style={{ marginTop: 0 }}>Lets Trojan check that one user can't see another user's data and that admin pages are locked.</p>
@@ -2136,7 +2136,7 @@ export default function App() {
                   { key: "copyleft", label: "COPYLEFT: may require open-sourcing", items: copyleft, color: licenseRiskColor("copyleft") },
                   { key: "weak", label: "WEAK COPYLEFT: review modification terms", items: weakCopyleft, color: licenseRiskColor("weak-copyleft") },
                   { key: "unknown", label: "UNKNOWN: no license declared", items: unknown, color: licenseRiskColor("unknown") },
-                  { key: "permissive", label: "PERMISSIVE: safe to use", items: permissive, color: licenseRiskColor("permissive") },
+                  { key: "permissive", label: "PERMISSIVE: few conditions", items: permissive, color: licenseRiskColor("permissive") },
                 ];
                 return (
                   <>
@@ -2722,15 +2722,15 @@ export default function App() {
                               </span>
                               <span className="dep-col-eco dep-eco-text">{pkg.ecosystem}</span>
                               <span className={`dep-col-cves ${pkg.cve_count > 0 ? "dep-cve-count" : "dep-cve-none"}`}>
-                                {pkg.cve_count > 0 ? pkg.cve_count : "-"}
+                                {pkg.cve_count > 0 ? pkg.cve_count : "0"}
                               </span>
                               <span className="dep-col-sev">
                                 {pkg.highest_severity
                                   ? <span className={`dep-sev-badge dep-sev-${pkg.highest_severity}`}>{pkg.highest_severity}</span>
-                                  : <span className="dep-safe">safe</span>}
+                                  : <span className="dep-safe">no known CVEs</span>}
                               </span>
                               <span className={`dep-col-fix dep-fix-mono ${!pkg.fix_version && pkg.cve_count > 0 ? "dep-no-fix" : ""}`}>
-                                {pkg.fix_version ?? (pkg.cve_count > 0 ? "no fix" : "-")}
+                                {pkg.fix_version ?? (pkg.cve_count > 0 ? "no fix" : "Not needed")}
                               </span>
                             </button>
 

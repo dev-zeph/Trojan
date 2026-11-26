@@ -135,6 +135,7 @@ export function Onboarding({ onDone }: { onDone: (p: UserProfile) => void }) {
                 <button type="button" className="ob-footer-skip" onClick={() => setShowLocal(true)}>
                   Look around first →
                 </button>
+                <span className="ob-footer-note">You'll need a free account to run scans. Free accounts get 500 tokens every month.</span>
               </div>
             </>
           ) : (

@@ -219,7 +219,7 @@ export function AppUnderstanding({
     return frame(
       <>
         <h2 className="au-title">{existing ? "Update what Trojan knows" : "Let Trojan look at your app"}</h2>
-        <p className="au-lead">Tell us what your app does in a sentence or two. Trojan will read the names of your pages, data and outside services (never your code) and guess the rest.</p>
+        <p className="au-lead">Tell us what your app does in a sentence or two. Trojan sends that, your current context and a summary of your project (the names of your pages, database tables, packages and settings, not your code) to our AI provider, which fills in the rest. We keep the draft.</p>
         <textarea
           className="au-textarea"
           aria-label="What your app does"
@@ -362,7 +362,7 @@ export function AppUnderstanding({
           {phase === "saving" ? "Saving…" : "Save"}
         </button>
       </div>
-      <p className="au-note">This stays on your computer, inside your project.</p>
+      <p className="au-note">Saved in your project. We also keep a copy of this draft on our servers.</p>
     </>,
   );
 }

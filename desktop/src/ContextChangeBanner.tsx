@@ -82,7 +82,7 @@ export function ContextChangeBanner({
           </div>
           <div className="au-banner-actions">
             <button type="button" className="oc-nav-next" onClick={() => setOpen(true)}>
-              {kind === "learn" ? "Tell Trojan about my app" : "Update what Trojan knows"}
+              {kind === "learn" ? "Let Trojan look at my app" : "Update what Trojan knows"}
             </button>
             <button type="button" className="au-link" onClick={() => setDismissed(true)}>Not now</button>
           </div>
