@@ -34,6 +34,10 @@ type VerifyResult struct {
 	Scanner   string   `json:"scanner"`
 	RuleID    string   `json:"rule_id"`
 	FindingID string   `json:"finding_id"`
+	// NotFound is set when the finding's file cannot be resolved against the
+	// scan root. A missing file must never be reported as fixed.
+	NotFound bool   `json:"not_found,omitempty"`
+	File     string `json:"file,omitempty"`
 }
 
 const VerifyMarker = "TROJAN_VERIFY "
@@ -64,6 +68,14 @@ func VerifyOnce(projectPath, id string) (*VerifyResult, error) {
 	if scanner == nil {
 		return nil, fmt.Errorf("can't re-run scanner %q on its own; use run_scan instead", target.Scanner)
 	}
+
+	absFile, ok := normalizer.ResolveAgainstRoot(projectPath, target.FilePath)
+	if !ok {
+		return &VerifyResult{Fixed: false, NotFound: true, Scanner: target.Scanner, RuleID: target.RuleID, FindingID: id, File: target.FilePath}, nil
+	}
+	target.FilePath = normalizer.RelToProject(projectPath, target.FilePath)
+	_ = absFile
+
 	if err := config.EnsureScanners(); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not install scanners: %s\n", err)
 	}
@@ -78,10 +90,10 @@ func VerifyOnce(projectPath, id string) (*VerifyResult, error) {
 	}
 	fresh, _ = normalizer.Reduce(fresh)
 
-	res := &VerifyResult{Fixed: true, Scanner: target.Scanner, RuleID: target.RuleID, FindingID: id}
-	want := relPath(projectPath, target.FilePath)
+	res := &VerifyResult{Fixed: true, Scanner: target.Scanner, RuleID: target.RuleID, FindingID: id, File: target.FilePath}
+	want := normalizer.RelToProject(projectPath, target.FilePath)
 	for _, f := range fresh {
-		if f.RuleID == target.RuleID && relPath(projectPath, f.FilePath) == want {
+		if f.RuleID == target.RuleID && normalizer.RelToProject(projectPath, f.FilePath) == want {
 			res.Fixed = false
 			res.StillAt = append(res.StillAt, fmt.Sprintf("%s:%d", f.FilePath, f.LineNumber))
 		}
@@ -156,6 +168,10 @@ func handleVerifyFix(project projectFunc) server.ToolHandlerFunc {
 			return mcp.NewToolResultError("verification failed: " + msg), nil
 		}
 
+		if res.NotFound {
+			return mcp.NewToolResultText(fmt.Sprintf("NOT FOUND: could not find %s for finding %s in the scan folder. The file is resolved against the project, not the current directory. The finding is not marked fixed.",
+				res.File, res.FindingID)), nil
+		}
 		if !res.Fixed {
 			return mcp.NewToolResultText(fmt.Sprintf("NOT FIXED: %s (rule %s) still reports this at %s. Look at those lines and try again.",
 				res.Scanner, res.RuleID, strings.Join(res.StillAt, ", "))), nil

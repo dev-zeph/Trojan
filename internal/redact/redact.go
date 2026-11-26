@@ -6,11 +6,13 @@
 // copies built for the network are rewritten. Three entry points:
 //
 //   - Text / Finder.Redact: replace every detected secret with a descriptor
-//     such as <SECRET: type=aws_access_key, len=20, prefix=AKIA, entropy=3.7,
-//     class=likely_real>. File, line and the surrounding code are untouched, so
-//     the model can still reason about how the value is used.
-//   - Mask: replace every detected secret with prefix…last4 (e.g. AKIA…WXYZ)
-//     for report uploads, which keep their exact locations and code.
+//     such as <SECRET removed by Trojan: type=aws_access_key, len=20,
+//     prefix=AKIA, looks=real>. File, line and the surrounding code are
+//     untouched, so the model can still reason about how the value is used.
+//   - Mask: replace every detected secret with a vendor prefix plus last 4
+//     (e.g. AKIA…WXYZ) when the value is 20 or more characters and has a
+//     public vendor prefix; otherwise a length-only mask. Report uploads keep
+//     their exact locations and code.
 //   - Vault: the descriptor form plus a stable ref (ref=S1) that the pen-test
 //     agents can hand back in tool inputs and that is mapped back to the raw
 //     value locally, never on the wire.
@@ -74,9 +76,17 @@ var detectors = []detector{
 	{typ: "sendgrid_api_key", re: regexp.MustCompile(`\b(SG\.[A-Za-z0-9_\-]{22}\.[A-Za-z0-9_\-]{43})\b`), group: 1, hints: []string{"SG."}},
 	{typ: "twilio_api_key", re: regexp.MustCompile(`\b(SK[0-9a-f]{32})\b`), group: 1, hints: []string{"SK"}},
 	{typ: "jwt", re: regexp.MustCompile(`\b(eyJ[A-Za-z0-9_\-]{5,}\.eyJ[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]*)`), group: 1, hints: []string{"eyJ"}},
-	{typ: "url_password", re: regexp.MustCompile(`\b[a-zA-Z][a-zA-Z0-9+.\-]{1,20}://[^\s:/@"'<>]{1,64}:([^\s@/"'<>]{3,128})@`), group: 1, check: notTemplateRef, hints: []string{"://"}},
+	// Username may be empty so redis://:password@host is caught.
+	{typ: "url_password", re: regexp.MustCompile(`\b[a-zA-Z][a-zA-Z0-9+.\-]{1,20}://[^\s:/@"'<>]{0,64}:([^\s@/"'<>]{3,128})@`), group: 1, check: notTemplateRef, hints: []string{"://"}},
 	{typ: "authorization_header", re: regexp.MustCompile(`(?i)\b(?:authorization|proxy-authorization)["']?\s*[:=]\s*["']?(?:bearer|basic|token|apikey)\s+([A-Za-z0-9._~+/=\-]{8,})`), group: 1, check: notTemplateRef, hints: []string{"authorization"}},
+	{typ: "http_header", re: regexp.MustCompile(`(?i)(?:^|[\s{,;'"\-])(?:x-api-key|api-key|x-auth-token|x-access-token|apikey)\s*[:=]\s*["']?([^\s"'\\<>]{4,256})`), group: 1, check: notTemplateRef, hints: []string{"x-api-key", "api-key", "x-auth-token", "x-access-token", "apikey"}},
+	{typ: "cookie_header", re: regexp.MustCompile(`(?i)\b(?:cookie|set-cookie)["']?\s*[:=]\s*["']?([^\r\n]{8,})`), group: 1, check: cookieHeaderOK, hints: []string{"cookie"}},
 	{typ: "session_cookie", re: regexp.MustCompile(`(?i)\b(?:[a-z0-9_.\-]*(?:session|sess|sid|token|auth|jwt)[a-z0-9_.\-]*)=([A-Za-z0-9%._~+/\-]{16,}={0,2})`), group: 1, check: looksRandom, hints: []string{"session", "sess", "sid", "token", "auth", "jwt"}},
+	// Query and fragment values of secret-named parameters, quoted or not.
+	{typ: "url_query", re: regexp.MustCompile(`(?i)[?&#](?:api[_-]?key|apikey|client[_-]?secret|private[_-]?token|access[_-]?token|refresh[_-]?token|id[_-]?token|x-amz-security-token|x-amz-credential|x-amz-signature|signature|password|passwd|secret|token|jwt|session|auth|code|sig|pwd|key|pass)=([^&\s"'<>#]{4,})`), group: 1, check: urlQueryValueOK, hints: []string{"?", "&", "#"}},
+	// Secret-named keys with an unquoted value (password=hunter2, pass: 6DciK).
+	// No entropy minimum: weak passwords are the ones that matter most.
+	{typ: "password", re: regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_])(?:password|passwd|pwd|pass|secret)(?:[_-][A-Za-z0-9_]+)?["']?\s*[:=]\s*["']?([^\s"'#]{4,256})`), group: 1, check: secretNamedValueOK, hints: []string{"password", "passwd", "pwd", "pass", "secret"}},
 	// Generic: a secret-named key assigned a quoted literal.
 	{typ: "generic_secret", re: regexp.MustCompile(`(?i)(?:api[_\-]?key|apikey|secret|token|passw(?:or)?d|pwd|access[_\-]?key|private[_\-]?key|client[_\-]?secret|auth[_\-]?key|credentials?|bearer)[a-z0-9_\-]*["']?\s*(?:[:=]|=>|:=)\s*["'` + "`" + `]([^"'` + "`" + `\s]{6,256})["'` + "`" + `]`), group: 1, check: genericValueOK, hints: []string{"key", "secret", "token", "passw", "pwd", "credential", "bearer"}},
 	// Generic: .env / shell style uppercase NAME=value (unquoted).
@@ -173,6 +183,40 @@ func looksRandom(v string) bool {
 		return false
 	}
 	return Entropy(v) >= 3.0
+}
+
+// secretNamedValueOK accepts any non-placeholder, non-code value of 4+ chars
+// assigned to password/pass/pwd/secret, including weak passwords.
+func secretNamedValueOK(v string) bool {
+	if len(v) < 4 || !notTemplateRef(v) || reCodeish.MatchString(v) {
+		return false
+	}
+	// UI labels and type names ("Password", "string") are not secrets.
+	return !reWordy.MatchString(v)
+}
+
+// urlQueryValueOK redacts query/fragment values of secret-named params.
+// Short plain words (code=home, key=id) are left alone; everything else of
+// 4+ chars, including weak tokens, is taken.
+func urlQueryValueOK(v string) bool {
+	if len(v) < 4 || !notTemplateRef(v) {
+		return false
+	}
+	return !reWordy.MatchString(v)
+}
+
+// cookieHeaderOK skips obvious non-secret cookie attribute lists (Path, flags)
+// but keeps any header value that still looks like it carries a session or token.
+func cookieHeaderOK(v string) bool {
+	v = strings.TrimSpace(v)
+	if len(v) < 8 || !notTemplateRef(v) {
+		return false
+	}
+	lower := strings.ToLower(v)
+	if strings.Contains(lower, "=") {
+		return true
+	}
+	return looksRandom(v)
 }
 
 // ── classification (local pre-checks) ────────────────────────────────────────
@@ -318,24 +362,14 @@ func Entropy(s string) float64 {
 
 // ── descriptor & mask ────────────────────────────────────────────────────────
 
-// visiblePrefix is how much of the value a descriptor may show: 4 chars for
-// values of 16+ chars (usually a provider prefix such as AKIA or ghp_), 2 for
-// 10-15, none for shorter values, where 4 chars would be a large share of the
-// secret. Private keys never show a prefix.
+// visiblePrefix returns only a public vendor prefix (sk_live_, ghp_, AKIA).
+// Generic secrets, passwords and other values show no characters: a prefix
+// of real secret bytes would leak into the AI label and into uploads.
 func visiblePrefix(v, typ string) string {
 	if typ == "private_key" {
 		return ""
 	}
-	if p := providerPrefix(v); p != "" && len(v) >= 16 {
-		return p
-	}
-	switch {
-	case len(v) >= 16:
-		return safePrefix(v, 4)
-	case len(v) >= 10:
-		return safePrefix(v, 2)
-	}
-	return ""
+	return providerPrefix(v)
 }
 
 // reProviderPrefix matches the public, fixed part of provider key formats.
@@ -345,9 +379,9 @@ var reProviderPrefix = regexp.MustCompile(`^(?:(?:sk|rk)_(?:live|test)_|gh[pousr
 
 func providerPrefix(v string) string { return reProviderPrefix.FindString(v) }
 
-// SafePrefixFor returns the public prefix a descriptor would show for a secret
-// (the provider prefix when there is one, else a few leading chars). Exported
-// so the preview/MCP layer can display it without re-deriving it.
+// SafePrefixFor returns the public vendor prefix a descriptor would show, or
+// empty when the value has no known vendor prefix. Exported so the preview/MCP
+// layer can display it without re-deriving it.
 func SafePrefixFor(s Secret) string { return visiblePrefix(s.Value, s.Type) }
 
 func safePrefix(v string, n int) string {
@@ -357,12 +391,21 @@ func safePrefix(v string, n int) string {
 	return strings.ToValidUTF8(v[:n], "")
 }
 
+// Looks is the human and model-facing form of a classification: "real" or
+// "placeholder". Entropy is kept on Assessment for local preview, not the label.
+func Looks(c Class) string {
+	if c == LikelyPlaceholder {
+		return "placeholder"
+	}
+	return "real"
+}
+
 // Descriptor renders the placeholder sent to an AI provider for one value.
 // ref is optional (pen-test agents use it to hand the value back by name).
 func Descriptor(s Secret, path, ref string) string {
 	a := Classify(s.Value, s.Type, path)
 	var b strings.Builder
-	b.WriteString("<SECRET: ")
+	b.WriteString("<SECRET removed by Trojan: ")
 	if ref != "" {
 		fmt.Fprintf(&b, "ref=%s, ", ref)
 	}
@@ -370,9 +413,9 @@ func Descriptor(s Secret, path, ref string) string {
 	if p := visiblePrefix(s.Value, s.Type); p != "" {
 		fmt.Fprintf(&b, ", prefix=%s", p)
 	}
-	fmt.Fprintf(&b, ", entropy=%.1f, class=%s", Entropy(s.Value), a.Class)
+	fmt.Fprintf(&b, ", looks=%s", Looks(a.Class))
 	if len(a.Checks) > 0 {
-		fmt.Fprintf(&b, ", checks=%s", strings.Join(a.Checks, "+"))
+		fmt.Fprintf(&b, ", why=%s", strings.Join(a.Checks, "+"))
 	}
 	if s.Type == "jwt" {
 		if info := jwtInfo(s.Value); info != "" {
@@ -383,10 +426,11 @@ func Descriptor(s Secret, path, ref string) string {
 	return b.String()
 }
 
-// MaskValue renders the upload form of one value: prefix…last4 for values of
-// 16+ chars, first2…last2 for 10-15, and a length-only mask for anything
-// shorter (where prefix+last4 would reveal most of it). Private keys keep
-// their BEGIN line only.
+// MaskValue renders the upload form of one value. Values of 20 or more
+// characters that start with a public vendor prefix show that prefix plus
+// the last 4 characters (for example AKIA…WXYZ or sk_live_…1vW4). Everything
+// else, including generic secrets and short keys, is fully masked. Private
+// keys keep their BEGIN line only.
 func MaskValue(s Secret) string {
 	v := s.Value
 	if s.Type == "private_key" {
@@ -398,17 +442,12 @@ func MaskValue(s Secret) string {
 		}
 		return fmt.Sprintf("%s…[private key, %d chars masked]", head, len(v))
 	}
-	switch {
-	case len(v) >= 16:
-		p := providerPrefix(v)
-		if p == "" || len(p) > len(v)-8 {
-			p = safePrefix(v, 4)
-		}
+
+	p := providerPrefix(v)
+	if p != "" && len(v) >= 20 && len(v) > len(p)+4 {
 		return p + "…" + v[len(v)-4:]
-	case len(v) >= 10:
-		return safePrefix(v, 2) + "…" + v[len(v)-2:]
 	}
-	return fmt.Sprintf("[masked, %d chars]", len(v))
+	return fmt.Sprintf("[hidden, %d chars]", len(v))
 }
 
 // ── Finder: detection plus exact values known out of band ───────────────────

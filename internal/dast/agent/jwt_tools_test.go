@@ -11,7 +11,7 @@ import (
 	"testing"
 )
 
-var reForgedRef = regexp.MustCompile(`<SECRET: ref=(S\d+), type=jwt_forged[^>]*>`)
+var reForgedRef = regexp.MustCompile(`<SECRET(?: removed by Trojan)?: ref=(S\d+), type=jwt_forged[^>]*>`)
 
 // jwtClaims decodes the payload of a compact JWT (test helper).
 func jwtClaims(t *testing.T, tok string) (map[string]any, string) {
@@ -58,7 +58,7 @@ func TestJWTMutateForgedTokenNeverOnWire(t *testing.T) {
 			return turn("tool_use", toolUseBlock("t1", toolHTTPProbe, map[string]any{"method": "POST", "url": base + "/login", "body": "{}"}))
 		},
 		func(seen string) *TurnResult {
-			jwtLabel = reRef.FindString(seen) // <SECRET: ref=S1, type=jwt …>
+			jwtLabel = reRef.FindString(seen) // <SECRET removed by Trojan: ref=S1, type=jwt …>
 			return turn("tool_use", toolUseBlock("t2", toolJWTMutate, map[string]any{
 				"ref":        jwtLabel,
 				"set_alg":    "none",

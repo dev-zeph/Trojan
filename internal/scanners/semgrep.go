@@ -160,7 +160,7 @@ func (s Semgrep) Run(projectPath string) ([]normalizer.Finding, error) {
 			RawMessage:  r.Extra.Message,
 			FilePath:    r.Path,
 			LineNumber:  r.Start.Line,
-			CodeSnippet: strings.TrimSpace(r.Extra.Lines),
+			CodeSnippet: normalizer.CodePreviewOrPlaceholder(strings.TrimSpace(r.Extra.Lines), r.Path, r.Start.Line),
 			RuleID:      ruleID,
 			Status:      normalizer.StatusOpen,
 			CWEIDs:      parseCWEIDs(r.Extra.Metadata.CWE),

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/dev-zeph/trojan/internal/gitignore"
@@ -33,6 +34,8 @@ type ScanResult struct {
 	// tokens, offline, rate limit). Findings it didn't reach are shown
 	// unfiltered; the report shows this note so the user knows why.
 	TriageNote string `json:"triage_note,omitempty"`
+	// SavedPath is the scan file written on disk, if any. Not serialized.
+	SavedPath string `json:"-"`
 }
 
 // ScannerError records that a scanner failed to run, and why.
@@ -70,6 +73,19 @@ func SaveScanResultAt(dir, projectPath string, findings []Finding) (*ScanResult,
 	}
 	gitignore.EnsureTrojanIgnored(dir)
 
+	// Normalize file paths to the project root and replace Semgrep's
+	// "requires login" snippet so later tools resolve files correctly.
+	if dir != "" && !strings.Contains(projectPath, "://") {
+		for i := range findings {
+			findings[i].FilePath = RelToProject(dir, findings[i].FilePath)
+			findings[i].CodeSnippet = CodePreviewOrPlaceholder(findings[i].CodeSnippet, findings[i].FilePath, findings[i].LineNumber)
+		}
+	} else {
+		for i := range findings {
+			findings[i].CodeSnippet = CodePreviewOrPlaceholder(findings[i].CodeSnippet, findings[i].FilePath, findings[i].LineNumber)
+		}
+	}
+
 	result := &ScanResult{
 		Timestamp:   time.Now(),
 		ProjectPath: projectPath,
@@ -88,6 +104,15 @@ func SaveScanResultAt(dir, projectPath string, findings []Finding) (*ScanResult,
 		return nil, fmt.Errorf("failed to write scan results: %w", err)
 	}
 
-	fmt.Printf("Results saved to %s\n", outputPath)
+	result.SavedPath = outputPath
+	if SaveNotifier != nil {
+		SaveNotifier(outputPath)
+	} else {
+		fmt.Printf("Results saved to %s\n", outputPath)
+	}
 	return result, nil
 }
+
+// SaveNotifier, if set, is called with the scan file path instead of printing
+// "Results saved to ...". ScanOnce uses it to print a findings summary.
+var SaveNotifier func(path string)

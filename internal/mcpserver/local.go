@@ -368,15 +368,77 @@ func ScanOnce(projectPath string) (*normalizer.ScanResult, error) {
 	if ScanTriage != nil {
 		note = ScanTriage(projectPath, findings)
 	}
+	prev := normalizer.SaveNotifier
+	var saved string
+	normalizer.SaveNotifier = func(p string) { saved = p }
 	res, err := normalizer.SaveScanResult(projectPath, findings)
+	normalizer.SaveNotifier = prev
 	if err == nil {
 		res.CoverageNote = scanners.CoverageNote(project)
 		if note != "" {
 			res.TriageNote = note
 			_ = saveLatestScan(projectPath, res) // best effort: the findings are already saved
 		}
+		if saved == "" {
+			saved = res.SavedPath
+		}
+		fmt.Println(ScanSummary(res, saved))
 	}
 	return res, err
+}
+
+// ScanSummary is the scan-once completion line: a count, where it was saved,
+// and the next MCP step.
+func ScanSummary(res *normalizer.ScanResult, savedPath string) string {
+	if res == nil {
+		return ""
+	}
+	n := len(res.Findings)
+	word := "findings"
+	if n == 1 {
+		word = "finding"
+	}
+	counts := severityCounts(res.Findings)
+	rel := savedPath
+	if i := strings.LastIndex(filepath.ToSlash(savedPath), ".trojan/scans/"); i >= 0 {
+		rel = filepath.ToSlash(savedPath[i:])
+	} else if savedPath != "" {
+		rel = filepath.ToSlash(filepath.Join(".trojan", "scans", filepath.Base(savedPath)))
+	}
+	if counts == "" {
+		return fmt.Sprintf("Scan done: %d %s. Saved to %s. Ask your AI editor to run get_findings.", n, word, rel)
+	}
+	return fmt.Sprintf("Scan done: %d %s (%s). Saved to %s. Ask your AI editor to run get_findings.", n, word, counts, rel)
+}
+
+func severityCounts(findings []normalizer.Finding) string {
+	var crit, high, med, low, info int
+	for _, f := range findings {
+		switch f.Severity {
+		case normalizer.SeverityCritical:
+			crit++
+		case normalizer.SeverityHigh:
+			high++
+		case normalizer.SeverityMedium:
+			med++
+		case normalizer.SeverityLow:
+			low++
+		case normalizer.SeverityInfo:
+			info++
+		}
+	}
+	var parts []string
+	add := func(n int, label string) {
+		if n > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", n, label))
+		}
+	}
+	add(crit, "critical")
+	add(high, "high")
+	add(med, "medium")
+	add(low, "low")
+	add(info, "info")
+	return strings.Join(parts, ", ")
 }
 
 func trojanFile(name string) (string, error) {

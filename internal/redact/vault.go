@@ -98,7 +98,7 @@ func (v *Vault) Remember(typ, value string) (ref, label string) {
 	return ref, Descriptor(Secret{Value: value, Type: typ}, "", ref)
 }
 
-// ParseRef accepts "S3", "ref=S3" or a whole label "<SECRET: ref=S3, …>".
+// ParseRef accepts "S3", "ref=S3" or a whole label "<SECRET removed by Trojan: ref=S3, …>" (or the shorter "<SECRET: ref=S3, …>").
 func ParseRef(s string) string {
 	s = strings.TrimSpace(s)
 	if m := reDescriptorRef.FindStringSubmatch(s); m != nil {
@@ -113,12 +113,13 @@ func ParseRef(s string) string {
 
 var reBareRef = regexp.MustCompile(`^S\d+$`)
 
-var reDescriptorRef = regexp.MustCompile(`<SECRET:[^>]*?\bref=(S\d+)\b[^>]*>`)
+var reDescriptorRef = regexp.MustCompile(`<SECRET(?: removed by Trojan)?:[^>]*?\bref=(S\d+)\b[^>]*>`)
 
-// Restore maps descriptors (anything of the form <SECRET: … ref=Sn …>) back
-// to their raw values. Unknown refs are left as they are.
+// Restore maps descriptors (anything of the form <SECRET removed by Trojan: … ref=Sn …>,
+// or the shorter <SECRET: … ref=Sn …>) back to their raw values.
+// Unknown refs are left as they are.
 func (v *Vault) Restore(text string) string {
-	if !strings.Contains(text, "<SECRET:") {
+	if !strings.Contains(text, "<SECRET") {
 		return text
 	}
 	v.mu.Lock()
@@ -135,7 +136,9 @@ func (v *Vault) Restore(text string) string {
 // RestoreJSON restores descriptors inside every string of a JSON document
 // (a tool_use input). Invalid JSON is returned unchanged.
 func (v *Vault) RestoreJSON(raw json.RawMessage) json.RawMessage {
-	if !bytes.Contains(raw, []byte("SECRET:")) {
+	// json.Marshal escapes "<" as "\u003c", so look for SECRET rather than
+	// the literal "<SECRET" prefix; Unmarshal restores the real label.
+	if !bytes.Contains(raw, []byte("SECRET")) {
 		return raw
 	}
 	var doc any

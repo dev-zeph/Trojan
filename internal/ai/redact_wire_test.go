@@ -103,10 +103,10 @@ func TestTriageWireCarriesNoRawSecret(t *testing.T) {
 		t.Fatal(err)
 	}
 	aws := wire.Findings[0]
-	if aws.MatchedAt != "src/aws.ts:4" || !strings.Contains(aws.Evidence, "<SECRET: type=aws_access_key, len=20, prefix=AKIA") {
+	if aws.MatchedAt != "src/aws.ts:4" || !strings.Contains(aws.Evidence, "<SECRET removed by Trojan: type=aws_access_key, len=20, prefix=AKIA") {
 		t.Fatalf("location/descriptor wrong: %+v", aws)
 	}
-	if !strings.Contains(aws.ResponseSnippet, "import S3 from 's3'\nconst cfg = {\n  region: 'us-east-1',\n  accessKeyId: \"<SECRET:") {
+	if !strings.Contains(aws.ResponseSnippet, "import S3 from 's3'\nconst cfg = {\n  region: 'us-east-1',\n  accessKeyId: \"<SECRET") {
 		t.Fatalf("surrounding code must be kept: %q", aws.ResponseSnippet)
 	}
 	if !strings.Contains(wire.Findings[2].Evidence, "prefix=sk_live_") {
@@ -145,7 +145,7 @@ func TestSynthesizeWireCarriesNoRawSecret(t *testing.T) {
 	}
 	var p map[string]any
 	_ = json.Unmarshal([]byte(got[0]), &p)
-	if p["filePath"] != "src/aws.ts" || !strings.Contains(p["codeSnippet"].(string), "<SECRET: type=aws_access_key") {
+	if p["filePath"] != "src/aws.ts" || !strings.Contains(p["codeSnippet"].(string), "<SECRET removed by Trojan: type=aws_access_key") {
 		t.Fatalf("payload: %v", p)
 	}
 }

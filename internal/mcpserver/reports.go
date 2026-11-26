@@ -38,7 +38,7 @@ var edgeBase = "https://dtmocojzvgsswjdsrmqr.supabase.co/functions/v1/"
 func callEdge(fn string, payload any, out any) error {
 	cfg, err := config.LoadConfig()
 	if err != nil || cfg.AccessToken == "" {
-		return errors.New("sign in to the Trojan desktop app first")
+		return errors.New("Sign in first. Open the Trojan desktop app, or run trojan login in a terminal. Reports use tokens from your balance.")
 	}
 	inner, err := json.Marshal(payload)
 	if err != nil {

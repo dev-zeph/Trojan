@@ -16,6 +16,7 @@ import (
 	"github.com/dev-zeph/trojan/internal/ai"
 	"github.com/dev-zeph/trojan/internal/config"
 	"github.com/dev-zeph/trojan/internal/normalizer"
+	"github.com/dev-zeph/trojan/internal/redact"
 	"github.com/dev-zeph/trojan/internal/scangate"
 )
 
@@ -64,7 +65,7 @@ const brainInstructions = `Trojan keeps a code graph of the whole project (every
 // every project); otherwise `project` returns the one fixed path.
 func newServer(project projectFunc, perRequest bool, opts ...server.ServerOption) *server.MCPServer {
 	base := []server.ServerOption{
-		server.WithDescription("Trojan security scanner — read and act on vulnerability findings in your codebase."),
+		server.WithDescription("Trojan security scanner. Read and act on vulnerability findings in your codebase."),
 	}
 	if perRequest {
 		base = append(base, server.WithInstructions(localInstructions))
@@ -158,10 +159,13 @@ func newServer(project projectFunc, perRequest bool, opts ...server.ServerOption
 	// ── Overviews ──
 	s.AddTool(
 		tool("preview_redaction",
-			mcp.WithDescription(`Show exactly how Trojan redacts secrets before anything leaves this machine. Pass a finding "id" (from get_findings) or raw "text". Returns three views: "local" (the full value, stored only here), "ai" (the <SECRET: …> descriptor actually sent to the AI models), and "upload" (the prefix…last4 mask used in an uploaded report), plus the local classification of each secret (type, length, prefix, entropy, class, checks). Read-only; makes no network call.`),
+			mcp.WithDescription(`Show how Trojan hides secrets before it calls its AI models or uploads a report. Pass a finding "id" from get_findings, or some raw "text" to test. Returns "ai" (what Trojan's AI models get: a label in place of each detected secret), "upload" (what an uploaded report shows: the start and last 4 characters), and "detected" (each secret found and whether it looks real). Add view="local" to also see the full values. That reply goes to your AI assistant, so only ask for it if you need it. Runs on this machine and makes no network call.`),
 			mcp.WithString("id", mcp.Description("A finding id from the latest scan to preview. Either this or text is required.")),
 			mcp.WithString("text", mcp.Description("Raw text to run through redaction (e.g. a sample config line). Either this or id is required.")),
-			mcp.WithString("view", mcp.Description(`Which views to return: "both" (default), "ai", "upload" or "local".`)),
+			mcp.WithString("view", mcp.Description(`Which views to return: "ai", "upload", "local" (also includes ai and upload) or "all". Default is ai and upload only.`)),
+			mcp.WithReadOnlyHintAnnotation(true),
+			mcp.WithDestructiveHintAnnotation(false),
+			mcp.WithOpenWorldHintAnnotation(false),
 		),
 		handlePreviewRedaction(project),
 	)
@@ -227,7 +231,7 @@ func newServer(project projectFunc, perRequest bool, opts ...server.ServerOption
 	// ── Reports (spend the user's Trojan credits) ──
 	s.AddTool(
 		tool("generate_report",
-			mcp.WithDescription("Generate a Trojan report and save it as Markdown and HTML files the user can open, print to PDF, or send. Spends the user's Trojan credits. "+
+			mcp.WithDescription("Generate a Trojan report and save it as Markdown and HTML files the user can open, print to PDF, or send. Uses the user's Trojan tokens. "+
 				`kind: "security" (code risks, grade and priority fixes), "compliance" (licenses and privacy) or "website" (a live website's pen-test results; pass url).`),
 			mcp.WithString("kind", mcp.Required(), mcp.Description(`"security", "compliance" or "website".`)),
 			mcp.WithString("url", mcp.Description(`For kind "website": the tested site. Defaults to the most recently tested one.`)),
@@ -468,9 +472,9 @@ func handleRunScan(project projectFunc) server.ToolHandlerFunc {
 		if g := runScanGate(); !g.Allowed {
 			msg := g.Message
 			if g.Reason == scangate.ReasonSignedOut {
-				msg += " Open the Trojan desktop app and sign in, then try again."
+				msg = "Sign in to scan. Every account gets 500 free tokens a month. Sign in from the Trojan desktop app, or run trojan login in a terminal, then try again."
 			}
-			return mcp.NewToolResultError("Trojan: " + msg), nil
+			return mcp.NewToolResultError(msg), nil
 		}
 		projectPath, err := project(ctx, req)
 		if err != nil {
@@ -529,6 +533,12 @@ type findingContext struct {
 }
 
 func buildFindingContext(f normalizer.Finding, projectPath string) findingContext {
+	f.CodeSnippet = normalizer.CodePreviewOrPlaceholder(f.CodeSnippet, f.FilePath, f.LineNumber)
+	if abs, ok := normalizer.ResolveAgainstRoot(projectPath, f.FilePath); ok {
+		f.FilePath = normalizer.RelToProject(projectPath, f.FilePath)
+		_ = abs
+	}
+
 	// Enrich with context if not already present
 	lang := f.Language
 	if lang == "" {
@@ -543,37 +553,53 @@ func buildFindingContext(f normalizer.Finding, projectPath string) findingContex
 		projectType = ai.DetectProjectTypeName(projectPath)
 	}
 
+	fd := redact.FinderFor(f)
 	surrounding := f.SurroundingCode
 	if surrounding == "" {
 		fullPath := f.FilePath
-		if !filepath.IsAbs(fullPath) {
+		if abs, ok := normalizer.ResolveAgainstRoot(projectPath, f.FilePath); ok {
+			fullPath = abs
+		} else if !filepath.IsAbs(fullPath) {
 			fullPath = filepath.Join(projectPath, fullPath)
 		}
 		surrounding = ai.ExtractSurroundingCode(fullPath, f.LineNumber, 25)
 	}
+	surrounding = fd.Redact(surrounding)
 
+	redacted := redact.ForAI(f)
 	return findingContext{
-		ID:              f.ID,
-		Title:           f.Title,
-		Severity:        string(f.Severity),
-		Scanner:         f.Scanner,
-		Category:        f.Category,
-		RuleID:          f.RuleID,
-		Status:          string(f.Status),
-		FilePath:        f.FilePath,
-		LineNumber:      f.LineNumber,
-		CodeSnippet:     f.CodeSnippet,
+		ID:              redacted.ID,
+		Title:           redacted.Title,
+		Severity:        string(redacted.Severity),
+		Scanner:         redacted.Scanner,
+		Category:        redacted.Category,
+		RuleID:          redacted.RuleID,
+		Status:          string(redacted.Status),
+		FilePath:        redacted.FilePath,
+		LineNumber:      redacted.LineNumber,
+		CodeSnippet:     redacted.CodeSnippet,
 		SurroundingCode: surrounding,
 		Language:        lang,
 		Framework:       framework,
 		ProjectType:     projectType,
-		RawMessage:      f.RawMessage,
-		Simply:          f.Simply,
-		Actions:         f.Actions,
-		FixDiff:         f.FixDiff,
+		RawMessage:      redacted.RawMessage,
+		Simply:          fd.Redact(f.Simply),
+		Actions:         redactStringSlice(fd, f.Actions),
+		FixDiff:         fd.Redact(f.FixDiff),
 		Verdict:         f.Verdict,
-		VerdictReason:   f.VerdictReason,
+		VerdictReason:   fd.Redact(f.VerdictReason),
 	}
+}
+
+func redactStringSlice(fd *redact.Finder, in []string) []string {
+	if in == nil {
+		return nil
+	}
+	out := make([]string, len(in))
+	for i, s := range in {
+		out[i] = fd.Redact(s)
+	}
+	return out
 }
 
 func handleGetFindingWithContext(project projectFunc) server.ToolHandlerFunc {

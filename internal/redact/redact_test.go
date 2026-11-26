@@ -14,41 +14,41 @@ func TestRedactGoldenPerType(t *testing.T) {
 		name, in, want string
 	}{
 		{"aws_access_key", `const id = "` + fakeAWSKey + `"`,
-			`const id = "<SECRET: type=aws_access_key, len=20, prefix=AKIA, entropy=4.0, class=likely_real>"`},
+			`const id = "<SECRET removed by Trojan: type=aws_access_key, len=20, prefix=AKIA, looks=real>"`},
 		{"aws_secret_key", `aws_secret_access_key = ` + fakeAWSSecret,
-			`aws_secret_access_key = <SECRET: type=aws_secret_key, len=40, prefix=Zq8t, entropy=5.2, class=likely_real>`},
+			`aws_secret_access_key = <SECRET removed by Trojan: type=aws_secret_key, len=40, looks=real>`},
 		{"github_token_checksum_ok", `token: ` + fakeGitHub(),
-			`token: <SECRET: type=github_token, len=40, prefix=ghp_, entropy=4.7, class=likely_real, checks=checksum_ok>`},
+			`token: <SECRET removed by Trojan: type=github_token, len=40, prefix=ghp_, looks=real, why=checksum_ok>`},
 		{"github_token_checksum_bad", `token: ` + fakeGitHubBadChecksum(),
-			`token: <SECRET: type=github_token, len=40, prefix=ghp_, entropy=4.6, class=likely_placeholder, checks=checksum_invalid>`},
+			`token: <SECRET removed by Trojan: type=github_token, len=40, prefix=ghp_, looks=placeholder, why=checksum_invalid>`},
 		{"npm_token", `//registry.npmjs.org/:_authToken=` + fakeNPM(),
-			`//registry.npmjs.org/:_authToken=<SECRET: type=npm_token, len=40, prefix=npm_, entropy=4.8, class=likely_real, checks=checksum_ok>`},
+			`//registry.npmjs.org/:_authToken=<SECRET removed by Trojan: type=npm_token, len=40, prefix=npm_, looks=real, why=checksum_ok>`},
 		{"stripe_live", `stripe(` + `"` + fakeStripe + `")`,
-			`stripe("<SECRET: type=stripe_secret_key, len=38, prefix=sk_live_, entropy=5.0, class=likely_real>")`},
+			`stripe("<SECRET removed by Trojan: type=stripe_secret_key, len=38, prefix=sk_live_, looks=real>")`},
 		{"slack", `SLACK=` + fakeSlack,
-			`SLACK=<SECRET: type=slack_token, len=50, prefix=xoxb-, entropy=4.7, class=likely_real>`},
+			`SLACK=<SECRET removed by Trojan: type=slack_token, len=50, prefix=xoxb-, looks=real>`},
 		{"google", `key=` + fakeGoogle,
-			`key=<SECRET: type=google_api_key, len=39, prefix=AIza, entropy=5.2, class=likely_real>`},
+			`key=<SECRET removed by Trojan: type=google_api_key, len=39, prefix=AIza, looks=real>`},
 		{"anthropic", `new Anthropic({ apiKey: "` + fakeAnthropic + `" })`,
-			`new Anthropic({ apiKey: "<SECRET: type=anthropic_api_key, len=43, prefix=sk-ant-api03-, entropy=5.0, class=likely_real>" })`},
+			`new Anthropic({ apiKey: "<SECRET removed by Trojan: type=anthropic_api_key, len=43, prefix=sk-ant-api03-, looks=real>" })`},
 		{"openai", `OPENAI_API_KEY=` + fakeOpenAI,
-			`OPENAI_API_KEY=<SECRET: type=openai_api_key, len=40, prefix=sk-proj-, entropy=5.1, class=likely_real>`},
+			`OPENAI_API_KEY=<SECRET removed by Trojan: type=openai_api_key, len=40, prefix=sk-proj-, looks=real>`},
 		{"sendgrid", `sg.setApiKey("` + fakeSendgrid + `")`,
-			`sg.setApiKey("<SECRET: type=sendgrid_api_key, len=69, prefix=SG., entropy=5.3, class=likely_real>")`},
+			`sg.setApiKey("<SECRET removed by Trojan: type=sendgrid_api_key, len=69, prefix=SG., looks=real>")`},
 		{"jwt_with_role", `const k = "` + fakeJWT + `"`,
-			`const k = "<SECRET: type=jwt, len=120, prefix=eyJ, entropy=5.0, class=likely_real, jwt_alg=HS256, claims=iss|role, role=service_role>"`},
+			`const k = "<SECRET removed by Trojan: type=jwt, len=120, prefix=eyJ, looks=real, jwt_alg=HS256, claims=iss|role, role=service_role>"`},
 		{"url_password", `DATABASE_URL=postgres://app:S3cr3tPa55w0rd@db.internal:5432/app`,
-			`DATABASE_URL=postgres://app:<SECRET: type=url_password, len=14, prefix=S3, entropy=3.4, class=likely_real>@db.internal:5432/app`},
+			`DATABASE_URL=postgres://app:<SECRET removed by Trojan: type=url_password, len=14, looks=real>@db.internal:5432/app`},
 		{"bearer_header", `Authorization: Bearer Zk9xLm3Qp7Rt2Vw8Yb4Nc6`,
-			`Authorization: Bearer <SECRET: type=authorization_header, len=22, prefix=Zk9x, entropy=4.5, class=likely_real>`},
+			`Authorization: Bearer <SECRET removed by Trojan: type=authorization_header, len=22, looks=real>`},
 		{"generic_quoted", `const dbPassword = "Tr0ub4dor&3xyz"`,
-			`const dbPassword = "<SECRET: type=generic_secret, len=14, prefix=Tr, entropy=3.7, class=likely_real>"`},
+			`const dbPassword = "<SECRET removed by Trojan: type=generic_secret, len=14, looks=real>"`},
 		{"generic_placeholder", `API_KEY=changeme123`,
-			`API_KEY=<SECRET: type=generic_secret, len=11, prefix=ch, entropy=3.3, class=likely_placeholder, checks=placeholder_pattern>`},
+			`API_KEY=<SECRET removed by Trojan: type=generic_secret, len=11, looks=placeholder, why=placeholder_pattern>`},
 		{"aws_docs_example", `aws_access_key_id = AK` + `IAIOSFODNN7EXAMPLE`,
-			`aws_access_key_id = <SECRET: type=aws_access_key, len=20, prefix=AKIA, entropy=3.7, class=likely_placeholder, checks=provider_docs_example>`},
+			`aws_access_key_id = <SECRET removed by Trojan: type=aws_access_key, len=20, prefix=AKIA, looks=placeholder, why=provider_docs_example>`},
 		{"low_variety", `API_TOKEN=aaaaaaaaaaaa1`,
-			`API_TOKEN=<SECRET: type=generic_secret, len=13, prefix=aa, entropy=0.4, class=likely_placeholder, checks=low_entropy>`},
+			`API_TOKEN=<SECRET removed by Trojan: type=generic_secret, len=13, looks=placeholder, why=low_entropy>`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -66,7 +66,7 @@ func TestPrivateKeyBlockIsRedactedWhole(t *testing.T) {
 	if strings.Contains(got, fakePEMBody[:20]) || strings.Contains(got, "PRIVATE KEY-----") {
 		t.Fatalf("PEM body or armor leaked: %s", got)
 	}
-	if !strings.Contains(got, "<SECRET: type=private_key") || !strings.HasSuffix(got, "`\nconsole.log('ok')") {
+	if !strings.Contains(got, "<SECRET removed by Trojan: type=private_key") || !strings.HasSuffix(got, "`\nconsole.log('ok')") {
 		t.Fatalf("surrounding code changed: %q", got)
 	}
 	m := Mask(in)
@@ -109,14 +109,14 @@ func TestNormalCodeIsUntouched(t *testing.T) {
 	}
 }
 
-func TestMaskPrefixLast4(t *testing.T) {
+func TestMaskVendorPrefixLast4OrHidden(t *testing.T) {
 	cases := map[string]string{
 		`id = "` + fakeAWSKey + `"`:       `id = "AKIA…VQXK"`,
 		`k = "` + fakeStripe + `"`:        `k = "sk_live_…8dPq"`,
 		`token: ` + fakeGitHub():          `token: ghp_…` + fakeGitHub()[36:],
-		`DB_PASSWORD=Tr0ub4dor3xy`:        `DB_PASSWORD=Tr…xy`,
-		`API_KEY=short9x`:                 `API_KEY=[masked, 7 chars]`,
-		`postgres://u:S3cr3tPa55w0rd@h/d`: `postgres://u:S3…rd@h/d`,
+		`DB_PASSWORD=Tr0ub4dor3xy`:        `DB_PASSWORD=[hidden, 12 chars]`,
+		`API_KEY=short9x`:                 `API_KEY=[hidden, 7 chars]`,
+		`postgres://u:S3cr3tPa55w0rd@h/d`: `postgres://u:[hidden, 14 chars]@h/d`,
 	}
 	for in, want := range cases {
 		if got := Mask(in); got != want {
@@ -251,7 +251,7 @@ func TestForAIRedactsScannerMatchEverywhere(t *testing.T) {
 	if got.FilePath != f.FilePath || got.LineNumber != f.LineNumber || got.RuleID != f.RuleID {
 		t.Fatal("location changed")
 	}
-	if !strings.Contains(got.SurroundingCode, "import x from 'y'\n// key below\ninternalKey = \"<SECRET: type=secret_generic-api-key, len=16, prefix=q8Rw") ||
+	if !strings.Contains(got.SurroundingCode, "import x from 'y'\n// key below\ninternalKey = \"<SECRET removed by Trojan: type=secret_generic-api-key, len=16, looks=real>") ||
 		!strings.HasSuffix(got.SurroundingCode, "\nexport default internalKey\n") {
 		t.Fatalf("surrounding code not kept: %q", got.SurroundingCode)
 	}
@@ -282,10 +282,10 @@ func TestForUploadMasksButKeepsLocationAndCode(t *testing.T) {
 	f := gitleaksFinding(match, "a()\n"+match+"\nb()\n")
 	f.Proof = &normalizer.Proof{Method: "GET", URL: "https://app.test/api", ResponseExcerpt: `{"token":"` + fakeJWT + `"}`}
 	got := ForUpload(f)
-	if got.CodeSnippet != `internalKey = "q8Rw…p3Kt"` {
+	if got.CodeSnippet != `internalKey = "[hidden, 16 chars]"` {
 		t.Fatalf("snippet mask: %q", got.CodeSnippet)
 	}
-	if got.SurroundingCode != "a()\ninternalKey = \"q8Rw…p3Kt\"\nb()\n" {
+	if got.SurroundingCode != "a()\ninternalKey = \"[hidden, 16 chars]\"\nb()\n" {
 		t.Fatalf("surrounding: %q", got.SurroundingCode)
 	}
 	if strings.Contains(got.Proof.ResponseExcerpt, fakeJWT) || !strings.Contains(got.Proof.ResponseExcerpt, "eyJ…") {
@@ -300,5 +300,92 @@ func TestForUploadMasksButKeepsLocationAndCode(t *testing.T) {
 	}
 	if f.CodeSnippet != match {
 		t.Fatal("input finding modified")
+	}
+}
+
+// UX Lead failing cases (2026-11-26 MCP usability test): URL query params,
+// x-api-key headers, short unquoted passwords, and redis://:password@host.
+func TestUXLeadURLQueryAndHeaderRedaction(t *testing.T) {
+	apiKey := "IfuK" + "P6oZZjAvJV3UEdmKtwgFxg9KGWWc"
+	header := "3nIs" + "HSiCqHU5G1FYlewUGcE5LCAfFlMm"
+	amz := "anAm" + "zSignatureExampleValue0001"
+	in := "fetch('https://api.example.com/v1/data?api_key=" + apiKey + "&user=1')"
+	got := Text(in)
+	if strings.Contains(got, apiKey) {
+		t.Fatalf("api_key query leaked: %s", got)
+	}
+	if !strings.Contains(got, "user=1") || !strings.Contains(got, "type=url_query") {
+		t.Fatalf("should keep param names and user=1: %s", got)
+	}
+	up := Mask(in)
+	if strings.Contains(up, apiKey) {
+		t.Fatalf("api_key leaked in upload: %s", up)
+	}
+
+	hdr := "curl -H 'x-api-key: " + header + "' https://api.x.com"
+	got = Text(hdr)
+	if strings.Contains(got, header) {
+		t.Fatalf("x-api-key leaked: %s", got)
+	}
+	if strings.Contains(Mask(hdr), header) {
+		t.Fatalf("x-api-key leaked in upload: %s", Mask(hdr))
+	}
+
+	// Other secret-named query params from the report must also be masked.
+	names := []string{"apikey", "key", "secret", "client_secret", "password", "pwd", "sig", "signature", "code", "X-Amz-Signature", "token", "access_token"}
+	for _, name := range names {
+		line := "https://ex.test/v1?user=1&" + name + "=" + amz + "&ok=true"
+		got := Text(line)
+		if strings.Contains(got, amz) {
+			t.Errorf("%s query leaked: %s", name, got)
+		}
+		if !strings.Contains(got, "user=1") || !strings.Contains(got, "ok=true") {
+			t.Errorf("%s should keep non-secret params: %s", name, got)
+		}
+	}
+}
+
+func TestUXLeadPasswordAndRedisURL(t *testing.T) {
+	if got := Text("password=hunter2"); strings.Contains(got, "hunter2") || !strings.Contains(got, "type=password") {
+		t.Fatalf("password=hunter2: %s", got)
+	}
+	if got := Text("pass: 6DciK"); strings.Contains(got, "6DciK") {
+		t.Fatalf("pass: 6DciK leaked: %s", got)
+	}
+	redisPW := "k6zc" + "bWUsNNA2l7xErhJM"
+	in := "redis://:" + redisPW + "@cache:6379"
+	got := Text(in)
+	if strings.Contains(got, redisPW) {
+		t.Fatalf("redis empty-user password leaked: %s", got)
+	}
+	if !strings.Contains(got, "type=url_password") {
+		t.Fatalf("expected url_password: %s", got)
+	}
+}
+
+func TestGenericPrefixIsNotSecretCharacters(t *testing.T) {
+	// Generic password: AI label must not show leading characters, upload is fully hidden.
+	in := `password = "Tr0ub4dor&8BiK"`
+	got := Text(in)
+	if strings.Contains(got, "prefix=Tr0u") || strings.Contains(got, "Tr0u") {
+		t.Fatalf("generic prefix leaked to AI: %s", got)
+	}
+	if !strings.Contains(got, "looks=real") || !strings.Contains(got, "len=14") {
+		t.Fatalf("label missing length/looks: %s", got)
+	}
+	up := Mask(in)
+	if strings.Contains(up, "Tr0u") || strings.Contains(up, "8BiK") || !strings.Contains(up, "[hidden, 14 chars]") {
+		t.Fatalf("upload should fully hide generic password: %s", up)
+	}
+}
+
+func TestVendorPrefixOnlyOnKnownPrefixes(t *testing.T) {
+	s := Secret{Value: fakeStripe, Type: "stripe_secret_key"}
+	if SafePrefixFor(s) != "sk_live_" {
+		t.Fatalf("stripe prefix: %q", SafePrefixFor(s))
+	}
+	s = Secret{Value: "Tr0ub4dor&8BiK", Type: "password"}
+	if SafePrefixFor(s) != "" {
+		t.Fatalf("generic must have empty prefix, got %q", SafePrefixFor(s))
 	}
 }

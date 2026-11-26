@@ -36,6 +36,9 @@ type TemplateResponse struct {
 // Nuclei YAML templates for the crawled application. Results are cached locally
 // for 24 hours based on the crawl content hash.
 func GenerateTemplates(req TemplateRequest, accessToken string) (*TemplateResponse, error) {
+	// Mask secrets in TargetURL and endpoint URLs before the request is
+	// hashed or sent. The cache key must never embed raw secrets.
+	req = RedactTemplateRequest(req)
 	hash := crawlHash(req)
 
 	// Check local cache first.

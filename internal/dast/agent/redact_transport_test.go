@@ -40,7 +40,7 @@ func (r *recordingTransport) Turn(_ context.Context, msgs []Message) (*TurnResul
 	return r.script[i](seen), nil
 }
 
-var reRef = regexp.MustCompile(`<SECRET: ref=(S\d+), type=jwt[^>]*>`)
+var reRef = regexp.MustCompile(`<SECRET(?: removed by Trojan)?: ref=(S\d+), type=jwt[^>]*>`)
 
 func TestAgentWireNeverCarriesRawSecrets(t *testing.T) {
 	var echoed sync.Map
