@@ -67,3 +67,6 @@ docs/
 
 # OS
 .DS_Store
+
+# macOS AppleDouble files (made when copying to or from external drives)
+._*

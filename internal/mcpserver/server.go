@@ -360,9 +360,9 @@ func handleGetFindings(project projectFunc) server.ToolHandlerFunc {
 				hiddenFP++
 				continue
 			}
-			loc := f.FilePath
+			loc := displayPath(projectPath, f.FilePath)
 			if f.LineNumber > 0 {
-				loc = fmt.Sprintf("%s:%d", f.FilePath, f.LineNumber)
+				loc = fmt.Sprintf("%s:%d", loc, f.LineNumber)
 			}
 			if f.HiddenAsFalseAlarm() {
 				likelyFalseAlarms++
@@ -455,14 +455,23 @@ var runScanGate = func() scangate.Result {
 	return scangate.Check(token, ai.FetchLicense)
 }
 
+// runScanSignInSteps tells a signed-out user how to sign in. trojan login is
+// the way that works for an MCP or CLI user, so it is always named.
+const runScanSignInSteps = "Sign in from the Trojan desktop app, or run trojan login in a terminal, then try again."
+
+// runScanGateMessage is the run_scan error for a scan the gate refused: the
+// gate's message, plus how to sign in when the user is signed out.
+func runScanGateMessage(g scangate.Result) string {
+	if g.Reason == scangate.ReasonSignedOut {
+		return g.Message + " " + runScanSignInSteps
+	}
+	return g.Message
+}
+
 func handleRunScan(project projectFunc) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		if g := runScanGate(); !g.Allowed {
-			msg := g.Message
-			if g.Reason == scangate.ReasonSignedOut {
-				msg += " Open the Trojan desktop app and sign in, then try again."
-			}
-			return mcp.NewToolResultError("Trojan: " + msg), nil
+			return mcp.NewToolResultError(runScanGateMessage(g)), nil
 		}
 		projectPath, err := project(ctx, req)
 		if err != nil {
@@ -535,11 +544,34 @@ var isSignedIn = func() bool {
 }
 
 // addSignInHint sets Explanation to the sign-in hint when the finding has no
-// explanation and the user is not signed in.
+// explanation and the user is not signed in. Info-only items (such as the SBOM
+// package count) have nothing to explain, so they never get the hint.
 func addSignInHint(fc *findingContext, signedIn bool) {
+	if fc.Severity == string(normalizer.SeverityInfo) {
+		return
+	}
 	if strings.TrimSpace(fc.Simply) == "" && !signedIn {
 		fc.Explanation = signInHint
 	}
+}
+
+// displayPath is how a finding's location is shown to the user and their AI
+// tool: relative to the project ("." for the project itself), or just the file
+// name when an absolute path is outside the project. Scans saved by older
+// builds can hold absolute paths, which show the user's home folder and name.
+func displayPath(projectPath, p string) string {
+	if p == "" || !filepath.IsAbs(p) {
+		return p
+	}
+	if projectPath != "" {
+		if proj, err := filepath.Abs(projectPath); err == nil {
+			if rel, err := filepath.Rel(proj, filepath.Clean(p)); err == nil &&
+				rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+				return filepath.ToSlash(rel)
+			}
+		}
+	}
+	return filepath.Base(p)
 }
 
 func buildFindingContext(f normalizer.Finding, projectPath string) findingContext {
@@ -574,7 +606,7 @@ func buildFindingContext(f normalizer.Finding, projectPath string) findingContex
 		Category:        f.Category,
 		RuleID:          f.RuleID,
 		Status:          string(f.Status),
-		FilePath:        f.FilePath,
+		FilePath:        displayPath(projectPath, f.FilePath),
 		LineNumber:      f.LineNumber,
 		CodeSnippet:     f.CodeSnippet,
 		SurroundingCode: surrounding,

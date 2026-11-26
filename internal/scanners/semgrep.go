@@ -306,13 +306,3 @@ func semgrepTitle(ruleID string) string {
 	}
 	return ruleIDToTitle(ruleID)
 }
-
-func ruleIDToTitle(ruleID string) string {
-	parts := strings.Split(ruleID, ".")
-	if len(parts) == 0 {
-		return ruleID
-	}
-	last := parts[len(parts)-1]
-	last = strings.ReplaceAll(last, "-", " ")
-	return strings.Title(last)
-}

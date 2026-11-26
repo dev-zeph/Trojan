@@ -57,20 +57,24 @@ func (s *Syft) Run(projectPath string) ([]normalizer.Finding, error) {
 		return []normalizer.Finding{}, nil
 	}
 
-	findings := []normalizer.Finding{
-		{
-			ID:         "syft-0",
-			Scanner:    s.Name(),
-			Category:   s.Category(),
-			Severity:   normalizer.SeverityInfo,
-			Title:      fmt.Sprintf("SBOM: %d packages inventoried", len(result.Artifacts)),
-			RawMessage: fmt.Sprintf("Syft identified %d artifacts. Full SBOM saved to .trojan/sbom.json.", len(result.Artifacts)),
-			FilePath:   projectPath,
-			Status:     normalizer.StatusOpen,
-		},
-	}
+	return []normalizer.Finding{syftSummaryFinding(len(result.Artifacts))}, nil
+}
 
-	return findings, nil
+// syftSummaryFinding is the one info-only item a Syft run adds: how many
+// packages the SBOM lists. It is about the whole project, so its location is
+// "." (the project folder) rather than the absolute path, which would show
+// the user's home folder and name in findings, reports and AI tools.
+func syftSummaryFinding(artifacts int) normalizer.Finding {
+	return normalizer.Finding{
+		ID:         "syft-0",
+		Scanner:    "syft",
+		Category:   "sbom",
+		Severity:   normalizer.SeverityInfo,
+		Title:      fmt.Sprintf("SBOM: %d packages inventoried", artifacts),
+		RawMessage: fmt.Sprintf("Syft identified %d artifacts. Full SBOM saved to .trojan/sbom.json.", artifacts),
+		FilePath:   ".",
+		Status:     normalizer.StatusOpen,
+	}
 }
 
 // Licenses returns the license map extracted during the last Run.
