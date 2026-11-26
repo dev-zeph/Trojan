@@ -44,6 +44,7 @@ import { CM } from "./components/CornerMarks";
 import { FeedbackForm } from "./components/FeedbackForm";
 import { TokenBalance, RunCostHint } from "./components/TokenBalance";
 import { attachPtInfoPlacement } from "./lib/tooltipPlacement";
+import { labReportStatusMessage } from "./lib/labReportStatus";
 import { ScanGateNotice } from "./components/ScanGateNotice";
 import { runScanGate, fetchLicenseBalance, type ScanGate } from "./lib/scanGate";
 import type {
@@ -688,7 +689,7 @@ export default function App() {
       const pkgs: PkgInfo[] = scanData.packages ?? [];
 
       const token = await getFreshToken();
-      if (!token) throw new Error("Sign in to generate a security report");
+      if (!token) throw new Error(labReportStatusMessage("security", 401) ?? "Sign in to generate a security report.");
 
       const res = await fetch(`${SUPABASE_URL}/functions/v1/threat-lab`, {
         method: "POST",
@@ -706,8 +707,8 @@ export default function App() {
         }),
       });
 
-      if (res.status === 403) throw new Error("Sign in to generate a security report. Costs 100 tokens.");
-      if (res.status === 429) throw new Error("Daily security report limit reached. Try again tomorrow.");
+      const labMsg = labReportStatusMessage("security", res.status);
+      if (labMsg) throw new Error(labMsg);
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error((err as { error?: string }).error ?? `Request failed (${res.status})`);
@@ -914,7 +915,7 @@ export default function App() {
       setDastFindings(findings);
 
       const token = await getFreshToken();
-      if (!token) throw new Error("Sign in with Pro to generate a report.");
+      if (!token) throw new Error(labReportStatusMessage("pen-test", 401) ?? "Sign in to generate a pen-test report.");
 
       const res = await fetch(`${SUPABASE_URL}/functions/v1/pentest-report`, {
         method: "POST",
@@ -938,8 +939,8 @@ export default function App() {
           }),
         }),
       });
-      if (res.status === 403) throw new Error("Sign in to generate reports.");
-      if (res.status === 429) throw new Error("Daily AI limit reached. Try again tomorrow.");
+      const labMsg = labReportStatusMessage("pen-test", res.status);
+      if (labMsg) throw new Error(labMsg);
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error((err as { error?: string }).error ?? `Request failed (${res.status})`);
@@ -2364,7 +2365,7 @@ export default function App() {
               setComplianceLabError(null);
               try {
                 const token = await getFreshToken();
-                if (!token) throw new Error("Sign in to generate a compliance report.");
+                if (!token) throw new Error(labReportStatusMessage("compliance", 401) ?? "Sign in to generate a compliance report.");
 
                 const copyleft = packages.filter(p => p.license_risk === "copyleft").map(p => ({ name: p.name, version: p.version, license: p.license || "" }));
                 const weakCopyleft = packages.filter(p => p.license_risk === "weak-copyleft").map(p => ({ name: p.name, license: p.license || "" }));
@@ -2384,8 +2385,8 @@ export default function App() {
                   }),
                 });
 
-                if (res.status === 403) throw new Error("Sign in to generate a compliance report. It uses tokens based on the AI work it takes.");
-                if (res.status === 429) throw new Error("Daily limit reached. Try again tomorrow.");
+                const labMsg = labReportStatusMessage("compliance", res.status);
+                if (labMsg) throw new Error(labMsg);
                 if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error((err as { error?: string }).error ?? `Request failed (${res.status})`); }
 
                 setComplianceLabResult(await res.json() as ComplianceLabResult);
@@ -2871,7 +2872,7 @@ export default function App() {
                 {hasData && !signedIn && (
                   <div className="lab-state-card lab-pro-gate">
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-                    Sign in to generate a security report. Costs 100 tokens.
+                    Sign in to generate a security report. It uses tokens based on the AI work it takes.
                     <button className="lab-upgrade-btn" onClick={() => setShowAuthForm(true)}>Sign in →</button>
                   </div>
                 )}

@@ -69,7 +69,7 @@ export function TokenBalance({ balance, lowThreshold = 400, onTopUp, compact }: 
  */
 export function RunCostHint({ balance, model, whenYouAddCode = false }: { balance: number | null; model: "sonnet" | "opus"; whenYouAddCode?: boolean }) {
   const typical = model === "opus" ? 915 : 365;
-  const range = model === "opus" ? "250–950" : "100–400";
+  const range = model === "opus" ? "250–950" : "100 to 400";
   const affordable = balance !== null && balance >= typical;
 
   return (
