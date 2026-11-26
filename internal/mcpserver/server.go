@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -517,6 +518,28 @@ type findingContext struct {
 	FixDiff         string   `json:"fix_diff,omitempty"`
 	Verdict         string   `json:"verdict,omitempty"`
 	VerdictReason   string   `json:"verdict_reason,omitempty"`
+	// Explanation is a note for the user when there is no plain-English
+	// explanation (Simply) yet, e.g. because they are signed out.
+	Explanation string `json:"explanation,omitempty"`
+}
+
+// signInHint is added to get_finding when the finding has no explanation and
+// the user is signed out: explanations come from the signed-in service.
+const signInHint = "Sign in to get a plain-English explanation and fix steps."
+
+// isSignedIn reports whether a Trojan login is saved. A variable so tests can
+// replace it.
+var isSignedIn = func() bool {
+	cfg, err := config.LoadConfig()
+	return err == nil && cfg != nil && strings.TrimSpace(cfg.AccessToken) != ""
+}
+
+// addSignInHint sets Explanation to the sign-in hint when the finding has no
+// explanation and the user is not signed in.
+func addSignInHint(fc *findingContext, signedIn bool) {
+	if strings.TrimSpace(fc.Simply) == "" && !signedIn {
+		fc.Explanation = signInHint
+	}
 }
 
 func buildFindingContext(f normalizer.Finding, projectPath string) findingContext {
@@ -587,6 +610,7 @@ func handleGetFindingWithContext(project projectFunc) server.ToolHandlerFunc {
 		for _, f := range scan.Findings {
 			if f.ID == id {
 				fc := buildFindingContext(f, projectPath)
+				addSignInHint(&fc, isSignedIn())
 				out, err := json.MarshalIndent(fc, "", "  ")
 				if err != nil {
 					return mcp.NewToolResultError("failed to serialize finding context"), nil
@@ -654,11 +678,16 @@ func handleGetFixableFindings(project projectFunc) server.ToolHandlerFunc {
 
 // --- disk helpers ---
 
+// noScanResultsMsg is shown to the user (via their AI assistant) when a folder
+// has not been scanned yet. Plain words, no em dash, and it names both ways to
+// fix it.
+const noScanResultsMsg = "No scan results yet for this folder. Ask me to run a scan (run_scan), or run trojan scan in a terminal."
+
 func loadLatestScan(projectPath string) (*normalizer.ScanResult, error) {
 	scansDir := filepath.Join(projectPath, ".trojan", "scans")
 	entries, err := os.ReadDir(scansDir)
 	if err != nil {
-		return nil, fmt.Errorf("no scan results found in %s — run `trojan scan` first", projectPath)
+		return nil, errors.New(noScanResultsMsg)
 	}
 
 	var files []string
@@ -668,7 +697,7 @@ func loadLatestScan(projectPath string) (*normalizer.ScanResult, error) {
 		}
 	}
 	if len(files) == 0 {
-		return nil, fmt.Errorf("no scan results found — run `trojan scan` first")
+		return nil, errors.New(noScanResultsMsg)
 	}
 	sort.Strings(files)
 

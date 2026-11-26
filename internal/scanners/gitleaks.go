@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/dev-zeph/trojan/internal/normalizer"
@@ -96,7 +97,7 @@ func (g Gitleaks) Run(projectPath string) ([]normalizer.Finding, error) {
 			Scanner:     g.Name(),
 			Category:    g.Category(),
 			Severity:    secretSeverity(r),
-			Title:       fmt.Sprintf("Leaked %s", r.Description),
+			Title:       gitleaksTitle(r.Description, r.RuleID),
 			RawMessage:  msg,
 			FilePath:    r.File,
 			LineNumber:  r.StartLine,
@@ -296,4 +297,29 @@ type gitleaksResult struct {
 	File        string `json:"File"`
 	Commit      string `json:"Commit"`
 	RuleID      string `json:"RuleID"`
+}
+
+// gitleaksDescLead matches the sentence openers in gitleaks' default rule
+// descriptions ("Uncovered a GitHub Personal Access Token, potentially ...").
+var gitleaksDescLead = regexp.MustCompile(`(?i)^(?:uncovered|found|discovered|identified|detected|exposed)(?:\s+(?:an|a|the))?(?:\s+(?:possible|potential))?\s*`)
+
+// gitleaksDescTail cuts the consequence clause that follows the secret's name.
+var gitleaksDescTail = regexp.MustCompile(`(?i)(?:,|;|\s+-\s+|\s+(?:which|that|potentially|possibly|risking|allowing|enabling|leading)\b).*$`)
+
+// gitleaksTitle turns a gitleaks rule description into a short finding title:
+// "Uncovered a GitHub Personal Access Token, potentially leading to ..." becomes
+// "Leaked GitHub Personal Access Token". Falls back to the rule id when the
+// description is empty or reduces to nothing.
+func gitleaksTitle(description, ruleID string) string {
+	name := strings.TrimSpace(description)
+	name = gitleaksDescLead.ReplaceAllString(name, "")
+	name = gitleaksDescTail.ReplaceAllString(name, "")
+	name = strings.TrimRight(strings.TrimSpace(name), ".")
+	if name == "" {
+		name = strings.ReplaceAll(strings.TrimSpace(ruleID), "-", " ")
+	}
+	if name == "" {
+		name = "secret"
+	}
+	return "Leaked " + name
 }
