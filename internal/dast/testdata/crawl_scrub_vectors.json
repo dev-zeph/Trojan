@@ -1,0 +1,50 @@
+{
+  "_comment": "Shared by crawl_scrub_test.go and supabase/functions/_shared/crawl_scrub.test.ts. <TOK>, <HEX> and <JWT> are replaced at test time with fake values built in code, so no token-shaped strings live in the repo.",
+  "urls": [
+    { "in": "https://User:Pw@Example.COM:8443/a/b?x=1&token=<TOK>#frag", "out": "https://example.com:8443/a/b?token=&x=" },
+    { "in": "https://example.com:443/a", "out": "https://example.com/a" },
+    { "in": "http://example.com:80/a", "out": "http://example.com/a" },
+    { "in": "https://example.com/reset/<TOK>", "out": "https://example.com/reset/{token}" },
+    { "in": "https://example.com/users/123/orders", "out": "https://example.com/users/123/orders" },
+    { "in": "https://example.com/u/550e8400-e29b-41d4-a716-446655440000", "out": "https://example.com/u/{uuid}" },
+    { "in": "https://example.com/n/12345678901", "out": "https://example.com/n/{num}" },
+    { "in": "https://example.com/blog/how-to-reset-password-2024", "out": "https://example.com/blog/how-to-reset-password-2024" },
+    { "in": "https://example.com/share/<HEX>", "out": "https://example.com/share/{token}" },
+    { "in": "https://example.com/t/<JWT>", "out": "https://example.com/t/{token}" },
+    { "in": "https://example.com/cb?code=<TOK>&state=<HEX>", "out": "https://example.com/cb?code=&state=" },
+    { "in": "https://example.com/p;jsessionid=<HEX>/x", "out": "https://example.com/p/x" },
+    { "in": "https://example.com/a/?<TOK>", "out": "https://example.com/a/" },
+    { "in": "https://example.com/search?q=hello%20world&q=2&Q=1", "out": "https://example.com/search?Q=&q=" },
+    { "in": "https://example.com/caf%C3%A9", "out": "https://example.com/caf%C3%A9" },
+    { "in": "https://example.com/", "out": "https://example.com" },
+    { "in": "https://example.com", "out": "https://example.com" },
+    { "in": "https://example.com/#/dashboard?k=<TOK>", "out": "https://example.com" },
+    { "in": "ftp://example.com/x", "out": "" },
+    { "in": "javascript:alert(1)", "out": "" },
+    { "in": "/relative/path", "out": "" },
+    { "in": "", "out": "" }
+  ],
+  "request": {
+    "in": {
+      "targetURL": "https://me:pw@shop.example.com/?ref=<TOK>",
+      "endpoints": [
+        { "url": "https://shop.example.com/login?next=/account&sid=<HEX>", "method": "get", "queryParams": ["next", "sid"] },
+        { "url": "https://shop.example.com/login?next=/cart&sid=<TOK>", "method": "GET", "queryParams": ["sid", "next"] },
+        { "url": "https://shop.example.com/login", "method": "post", "formFields": ["password", "email", "<TOK>"] },
+        { "url": "mailto:hi@example.com", "method": "GET" }
+      ],
+      "techHints": ["NextJS", "react", "react", "bad hint!"],
+      "maxTemplates": 99
+    },
+    "out": {
+      "targetURL": "https://shop.example.com?ref=",
+      "endpoints": [
+        { "url": "https://shop.example.com/login?next=&sid=", "method": "GET", "formFields": [], "queryParams": ["next", "sid"] },
+        { "url": "https://shop.example.com/login", "method": "POST", "formFields": ["email", "password"], "queryParams": [] }
+      ],
+      "techHints": ["nextjs", "react"],
+      "maxTemplates": 10
+    },
+    "digest": "93c0f5c659042dcafbd7bb91c721ec2592d21dcae8df3a5e66a2e2899a6a12be"
+  }
+}

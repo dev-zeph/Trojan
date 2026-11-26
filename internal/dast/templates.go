@@ -2,13 +2,11 @@ package dast
 
 import (
 	"bytes"
-	"crypto/md5"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
 	"time"
 )
 
@@ -17,6 +15,9 @@ const (
 	templateCacheTTL = 24 * time.Hour
 	maxTemplates     = 10
 )
+
+// dastTemplatesEndpoint is a variable so tests can point it at a local server.
+var dastTemplatesEndpoint = dastTemplatesURL
 
 // TemplateRequest is sent to the dast-templates edge function.
 type TemplateRequest struct {
@@ -36,6 +37,9 @@ type TemplateResponse struct {
 // Nuclei YAML templates for the crawled application. Results are cached locally
 // for 24 hours based on the crawl content hash.
 func GenerateTemplates(req TemplateRequest, accessToken string) (*TemplateResponse, error) {
+	// Query values, fragments, user:password@ and token-like path segments
+	// never leave the machine (see crawl_scrub.go).
+	req = ScrubTemplateRequest(req)
 	hash := crawlHash(req)
 
 	// Check local cache first.
@@ -48,7 +52,7 @@ func GenerateTemplates(req TemplateRequest, accessToken string) (*TemplateRespon
 		return nil, err
 	}
 
-	httpReq, err := http.NewRequest(http.MethodPost, dastTemplatesURL, bytes.NewReader(body))
+	httpReq, err := http.NewRequest(http.MethodPost, dastTemplatesEndpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -98,20 +102,9 @@ func WriteTemplatesToDir(resp *TemplateResponse, dir string) error {
 	return nil
 }
 
-// crawlHash returns a stable hex hash of the crawl content for cache keying.
+// crawlHash returns the cache key for a request (see CrawlKey).
 func crawlHash(req TemplateRequest) string {
-	urls := make([]string, len(req.Endpoints))
-	for i, e := range req.Endpoints {
-		urls[i] = e.Method + ":" + e.URL
-	}
-	sort.Strings(urls)
-
-	hints := append([]string{}, req.TechHints...)
-	sort.Strings(hints)
-
-	raw := req.TargetURL + "|" + fmt.Sprint(urls) + "|" + fmt.Sprint(hints)
-	h := md5.Sum([]byte(raw))
-	return fmt.Sprintf("%x", h)
+	return CrawlKey(req)
 }
 
 func templateCacheDir(hash string) string {
