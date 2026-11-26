@@ -1,8 +1,8 @@
 import { assert, assertEquals, assertFalse, assertRejects } from 'jsr:@std/assert@1'
 import { scrubContext } from './crawl_scrub.ts'
 import {
-  type CacheClient, expiryCutoff, getCachedTemplates, isExpired, purgeExpiredTemplates,
-  saveCachedTemplates, TEMPLATE_CACHE_TTL_MS, userCrawlKey,
+  type CacheClient, expiryCutoff, generationChargeKey, getCachedTemplates, isExpired, newGenerationId,
+  purgeExpiredTemplates, saveCachedTemplates, TEMPLATE_CACHE_TTL_MS, userCrawlKey,
 } from './template_cache.ts'
 
 const quiet = async (fn: () => Promise<void>) => {
@@ -119,4 +119,54 @@ Deno.test('saveCachedTemplates upserts on (created_by, crawl_hash) with owner an
   assert(calls.includes('upsert created_by,crawl_hash'))
   assert(Math.abs(Date.parse(String(rows[0].created_at)) - Date.now()) < 5000)
   await quiet(async () => assertFalse(await saveCachedTemplates(fakeDb({ failWrite: true }).db, A, key, { templates: [], rationale: '' })))
+})
+
+Deno.test('generationChargeKey names user, crawl and generation', () => {
+  assertEquals(generationChargeKey(A, 'k', 'g1'), `dast-templates:${A}:k:g1`)
+  assertFalse(generationChargeKey(A, 'k', 'g1') === generationChargeKey(A, 'k', 'g2'))
+  for (const [u, k, g] of [['', 'k', 'g'], [A, '', 'g'], [A, 'k', '']]) {
+    let threw = false
+    try { generationChargeKey(u, k, g) } catch { threw = true }
+    assert(threw)
+  }
+})
+
+Deno.test('newGenerationId is a fresh uuid each time', () => {
+  const a = newGenerationId(), b = newGenerationId()
+  assert(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(a))
+  assertFalse(a === b)
+})
+
+// The handler's order (purge, read, generate on a miss, save, debit) against
+// a ledger that, like spend_tokens (013/015), ignores a key it has seen.
+Deno.test('two generations of the same crawl after expiry are charged twice; hits are free', async () => {
+  const { db } = fakeDb()
+  const ledger = new Map<string, number>()
+  const spend = (key: string, tokens: number) => { if (!ledger.has(key)) ledger.set(key, tokens) }
+  const key = await userCrawlKey(A, ctx)
+  let generations = 0
+  const request = async (now: number) => {
+    await purgeExpiredTemplates(db, now)
+    if (await getCachedTemplates(db, A, key, now)) return 'hit'
+    const gen = newGenerationId()
+    generations++
+    await saveCachedTemplates(db, A, key, { templates: [`id: g${generations}`], rationale: '' })
+    // Retrying the same request's debit must not charge twice.
+    spend(generationChargeKey(A, key, gen), 10)
+    spend(generationChargeKey(A, key, gen), 10)
+    return 'generated'
+  }
+  const t0 = Date.now()
+  assertEquals(await request(t0), 'generated')
+  assertEquals(await request(t0 + 60_000), 'hit')
+  assertEquals(ledger.size, 1)
+  // Past 24 hours the row is purged, the crawl is generated again and charged again.
+  assertEquals(await request(t0 + TEMPLATE_CACHE_TTL_MS + 60_000), 'generated')
+  assertEquals(generations, 2)
+  assertEquals(ledger.size, 2)
+  assertEquals([...ledger.values()].reduce((a, b) => a + b, 0), 20)
+  // The old per-crawl key would have charged only once.
+  const old = new Map<string, number>()
+  for (let i = 0; i < 2; i++) { const k = `dast-templates:${A}:${key}`; if (!old.has(k)) old.set(k, 10) }
+  assertEquals(old.size, 1)
 })

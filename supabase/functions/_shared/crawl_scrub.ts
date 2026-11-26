@@ -45,13 +45,115 @@ export function looksLikeToken(s: string): boolean {
   for (const part of s.split(/[-_.~]/)) {
     if (part.length >= 12 && /[0-9]/.test(part) && /[A-Za-z]/.test(part)) return true
     if (part.length >= 24) return true
+    if (randomLetters(part) || shortMixedToken(part)) return true
   }
   return false
+}
+
+const VOWELS = new Set('aeiouyAEIOUY')
+
+/**
+ * A letters-only string of 16+ characters that looks random: camelCase pieces
+ * averaging under 3 letters, or a long piece with under 20% vowels or a run of
+ * 5+ consonants. Words and camelCase names survive. Matches Go RandomLetters.
+ */
+export function randomLetters(s: string): boolean {
+  if (s.length < 16 || !/^[A-Za-z]+$/.test(s)) return false
+  const pieces = s.match(/[A-Z]?[a-z]+|[A-Z]+/g) ?? []
+  if (pieces.length > 0 && s.length / pieces.length < 3) return true
+  for (const p of pieces) {
+    if (p.length < 6) continue
+    let vowels = 0, run = 0, maxRun = 0
+    for (const c of p) {
+      if (VOWELS.has(c)) { vowels++; run = 0 } else { run++; maxRun = Math.max(maxRun, run) }
+    }
+    if (maxRun >= 5 || vowels / p.length < 0.2) return true
+  }
+  return false
+}
+
+/** 0 lowercase, 1 uppercase, 2 digit, 3 anything else. */
+export function charClass(c: string): number {
+  if (c >= 'a' && c <= 'z') return 0
+  if (c >= 'A' && c <= 'Z') return 1
+  if (c >= '0' && c <= '9') return 2
+  return 3
+}
+
+/**
+ * An 8 to 11 character letters-and-digits string with 6+ switches between
+ * lowercase, uppercase and digits (a code like aB3dE6gH9jK). Matches Go
+ * ShortMixedToken.
+ */
+export function shortMixedToken(s: string): boolean {
+  if (s.length < 8 || s.length > 11 || !/[0-9]/.test(s) || !/[A-Za-z]/.test(s)) return false
+  let switches = 0, prev = -1
+  for (const c of s) {
+    const k = charClass(c)
+    if (k === 3) return false
+    if (prev >= 0 && k !== prev) switches++
+    prev = k
+  }
+  return switches >= 6
+}
+
+/** Any "@" in a path segment: an email address or an @handle. */
+export function looksLikeEmail(seg: string): boolean {
+  return seg.includes('@')
+}
+
+const PERSON_PARENTS = new Set([
+  'user', 'users', 'u', 'profile', 'profiles', 'people', 'person', 'member', 'members',
+  'author', 'authors', 'staff', 'employee', 'employees', 'customer', 'customers',
+  'contacts', 'student', 'students', 'patient', 'patients',
+])
+
+const ROUTE_WORDS = new Set([
+  'new', 'me', 'edit', 'settings', 'search', 'list', 'all', 'index', 'create', 'login',
+  'logout', 'signin', 'signup', 'register', 'sign_in', 'sign_up', 'sign-in', 'sign-up',
+  'profile', 'account', 'admin', 'export', 'import', 'invite', 'invitations', 'password',
+  'reset', 'verify', 'confirm', 'current', 'self', 'api', 'v1', 'v2', 'v3',
+])
+
+/** A route like /users or /u whose child is usually a person's handle or name. */
+export function isPersonParent(seg: string): boolean {
+  return PERSON_PARENTS.has(seg.toLowerCase())
+}
+
+/** After a person parent: anything but a number, a placeholder or a route word. */
+export function looksLikePersonName(seg: string): boolean {
+  if (!seg || seg.startsWith('{') || /^[0-9]+$/.test(seg)) return false
+  return !ROUTE_WORDS.has(seg.toLowerCase())
+}
+
+/** Backslash or ASCII control character: parsers disagree, so drop the URL. */
+export function hasUnsafeChar(s: string): boolean {
+  return /[\\\x00-\x1f\x7f]/.test(s)
+}
+
+/**
+ * Scrub decoded path segments in order, using the previous segment as
+ * context for names. Matches Go ScrubPath.
+ */
+export function scrubPath(segs: string[]): string[] {
+  const out: string[] = []
+  let prev = ''
+  for (let seg of segs) {
+    const semi = seg.indexOf(';')
+    if (semi >= 0) seg = seg.slice(0, semi)
+    if (!seg || seg === '.' || seg === '..') continue
+    let s = scrubSegment(seg)
+    if (!s.startsWith('{') && isPersonParent(prev) && looksLikePersonName(seg)) s = '{name}'
+    out.push(s)
+    prev = seg
+  }
+  return out
 }
 
 /** Placeholder for an id- or token-like path segment, else the segment. */
 export function scrubSegment(seg: string): string {
   if (!seg) return ''
+  if (looksLikeEmail(seg)) return '{email}'
   if (UUID_SEG.test(seg)) return '{uuid}'
   if (DIGITS_SEG.test(seg)) return seg.length >= 10 ? '{num}' : seg
   if (looksLikeToken(seg)) return '{token}'
@@ -91,20 +193,19 @@ function safeDecode(s: string): string {
  */
 export function scrubUrl(raw: unknown): string {
   if (typeof raw !== 'string') return ''
+  const trimmed = raw.trim()
+  if (hasUnsafeChar(trimmed)) return ''
   let u: URL
-  try { u = new URL(raw.trim()) } catch { return '' }
+  try { u = new URL(trimmed) } catch { return '' }
   const scheme = u.protocol.replace(/:$/, '').toLowerCase()
   if ((scheme !== 'http' && scheme !== 'https') || !u.hostname) return ''
   let out = `${scheme}://${u.hostname.toLowerCase()}${u.port ? ':' + u.port : ''}`
   const path = u.pathname
-  for (let seg of path.split('/')) {
-    const semi = seg.indexOf(';')
-    if (semi >= 0) seg = seg.slice(0, semi)
-    seg = safeDecode(seg)
-    if (!seg || seg === '.' || seg === '..') continue
-    const s = scrubSegment(seg)
-    out += '/' + (s.startsWith('{') ? s : pathEscape(s))
-  }
+  // Decode first, then split, so an encoded slash (%2F) splits segments the
+  // same way Go's decoded url.Path does; scrubPath then cuts ;path=params.
+  const decoded: string[] = []
+  for (const raw of path.split('/')) decoded.push(...safeDecode(raw).split('/'))
+  for (const s of scrubPath(decoded)) out += '/' + (s.startsWith('{') ? s : pathEscape(s))
   if (path.endsWith('/') && path !== '/') out += '/'
   const names: string[] = []
   for (const pair of u.search.replace(/^\?/, '').split('&')) {

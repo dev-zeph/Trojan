@@ -19,8 +19,14 @@ func fakeJWT() string {
 	return "eyJ" + strings.Repeat("hb9", 6) + "." + "eyJ" + strings.Repeat("pl4", 6) + "." + strings.Repeat("sg2", 8)
 }
 
+func fakeLet20() string { return strings.Repeat("hQkZpLmWtR", 2) }
+func fakeLow16() string { return strings.Repeat("qwhzk", 3) + "x" }
+func fakeMix11() string { return "aB3" + "dE6" + "gH9" + "jK" }
+func fakeDig10() string { return "a1" + "b2" + "c3" + "d4" + "e5" }
+
 func expand(s string) string {
-	return strings.NewReplacer("<TOK>", fakeTok(), "<HEX>", fakeHex(), "<JWT>", fakeJWT()).Replace(s)
+	return strings.NewReplacer("<TOK>", fakeTok(), "<HEX>", fakeHex(), "<JWT>", fakeJWT(),
+		"<LET20>", fakeLet20(), "<LOW16>", fakeLow16(), "<MIX11>", fakeMix11(), "<DIG10>", fakeDig10()).Replace(s)
 }
 
 type scrubVectors struct {
@@ -59,7 +65,7 @@ func TestScrubURLVectors(t *testing.T) {
 func TestScrubURLNeverKeepsFakeValues(t *testing.T) {
 	for _, c := range loadVectors(t).URLs {
 		got := ScrubURL(c.In)
-		for _, v := range []string{fakeTok(), fakeHex(), fakeJWT(), "Pw", "frag"} {
+		for _, v := range []string{fakeTok(), fakeHex(), fakeJWT(), fakeLet20(), fakeLow16(), fakeMix11(), fakeDig10(), "Pw", "frag", "jane", "zephaniah", "@"} {
 			if strings.Contains(got, v) {
 				t.Errorf("ScrubURL(%q) kept %q: %q", c.In, v, got)
 			}
@@ -216,5 +222,109 @@ func TestGenerateTemplatesSendsScrubbedRequest(t *testing.T) {
 	}
 	if !strings.Contains(string(body), `https://example.com/reset/{token}?t=`) {
 		t.Errorf("request body missing the scrubbed URL: %s", body)
+	}
+}
+
+func TestLooksLikeEmail(t *testing.T) {
+	for _, s := range []string{"jane.doe@example.com", "jane+news@example.com", "jane@example", "@janedoe"} {
+		if !LooksLikeEmail(s) {
+			t.Errorf("LooksLikeEmail(%q) = false", s)
+		}
+	}
+	for _, s := range []string{"jane.doe", "orders", "example.com", ""} {
+		if LooksLikeEmail(s) {
+			t.Errorf("LooksLikeEmail(%q) = true", s)
+		}
+	}
+}
+
+func TestIsPersonParent(t *testing.T) {
+	for _, s := range []string{"users", "U", "profile", "Members", "authors", "customers"} {
+		if !IsPersonParent(s) {
+			t.Errorf("IsPersonParent(%q) = false", s)
+		}
+	}
+	for _, s := range []string{"orders", "docs", "contact", "account", ""} {
+		if IsPersonParent(s) {
+			t.Errorf("IsPersonParent(%q) = true", s)
+		}
+	}
+}
+
+func TestLooksLikePersonName(t *testing.T) {
+	for _, s := range []string{"zephaniah-chizulu", "Jane_Doe", "jdoe", "acme-corp"} {
+		if !LooksLikePersonName(s) {
+			t.Errorf("LooksLikePersonName(%q) = false", s)
+		}
+	}
+	for _, s := range []string{"123", "{uuid}", "new", "me", "Settings", "sign-in", ""} {
+		if LooksLikePersonName(s) {
+			t.Errorf("LooksLikePersonName(%q) = true", s)
+		}
+	}
+}
+
+func TestScrubPath(t *testing.T) {
+	cases := []struct{ in, want []string }{
+		{[]string{"", "users", "jane-doe", "orders"}, []string{"users", "{name}", "orders"}},
+		{[]string{"users", "123", "orders"}, []string{"users", "123", "orders"}},
+		{[]string{"users", "new"}, []string{"users", "new"}},
+		{[]string{"u", "jane@example.com"}, []string{"u", "{email}"}},
+		{[]string{"p;jsessionid=x", ".", "..", "x"}, []string{"p", "x"}},
+		{[]string{"docs", "getting-started"}, []string{"docs", "getting-started"}},
+		{[]string{"users", fakeTok()}, []string{"users", "{token}"}},
+	}
+	for _, c := range cases {
+		if got := ScrubPath(c.in); !reflect.DeepEqual(got, c.want) {
+			t.Errorf("ScrubPath(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestRandomLetters(t *testing.T) {
+	for _, s := range []string{fakeLet20(), fakeLow16(), "ZxCv" + "BnMq" + "WeRtYuIoPa"} {
+		if !RandomLetters(s) {
+			t.Errorf("RandomLetters(%q) = false", s)
+		}
+	}
+	for _, s := range []string{"internationalization", "getUserProfileSettings", "troubleshootingguide", "dashboard", "gettingstarted", "Supercalifragilistic", fakeLet20()[:15], "abc123defghijklmnop"} {
+		if RandomLetters(s) {
+			t.Errorf("RandomLetters(%q) = true", s)
+		}
+	}
+}
+
+func TestShortMixedToken(t *testing.T) {
+	for _, s := range []string{fakeMix11(), fakeDig10(), "Z9y8X7w6"} {
+		if !ShortMixedToken(s) {
+			t.Errorf("ShortMixedToken(%q) = false", s)
+		}
+	}
+	for _, s := range []string{"iPhone15Pro", "abc123def", "v2", "dashboard", "a1-b2-c3-d4", "release2024", "aB3dE6g", strings.Repeat("a1", 6)} {
+		if ShortMixedToken(s) {
+			t.Errorf("ShortMixedToken(%q) = true", s)
+		}
+	}
+}
+
+func TestHasUnsafeRune(t *testing.T) {
+	for _, s := range []string{"https://a.example\\@b/x", "https://a.example/x\ty", "https://a.example/\n", "x\x7f"} {
+		if !hasUnsafeRune(s) {
+			t.Errorf("hasUnsafeRune(%q) = false", s)
+		}
+	}
+	if hasUnsafeRune("https://a.example/caf\u00e9?q=1") {
+		t.Error("hasUnsafeRune flagged a normal URL")
+	}
+}
+
+func TestCharClass(t *testing.T) {
+	for in, want := range map[rune]int{'a': 0, 'Z': 1, '7': 2, '-': 3, '\u00e9': 3} {
+		if got := charClass(in); got != want {
+			t.Errorf("charClass(%q) = %d, want %d", in, got, want)
+		}
+	}
+	if !isVowel('E') || isVowel('k') {
+		t.Error("isVowel")
 	}
 }

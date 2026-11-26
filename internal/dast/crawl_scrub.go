@@ -41,20 +41,91 @@ var (
 	digitsSeg   = regexp.MustCompile(`^[0-9]+$`)
 	hexSeg      = regexp.MustCompile(`^[0-9a-fA-F]{16,}$`)
 	hasDigit    = regexp.MustCompile(`[0-9]`)
+	lettersOnly = regexp.MustCompile(`^[A-Za-z]+$`)
+	camelPiece  = regexp.MustCompile(`[A-Z]?[a-z]+|[A-Z]+`)
 	hasLetter   = regexp.MustCompile(`[A-Za-z]`)
 	safeName    = regexp.MustCompile(`^[A-Za-z0-9_.\[\]-]+$`)
 	safeHint    = regexp.MustCompile(`^[a-z0-9._+-]+$`)
 	separatorRe = regexp.MustCompile(`[-_.~]`)
 )
 
-// ScrubSegment returns the placeholder for a path segment that looks like an id
-// or a token, or the segment itself. Short numeric ids stay, because the model
-// uses them to spot IDOR candidates; they're not secrets.
+// personParents are path segments whose child segment is usually a person's
+// handle or name (/users/jane-doe, /u/zephaniah, /@jane).
+var personParents = map[string]bool{
+	"user": true, "users": true, "u": true, "profile": true, "profiles": true,
+	"people": true, "person": true, "member": true, "members": true,
+	"author": true, "authors": true, "staff": true, "employee": true,
+	"employees": true, "customer": true, "customers": true,
+	"contacts": true, "student": true, "students": true, "patient": true,
+	"patients": true,
+}
+
+// routeWords are common child routes of a person parent that are not names.
+var routeWords = map[string]bool{
+	"new": true, "me": true, "edit": true, "settings": true, "search": true,
+	"list": true, "all": true, "index": true, "create": true, "login": true,
+	"logout": true, "signin": true, "signup": true, "register": true,
+	"sign_in": true, "sign_up": true, "sign-in": true, "sign-up": true,
+	"profile": true, "account": true, "admin": true, "export": true,
+	"import": true, "invite": true, "invitations": true, "password": true,
+	"reset": true, "verify": true, "confirm": true, "current": true,
+	"self": true, "api": true, "v1": true, "v2": true, "v3": true,
+}
+
+// LooksLikeEmail reports whether a path segment carries an email address or an
+// @handle. Any "@" in a segment counts: real routes don't use it.
+func LooksLikeEmail(seg string) bool {
+	return strings.Contains(seg, "@")
+}
+
+// IsPersonParent reports whether seg is a route like /users or /u whose child
+// is usually a person's handle or name.
+func IsPersonParent(seg string) bool {
+	return personParents[strings.ToLower(seg)]
+}
+
+// LooksLikePersonName reports whether seg, found right after a person parent,
+// should be treated as a name: anything but a number, a placeholder or a
+// common route word.
+func LooksLikePersonName(seg string) bool {
+	if seg == "" || strings.HasPrefix(seg, "{") || digitsSeg.MatchString(seg) {
+		return false
+	}
+	return !routeWords[strings.ToLower(seg)]
+}
+
+// ScrubPath scrubs decoded path segments in order, using the previous
+// segment as context for names. Empty, "." and ".." segments are dropped.
+func ScrubPath(segs []string) []string {
+	out := []string{}
+	prev := ""
+	for _, seg := range segs {
+		if i := strings.IndexByte(seg, ';'); i >= 0 { // ;jsessionid=... path params
+			seg = seg[:i]
+		}
+		if seg == "" || seg == "." || seg == ".." {
+			continue
+		}
+		s := ScrubSegment(seg)
+		if !strings.HasPrefix(s, "{") && IsPersonParent(prev) && LooksLikePersonName(seg) {
+			s = "{name}"
+		}
+		out = append(out, s)
+		prev = seg
+	}
+	return out
+}
+
+// ScrubSegment returns the placeholder for a path segment that looks like an
+// email, an id or a token, or the segment itself. Short numeric ids stay,
+// because the model uses them to spot IDOR candidates; they're not secrets.
 func ScrubSegment(seg string) string {
 	if seg == "" {
 		return ""
 	}
 	switch {
+	case LooksLikeEmail(seg):
+		return "{email}"
 	case uuidSeg.MatchString(seg):
 		return "{uuid}"
 	case digitsSeg.MatchString(seg):
@@ -84,12 +155,105 @@ func LooksLikeToken(s string) bool {
 		return true
 	}
 	// A slug splits into short words; a token is one long run of mixed
-	// letters and digits.
+	// letters and digits, random letters, or a short dense mix.
 	for _, part := range separatorRe.Split(s, -1) {
 		if len(part) >= 12 && hasDigit.MatchString(part) && hasLetter.MatchString(part) {
 			return true
 		}
 		if len(part) >= 24 {
+			return true
+		}
+		if RandomLetters(part) || ShortMixedToken(part) {
+			return true
+		}
+	}
+	return false
+}
+
+func isVowel(r rune) bool {
+	switch r {
+	case 'a', 'e', 'i', 'o', 'u', 'y', 'A', 'E', 'I', 'O', 'U', 'Y':
+		return true
+	}
+	return false
+}
+
+// RandomLetters reports whether a letters-only string of 16 or more
+// characters looks random rather than like a word or camelCase name: its
+// camelCase pieces average under 3 letters (hQkZpLmW...), or a long piece has
+// almost no vowels or a run of 5 or more consonants (qwhzkxmvbnrtplsd).
+// internationalization, getUserProfileSettings and gettingstarted survive.
+func RandomLetters(s string) bool {
+	if len(s) < 16 || !lettersOnly.MatchString(s) {
+		return false
+	}
+	pieces := camelPiece.FindAllString(s, -1)
+	if len(pieces) > 0 && float64(len(s))/float64(len(pieces)) < 3 {
+		return true
+	}
+	for _, p := range pieces {
+		if len(p) < 6 {
+			continue
+		}
+		vowels, run, maxRun := 0, 0, 0
+		for _, r := range p {
+			if isVowel(r) {
+				vowels++
+				run = 0
+			} else {
+				run++
+				if run > maxRun {
+					maxRun = run
+				}
+			}
+		}
+		if maxRun >= 5 || float64(vowels)/float64(len(p)) < 0.2 {
+			return true
+		}
+	}
+	return false
+}
+
+// charClass is 0 for lowercase, 1 for uppercase, 2 for a digit, 3 otherwise.
+func charClass(r rune) int {
+	switch {
+	case r >= 'a' && r <= 'z':
+		return 0
+	case r >= 'A' && r <= 'Z':
+		return 1
+	case r >= '0' && r <= '9':
+		return 2
+	}
+	return 3
+}
+
+// ShortMixedToken reports whether an 8 to 11 character string mixes letters
+// and digits densely enough to be a code (aB3dE6gH9jK, a1b2c3d4e5): 6 or more
+// switches between lowercase, uppercase and digits. iPhone15Pro, abc123def
+// and OAuth2Callback survive.
+func ShortMixedToken(s string) bool {
+	if len(s) < 8 || len(s) > 11 || !hasDigit.MatchString(s) || !hasLetter.MatchString(s) {
+		return false
+	}
+	switches, prev := 0, -1
+	for _, r := range s {
+		c := charClass(r)
+		if c == 3 {
+			return false
+		}
+		if prev >= 0 && c != prev {
+			switches++
+		}
+		prev = c
+	}
+	return switches >= 6
+}
+
+// hasUnsafeRune reports a backslash or an ASCII control character, which
+// browsers and Go's parser read differently. Such URLs are dropped.
+func hasUnsafeRune(s string) bool {
+	for _, r := range s {
+		if r == '\\' || r < 0x20 || r == 0x7f {
 			return true
 		}
 	}
@@ -126,7 +290,11 @@ func ScrubNames(names []string) []string {
 // the query parameter names (no values). It returns "" for anything that isn't
 // an absolute http or https URL.
 func ScrubURL(raw string) string {
-	u, err := url.Parse(strings.TrimSpace(raw))
+	raw = strings.TrimSpace(raw)
+	if hasUnsafeRune(raw) {
+		return ""
+	}
+	u, err := url.Parse(raw)
 	if err != nil {
 		return ""
 	}
@@ -149,14 +317,9 @@ func ScrubURL(raw string) string {
 
 	var b strings.Builder
 	b.WriteString(scheme + "://" + host)
-	for _, seg := range strings.Split(u.Path, "/") {
-		if i := strings.IndexByte(seg, ';'); i >= 0 { // ;jsessionid=... path params
-			seg = seg[:i]
-		}
-		if seg == "" || seg == "." || seg == ".." {
-			continue
-		}
-		s := ScrubSegment(seg)
+	// u.Path is decoded, so an encoded slash (%2F) splits segments here; the
+	// server does the same.
+	for _, s := range ScrubPath(strings.Split(u.Path, "/")) {
 		if !strings.HasPrefix(s, "{") {
 			s = url.PathEscape(s)
 		}

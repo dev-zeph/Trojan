@@ -1,11 +1,19 @@
 import { assert, assertEquals, assertFalse } from 'jsr:@std/assert@1'
-import { canonicalCrawl, crawlKey, looksLikeToken, scrubContext, scrubNames, scrubSegment, scrubUrl } from './crawl_scrub.ts'
+import {
+  canonicalCrawl, charClass, crawlKey, hasUnsafeChar, isPersonParent, looksLikeEmail, looksLikePersonName, looksLikeToken,
+  randomLetters, scrubContext, scrubNames, scrubPath, scrubSegment, scrubUrl, shortMixedToken,
+} from './crawl_scrub.ts'
 
 // Fake values built at run time (same shapes as crawl_scrub_test.go).
 const TOK = 'Qz7'.repeat(11) + 'k'
 const HEX = 'c0ffee'.repeat(6)
 const JWT = 'eyJ' + 'hb9'.repeat(6) + '.' + 'eyJ' + 'pl4'.repeat(6) + '.' + 'sg2'.repeat(8)
+const LET20 = 'hQkZpLmWtR'.repeat(2)
+const LOW16 = 'qwhzk'.repeat(3) + 'x'
+const MIX11 = 'aB3' + 'dE6' + 'gH9' + 'jK'
+const DIG10 = 'a1' + 'b2' + 'c3' + 'd4' + 'e5'
 const expand = (s: string) => s.replaceAll('<TOK>', TOK).replaceAll('<HEX>', HEX).replaceAll('<JWT>', JWT)
+  .replaceAll('<LET20>', LET20).replaceAll('<LOW16>', LOW16).replaceAll('<MIX11>', MIX11).replaceAll('<DIG10>', DIG10)
 
 const vectorsPath = new URL('../../../internal/dast/testdata/crawl_scrub_vectors.json', import.meta.url)
 const vectors = JSON.parse(expand(await Deno.readTextFile(vectorsPath)))
@@ -17,7 +25,7 @@ Deno.test('scrubUrl matches the shared vectors', () => {
 Deno.test('scrubUrl never keeps fake values, passwords or fragments', () => {
   for (const c of vectors.urls) {
     const got = scrubUrl(c.in)
-    for (const v of [TOK, HEX, JWT, 'Pw', 'frag']) assertFalse(got.includes(v), `${c.in} kept ${v}`)
+    for (const v of [TOK, HEX, JWT, LET20, LOW16, MIX11, DIG10, 'Pw', 'frag', 'jane', 'zephaniah', '@']) assertFalse(got.includes(v), `${c.in} kept ${v}`)
   }
 })
 
@@ -87,4 +95,45 @@ Deno.test('crawlKey ignores query values and changes with the prompt', async () 
     { ...base, techHints: ['django'] },
     { ...base, maxTemplates: 3 },
   ]) assertFalse((await crawlKey(scrubContext(changed))) === k)
+})
+
+Deno.test('looksLikeEmail', () => {
+  for (const s of ['jane.doe@example.com', 'jane+news@example.com', 'jane@example', '@janedoe']) assert(looksLikeEmail(s), s)
+  for (const s of ['jane.doe', 'orders', 'example.com', '']) assertFalse(looksLikeEmail(s), s)
+})
+
+Deno.test('isPersonParent', () => {
+  for (const s of ['users', 'U', 'profile', 'Members', 'authors', 'customers']) assert(isPersonParent(s), s)
+  for (const s of ['orders', 'docs', 'contact', 'account', '']) assertFalse(isPersonParent(s), s)
+})
+
+Deno.test('looksLikePersonName', () => {
+  for (const s of ['zephaniah-chizulu', 'Jane_Doe', 'jdoe', 'acme-corp']) assert(looksLikePersonName(s), s)
+  for (const s of ['123', '{uuid}', 'new', 'me', 'Settings', 'sign-in', '']) assertFalse(looksLikePersonName(s), s)
+})
+
+Deno.test('scrubPath', () => {
+  assertEquals(scrubPath(['', 'users', 'jane-doe', 'orders']), ['users', '{name}', 'orders'])
+  assertEquals(scrubPath(['users', '123', 'orders']), ['users', '123', 'orders'])
+  assertEquals(scrubPath(['users', 'new']), ['users', 'new'])
+  assertEquals(scrubPath(['u', 'jane@example.com']), ['u', '{email}'])
+  assertEquals(scrubPath(['p;jsessionid=x', '.', '..', 'x']), ['p', 'x'])
+  assertEquals(scrubPath(['docs', 'getting-started']), ['docs', 'getting-started'])
+  assertEquals(scrubPath(['users', TOK]), ['users', '{token}'])
+})
+
+Deno.test('randomLetters', () => {
+  for (const s of [LET20, LOW16, 'ZxCv' + 'BnMq' + 'WeRtYuIoPa']) assert(randomLetters(s), s)
+  for (const s of ['internationalization', 'getUserProfileSettings', 'troubleshootingguide', 'dashboard', 'gettingstarted', 'Supercalifragilistic', LET20.slice(0, 15), 'abc123defghijklmnop']) assertFalse(randomLetters(s), s)
+})
+
+Deno.test('shortMixedToken', () => {
+  for (const s of [MIX11, DIG10, 'Z9y8X7w6']) assert(shortMixedToken(s), s)
+  for (const s of ['iPhone15Pro', 'abc123def', 'v2', 'dashboard', 'a1-b2-c3-d4', 'release2024', 'aB3dE6g', 'a1'.repeat(6)]) assertFalse(shortMixedToken(s), s)
+})
+
+Deno.test('hasUnsafeChar and charClass', () => {
+  for (const s of ['https://a.example\\@b/x', 'https://a.example/x\ty', 'https://a.example/\n', 'x\x7f']) assert(hasUnsafeChar(s), s)
+  assertFalse(hasUnsafeChar('https://a.example/caf\u00e9?q=1'))
+  assertEquals([charClass('a'), charClass('Z'), charClass('7'), charClass('-'), charClass('\u00e9')], [0, 1, 2, 3, 3])
 })

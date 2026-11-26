@@ -42,6 +42,25 @@ export async function userCrawlKey(userId: string, ctx: DastContext): Promise<st
   return hex(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)))
 }
 
+/**
+ * Ledger idempotency key for ONE model generation. spend_tokens skips a key it
+ * has already seen, so a key that only named the user and crawl would charge
+ * the first generation and none after it (a re-run after the 24h expiry, or
+ * after a failed cache write). The generation id is a fresh uuid per request,
+ * created once before the model call, so the key stays stable for that
+ * request's own debit and differs for every later generation. Cache hits
+ * never reach the debit, so they stay free.
+ */
+export function generationChargeKey(userId: string, crawlHash: string, generationId: string): string {
+  if (!userId || !crawlHash || !generationId) throw new Error('generationChargeKey: missing part')
+  return `dast-templates:${userId}:${crawlHash}:${generationId}`
+}
+
+/** A new generation id (uuid v4). */
+export function newGenerationId(): string {
+  return crypto.randomUUID()
+}
+
 /** Cutoff timestamp: rows created before it are expired. */
 export function expiryCutoff(now: number = Date.now()): string {
   return new Date(now - TEMPLATE_CACHE_TTL_MS).toISOString()
