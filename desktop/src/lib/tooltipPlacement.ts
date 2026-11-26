@@ -78,9 +78,11 @@ export function attachPtInfoPlacement(
   };
 
   root.addEventListener("pointerenter", onEnter, true);
+  root.addEventListener("mouseenter", onEnter, true);
   root.addEventListener("focusin", onEnter, true);
   return () => {
     root.removeEventListener("pointerenter", onEnter, true);
+    root.removeEventListener("mouseenter", onEnter, true);
     root.removeEventListener("focusin", onEnter, true);
   };
 }

@@ -1587,7 +1587,7 @@ html, body, #root { height: 100%; overflow: hidden; background: var(--bg); color
 /* Info tooltip */
 .pt-info { display: inline-grid; place-items: center; width: 14px; height: 14px; border-radius: 50%; border: 1px solid var(--border); color: var(--muted-fg); font: italic 700 9px var(--font-sans); cursor: help; position: relative; flex: none; }
 .pt-info:hover { color: var(--purple); border-color: rgba(124,58,237,0.5); }
-.pt-info:hover::after { content: attr(data-tip); position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%); width: 210px; max-height: min(240px, 45vh); overflow-y: auto; background: #1c1d22; color: #fff; font: 400 11px/1.45 var(--font-sans); text-transform: none; letter-spacing: 0; padding: 8px 10px; border-radius: 6px; box-shadow: 0 6px 22px rgba(0,0,0,.28); z-index: 30; pointer-events: auto; }
+.pt-info:hover::after { content: attr(data-tip); position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%); width: 210px; background: #1c1d22; color: #fff; font: 400 11px/1.45 var(--font-sans); text-transform: none; letter-spacing: 0; padding: 8px 10px; border-radius: 6px; box-shadow: 0 6px 22px rgba(0,0,0,.28); z-index: 30; pointer-events: none; }
 .pt-info:hover::before { content: ""; position: absolute; bottom: calc(100% + 4px); left: 50%; transform: translateX(-50%) rotate(45deg); width: 8px; height: 8px; background: #1c1d22; z-index: 30; }
 .pt-info.pt-info-below:hover::after { top: calc(100% + 8px); bottom: auto; }
 .pt-info.pt-info-below:hover::before { top: calc(100% + 4px); bottom: auto; }
