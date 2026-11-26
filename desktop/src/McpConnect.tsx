@@ -124,7 +124,7 @@ export function McpConnect({ editors, mcpStatus, onConnect, signedIn, onSignIn }
         <div className="mcp-statusline">
           {liveCount > 0
             ? <span className="mcp-status-ok">✓ Your AI tool can see what Trojan found. Keep this app open while you work.</span>
-            : <span className="mcp-status-idle">Connect the AI tool you build with. Trojan stays on your computer while it works.</span>}
+            : <span className="mcp-status-idle">Connect the AI tool you build with. Trojan runs on your computer and works alongside it.</span>}
         </div>
       </div>
 

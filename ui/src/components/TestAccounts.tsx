@@ -14,9 +14,9 @@ import { getIdentities, putIdentities, type Identity } from '@/api'
 // safe to re-save without retyping a password — the backend keeps the stored one.
 
 const TOOLTIP =
-  'The AI agent logs in as these two test users and checks whether one account ' +
-  'can see the other account’s data — a common, serious bug. Use test ' +
-  'accounts you don’t mind it poking at.'
+  "The AI agent logs in as these two test users and checks whether one account " +
+  "can see the other account's data. That's a common, serious bug. Use test " +
+  "accounts you don't mind it poking at."
 
 // Mirror the backend's password-like field detection so we know which stored
 // field holds the (redacted) secret.

@@ -1589,6 +1589,8 @@ html, body, #root { height: 100%; overflow: hidden; background: var(--bg); color
 .pt-info:hover { color: var(--purple); border-color: rgba(124,58,237,0.5); }
 .pt-info:hover::after { content: attr(data-tip); position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%); width: 210px; background: #1c1d22; color: #fff; font: 400 11px/1.45 var(--font-sans); text-transform: none; letter-spacing: 0; padding: 8px 10px; border-radius: 6px; box-shadow: 0 6px 22px rgba(0,0,0,.28); z-index: 30; pointer-events: none; }
 .pt-info:hover::before { content: ""; position: absolute; bottom: calc(100% + 4px); left: 50%; transform: translateX(-50%) rotate(45deg); width: 8px; height: 8px; background: #1c1d22; z-index: 30; }
+.pt-info.pt-info-below:hover::after { top: calc(100% + 8px); bottom: auto; }
+.pt-info.pt-info-below:hover::before { top: calc(100% + 4px); bottom: auto; }
 
 /* Identities (IDOR/BOLA) */
 .pt-idhead { display: flex; align-items: center; gap: 6px; margin: 16px 0 7px; }

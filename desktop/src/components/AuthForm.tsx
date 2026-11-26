@@ -90,7 +90,7 @@ export function AuthForm({
 
       {onSkip && (
         <button type="button" onClick={onSkip} className="ob-footer-skip">
-          Continue without an account →
+          Look around first →
         </button>
       )}
     </>

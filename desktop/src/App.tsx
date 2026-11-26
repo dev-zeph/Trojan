@@ -43,6 +43,8 @@ import { GettingStarted } from "./components/GettingStarted";
 import { CM } from "./components/CornerMarks";
 import { FeedbackForm } from "./components/FeedbackForm";
 import { TokenBalance, RunCostHint } from "./components/TokenBalance";
+import { attachPtInfoPlacement } from "./lib/tooltipPlacement";
+import { labReportStatusMessage } from "./lib/labReportStatus";
 import { ScanGateNotice } from "./components/ScanGateNotice";
 import { runScanGate, fetchLicenseBalance, type ScanGate } from "./lib/scanGate";
 import type {
@@ -141,6 +143,7 @@ const SIMPLE_NAV: typeof NAV = ([
 
 // ── App ───────────────────────────────────────────────────────────────────
 export default function App() {
+  useEffect(() => attachPtInfoPlacement(), []);
   useScanNudges();
   const [profileLoaded, setProfileLoaded] = useState(false);
   const [profile, setProfile]             = useState<UserProfile | null>(null);
@@ -203,7 +206,7 @@ export default function App() {
   const [currentServerUrl, setCurrentServerUrl] = useState<string | null>(null);
   const [authStatus, setAuthStatus]       = useState<AuthStatus | null>(null);
   // Trojan Token balance -- the BILLING unit, not LLM tokens. null = not yet
-  // loaded, which renders as "—" rather than 0 (0 would read as "you are out").
+  // loaded, which renders as "…" rather than 0 (0 would read as "you are out").
   const [tokenBalance, setTokenBalance]   = useState<number | null>(null);
   const [scanSummary, setScanSummary]         = useState<ScanSummary | null>(null);
   // Security Score history lives per project on disk (see lib/scoreHistory).
@@ -686,7 +689,7 @@ export default function App() {
       const pkgs: PkgInfo[] = scanData.packages ?? [];
 
       const token = await getFreshToken();
-      if (!token) throw new Error("Sign in to generate a security report");
+      if (!token) throw new Error(labReportStatusMessage("security", 401) ?? "Sign in to generate a security report.");
 
       const res = await fetch(`${SUPABASE_URL}/functions/v1/threat-lab`, {
         method: "POST",
@@ -704,8 +707,8 @@ export default function App() {
         }),
       });
 
-      if (res.status === 403) throw new Error("Sign in to generate a security report. Costs 100 tokens.");
-      if (res.status === 429) throw new Error("Daily security report limit reached. Try again tomorrow.");
+      const labMsg = labReportStatusMessage("security", res.status);
+      if (labMsg) throw new Error(labMsg);
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error((err as { error?: string }).error ?? `Request failed (${res.status})`);
@@ -912,7 +915,7 @@ export default function App() {
       setDastFindings(findings);
 
       const token = await getFreshToken();
-      if (!token) throw new Error("Sign in with Pro to generate a report.");
+      if (!token) throw new Error(labReportStatusMessage("pen-test", 401) ?? "Sign in to generate a pen-test report.");
 
       const res = await fetch(`${SUPABASE_URL}/functions/v1/pentest-report`, {
         method: "POST",
@@ -936,8 +939,8 @@ export default function App() {
           }),
         }),
       });
-      if (res.status === 403) throw new Error("Sign in to generate reports.");
-      if (res.status === 429) throw new Error("Daily AI limit reached. Try again tomorrow.");
+      const labMsg = labReportStatusMessage("pen-test", res.status);
+      if (labMsg) throw new Error(labMsg);
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error((err as { error?: string }).error ?? `Request failed (${res.status})`);
@@ -953,7 +956,7 @@ export default function App() {
       // Let the portal render with the report + findings, then open print → PDF.
       setTimeout(() => {
         const t = document.title;
-        document.title = `Trojan Pen Test — ${scan?.project_path ?? scanPath}`;
+        document.title = `Trojan Pen Test: ${scan?.project_path ?? scanPath}`;
         window.print();
         document.title = t;
       }, 150);
@@ -1418,7 +1421,7 @@ export default function App() {
                   </div>
                   <h2 className="first-run-title">Secure your codebase</h2>
                   <p className="first-run-desc">
-                    Trojan scans your project for vulnerabilities, exposed secrets, and dependency risks — all locally, nothing leaves your machine.
+                    Trojan scans your project for vulnerabilities, exposed secrets, and dependency risks, all on your machine. Findings are checked and explained by our AI provider.
                   </p>
                   <button className="first-run-cta" onClick={handlePickFolder}>
                     Scan a project
@@ -1478,7 +1481,7 @@ export default function App() {
                           )}
                         </div>
                       </div>
-                      {tGrade && <span className="posture-card-sub">Grade {tGrade} — {secScore} / 100</span>}
+                      {tGrade && <span className="posture-card-sub">Grade {tGrade}: {secScore} / 100</span>}
                       {tGrade && (
                         <ScoreNotes
                           change={scoreDelta} stale={scoreStale} canUpdate={authStatus?.loggedIn ?? false}
@@ -1491,25 +1494,27 @@ export default function App() {
                     <div className="stat-grid">
                       <div className="stat-card">
                         <span className="stat-label">SCANS RUN</span>
-                        <span className="stat-value">{recent.length || "—"}</span>
+                        <span className="stat-value">{recent.length}</span>
                         <span className="stat-sub">all time</span>
                       </div>
                       <div className="stat-card">
                         <span className="stat-label">LAST SCAN</span>
-                        <span className="stat-value" style={{ fontSize: recent.length ? 16 : 24, marginTop: recent.length ? 4 : 0 }}>
-                          {recent.length ? timeAgo(recent[0].scannedAt) : "—"}
+                        <span className="stat-value" style={{ fontSize: 16, marginTop: 4 }}>
+                          {recent.length ? timeAgo(recent[0].scannedAt) : "Never"}
                         </span>
                         <span className="stat-sub">{recent[0]?.name ?? "no history"}</span>
                       </div>
                       <div className="stat-card">
                         <span className="stat-label">PACKAGES</span>
-                        <span className="stat-value">{packages.length || "—"}</span>
-                        <span className="stat-sub">audited</span>
+                        <span className="stat-value" style={{ fontSize: packages.length ? undefined : 16, marginTop: packages.length ? undefined : 4 }}>
+                          {packages.length || "Not checked"}
+                        </span>
+                        <span className="stat-sub">{packages.length ? "audited" : ""}</span>
                       </div>
                       <div className="stat-card">
                         <span className="stat-label">CVEs</span>
-                        <span className="stat-value" style={{ color: vulnPkgs > 0 ? "var(--warning)" : undefined }}>
-                          {packages.length ? vulnPkgs : "—"}
+                        <span className="stat-value" style={{ color: vulnPkgs > 0 ? "var(--warning)" : undefined, fontSize: packages.length ? undefined : 16, marginTop: packages.length ? undefined : 4 }}>
+                          {packages.length ? vulnPkgs : "Not checked"}
                         </span>
                         <span className="stat-sub">vulnerable pkgs</span>
                       </div>
@@ -1528,7 +1533,7 @@ export default function App() {
                           </svg>
                         </div>
                         <div>
-                          <div className="station-code">STATION 01 — STATIC</div>
+                          <div className="station-code">STATION 01: STATIC</div>
                           <div className="station-title">Static Analysis</div>
                         </div>
                         <div className="station-desc">
@@ -1559,7 +1564,7 @@ export default function App() {
                           </svg>
                         </div>
                         <div>
-                          <div className="station-code">STATION 02 — PENETRATION</div>
+                          <div className="station-code">STATION 02: PENETRATION</div>
                           <div className="station-title">Penetration Testing</div>
                         </div>
                         <div className="station-desc">
@@ -1621,7 +1626,7 @@ export default function App() {
                 <h1 className="page-header-title">{simple ? "Codebase Scanning" : "Static Analysis"}</h1>
                 <p className="page-header-desc">
                   {simple
-                    ? "Check your project folder for leaked passwords and keys, weak spots, and places where user data could get out. Your code stays on your computer."
+                    ? "Check your project folder for leaked passwords and keys, weak spots, and places where user data could get out. Scans run on your computer. Code snippets go to our AI provider to check and explain findings."
                     : "Scan a local project for vulnerabilities, secrets, and misconfigurations."}
                 </p>
               </div>
@@ -1634,7 +1639,7 @@ export default function App() {
                 </span>
                 <span className="oc-feature-text">
                   <span className="oc-feature-title">Context-aware scanning</span>
-                  <span className="oc-feature-sub">Tell Trojan what you are building and it tests intentionally, for security and privacy. Stored on your machine, never uploaded.</span>
+                  <span className="oc-feature-sub">Tell Trojan what you are building and it tests intentionally, for security and privacy. Saved in your project, and only sent to our AI provider when you let Trojan look at your app or give a pen test your app's code.</span>
                 </span>
                 <span className="oc-feature-cta">Set up context {"→"}</span>
               </button>}
@@ -1660,7 +1665,7 @@ export default function App() {
                       <path d="M3 7c0-1.1.9-2 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/>
                     </svg>
                     <p className="sast-drop-title">Drop your project folder here</p>
-                    <p className="sast-drop-or">— or —</p>
+                    <p className="sast-drop-or">or</p>
                     <button className="card-btn primary-btn sast-choose-btn" onClick={(e) => { e.stopPropagation(); handlePickFolder(); }}>
                       Choose folder
                     </button>
@@ -1677,13 +1682,13 @@ export default function App() {
               </div>{/* /scan-tip-wrap */}
 
               {!simple && <div>
-                <p className="scanner-grid-label">SCANNERS — 5 INSTALLED</p>
+                <p className="scanner-grid-label">SCANNERS: 5 INSTALLED</p>
                 <div className="scanner-grid">
                   {[
                     { name: "Semgrep",  desc: "Pattern-based code analysis across 30+ languages.", icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--blue)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M10 4a6 6 0 1 0 0 12 6 6 0 0 0 0-12 M21 21l-6.65-6.65"/></svg> },
                     { name: "Trivy",    desc: "Known CVEs and misconfigurations in dependencies and images.", icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--blue)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></svg> },
                     { name: "Gitleaks", desc: "Hard-coded secrets, tokens and credentials in code and git history.", icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--blue)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12.4 2.7a2.5 2.5 0 0 1 3.4 0l5.5 5.5a2.5 2.5 0 0 1 0 3.4l-3.7 3.7a2.5 2.5 0 0 1-3.4 0L8.7 9.8a2.5 2.5 0 0 1 0-3.4z M14 7l3 3 M9.4 10.6 2 18v4h4l7.4-7.4"/></svg> },
-                    { name: "Checkov",  desc: "IaC policy checks — Terraform, CloudFormation, Kubernetes.", icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--blue)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2 2 7l10 5 10-5-10-5 M2 17l10 5 10-5 M2 12l10 5 10-5"/></svg> },
+                    { name: "Checkov",  desc: "IaC policy checks: Terraform, CloudFormation, Kubernetes.", icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--blue)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2 2 7l10 5 10-5-10-5 M2 17l10 5 10-5 M2 12l10 5 10-5"/></svg> },
                     { name: "Syft",     desc: "SBOM generation and license inventory for every artifact.", icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--blue)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z M3.3 7l8.7 5 8.7-5 M12 22V12"/></svg> },
                   ].map((f) => (
                     <div key={f.name} className="scanner-chip">
@@ -1746,7 +1751,7 @@ export default function App() {
                   </>
                 ) : (
                   <>
-                    <h1 className="page-header-title">Penetration Testing <span className="lab-pro-tag">365 TOKENS</span></h1>
+                    <h1 className="page-header-title">Penetration Testing <span className="lab-pro-tag">USES TOKENS</span></h1>
                     <p className="page-header-desc">Scan a running server for runtime vulnerabilities using Nuclei's 6,000+ templates plus AI-generated attack patterns.</p>
                   </>
                 )}
@@ -1850,12 +1855,12 @@ export default function App() {
                     {/* Optional: point Trojan at the app's code for deeper results (grey-box, in plain words). */}
                     <span className="scanner-grid-label" style={{ marginTop: 18 }}>
                       YOUR APP'S CODE (OPTIONAL)
-                      <span className="pt-info" data-tip="Pick the folder of the app you are testing and the AI can read its code to find deeper issues and pinpoint the exact cause. Your code stays on your machine and is never stored.">i</span>
+                      <span className="pt-info" data-tip="Pick the folder of the app you are testing and the AI can read its code to find deeper issues and pinpoint the exact cause.">i</span>
                     </span>
                     <div style={{ fontSize: "0.85em", opacity: 0.7, marginTop: 4 }}>
                       {agGreyBox && greyBoxProject
                         ? `Using code from ${greyBoxProject.split("/").pop()}.`
-                        : "Pick your app's folder to give the AI more context. We never store your code."}
+                        : "Pick your app's folder so the AI can read its code. Before testing, it reviews your code and app context to plan the attack, then reads more as it tests. That code, your context and your app's responses, including any login tokens or personal data in them, are sent to our AI provider. We keep the test report, not your code."}
                       <button type="button" className="pt-chip" style={{ marginLeft: 8 }} disabled={isScanning}
                         onClick={async () => { const picked = await invoke<string | null>("pick_folder"); if (picked) { setGreyBoxFolder(picked); setAgGreyBox(true); } }}>
                         {agGreyBox && greyBoxProject ? "Change folder" : "Choose folder"}
@@ -1867,7 +1872,7 @@ export default function App() {
                     </div>
 
                     <span className="scanner-grid-label" style={{ marginTop: 18 }}>COST</span>
-                    <RunCostHint balance={tokenBalance} model="sonnet" />
+                    <RunCostHint balance={tokenBalance} model="sonnet" whenYouAddCode />
                   </>
                 )}
 
@@ -1879,7 +1884,7 @@ export default function App() {
                         the crawled surface is, so one number would read as a
                         promise and be wrong most of the time. */}
                     <span className="scanner-grid-label" style={{ marginTop: 18 }}>COST</span>
-                    <RunCostHint balance={tokenBalance} model="sonnet" />
+                    <RunCostHint balance={tokenBalance} model="sonnet" whenYouAddCode />
 
                     {agTemplate && (
                       <div className="pt-template-banner">
@@ -1945,7 +1950,7 @@ export default function App() {
                         <div className="pt-card">
                           <div className="pt-row">
                             <span className="pt-card-h" style={{ margin: 0 }}>Grey-box
-                              <span className="pt-info" data-tip="Reads this project's source to find the missing check (IDOR, SQLi, authz gaps) instead of guessing. Index, vectors and source stay on your machine; only the handler snippets the agent reads are sent to the AI, never stored.">i</span>
+                              <span className="pt-info" data-tip="Reads this project's source to find the missing check (IDOR, SQLi, authz gaps) instead of guessing. A short white-box review runs first and uses tokens. The code the agent reads, your project context and your app's responses, including any login tokens, are sent to our AI provider. Your index and vectors stay on your machine.">i</span>
                             </span>
                             <button
                               type="button"
@@ -1999,7 +2004,7 @@ export default function App() {
                     {/* Identities — for authorization (IDOR/BOLA) testing */}
                     <div className="pt-idhead">
                       <span className="scanner-grid-label" style={{ margin: 0 }}>TEST LOGINS</span>
-                      <span className="pt-info" data-tip="Supply two or more logged-in sessions (name + an auth header like 'Authorization: Bearer ...' or 'Cookie: session=...'). The agent requests the same resource as each and compares, to catch broken object-level authorization. These are kept in memory and passed to the scanner privately, never written to disk.">i</span>
+                      <span className="pt-info" data-tip="Supply two or more logged-in sessions (name + an auth header like 'Authorization: Bearer ...' or 'Cookie: session=...'). The agent requests the same resource as each and compares, to catch broken object-level authorization. Sessions are passed to the scanner privately, not on the command line. During a run they're saved in a private file on your machine (~/.trojan/runs) so the run can resume. The file is deleted when a run completes. If you stop a run, it stays until you resume and complete it, or delete it yourself. The AI sees each session's name and any login tokens that appear in your app's responses.">i</span>
                     </div>
                     <div className="pt-card">
                       <p className="pt-idhint" style={{ marginTop: 0 }}>Lets Trojan check that one user can't see another user's data and that admin pages are locked.</p>
@@ -2027,7 +2032,7 @@ export default function App() {
                     {/* API spec — expand the surface beyond what the crawler links (§6.5 #4) */}
                     <div className="pt-idhead">
                       <span className="scanner-grid-label" style={{ margin: 0 }}>API SPEC</span>
-                      <span className="pt-info" data-tip="Point to an OpenAPI/Swagger file (path) or URL to test endpoints the crawler can't reach by following links — including unlinked admin/versioned routes and the params each takes. Leave blank to auto-probe common spec URLs on the target.">i</span>
+                      <span className="pt-info" data-tip="Point to an OpenAPI/Swagger file (path) or URL to test endpoints the crawler can't reach by following links, including unlinked admin/versioned routes and the params each takes. Leave blank to auto-probe common spec URLs on the target.">i</span>
                     </div>
                     <div className="pt-card">
                       <input
@@ -2133,17 +2138,17 @@ export default function App() {
                 const unknown = packages.filter(p => p.license_risk === "unknown" || !p.license_risk);
                 const permissive = packages.filter(p => p.license_risk === "permissive");
                 const sections = [
-                  { key: "copyleft", label: "COPYLEFT — may require open-sourcing", items: copyleft, color: licenseRiskColor("copyleft") },
-                  { key: "weak", label: "WEAK COPYLEFT — review modification terms", items: weakCopyleft, color: licenseRiskColor("weak-copyleft") },
-                  { key: "unknown", label: "UNKNOWN — no license declared", items: unknown, color: licenseRiskColor("unknown") },
-                  { key: "permissive", label: "PERMISSIVE — safe to use", items: permissive, color: licenseRiskColor("permissive") },
+                  { key: "copyleft", label: "COPYLEFT: may require open-sourcing", items: copyleft, color: licenseRiskColor("copyleft") },
+                  { key: "weak", label: "WEAK COPYLEFT: review modification terms", items: weakCopyleft, color: licenseRiskColor("weak-copyleft") },
+                  { key: "unknown", label: "UNKNOWN: no license declared", items: unknown, color: licenseRiskColor("unknown") },
+                  { key: "permissive", label: "PERMISSIVE: few conditions", items: permissive, color: licenseRiskColor("permissive") },
                 ];
                 return (
                   <>
                     {/* Loaded codebase bar */}
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 14px", background: "white", border: "1px solid var(--border)", marginBottom: 16 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <span style={{ fontSize: 12, color: "var(--muted-fg)" }}>Analysing</span>
+                        <span style={{ fontSize: 12, color: "var(--muted-fg)" }}>Analyzing</span>
                         <span style={{ fontSize: 13, fontWeight: 600, color: "var(--fg)" }}>{codebase}</span>
                         <span style={{ fontSize: 11, color: "var(--muted-fg)" }}>{packages.length} package{packages.length !== 1 ? "s" : ""}</span>
                       </div>
@@ -2233,7 +2238,7 @@ export default function App() {
                   {/* Loaded codebase bar */}
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 14px", background: "white", border: "1px solid var(--border)", marginBottom: 16 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <span style={{ fontSize: 12, color: "var(--muted-fg)" }}>Analysing</span>
+                      <span style={{ fontSize: 12, color: "var(--muted-fg)" }}>Analyzing</span>
                       <span style={{ fontSize: 13, fontWeight: 600, color: "var(--fg)" }}>{codebase || "project"}</span>
                       <span style={{ fontSize: 11, color: "var(--muted-fg)" }}>{dataTypes.length} data type{dataTypes.length !== 1 ? "s" : ""}, {thirdParty.length} third part{thirdParty.length !== 1 ? "ies" : "y"}</span>
                     </div>
@@ -2360,7 +2365,7 @@ export default function App() {
               setComplianceLabError(null);
               try {
                 const token = await getFreshToken();
-                if (!token) throw new Error("Sign in to generate a compliance report");
+                if (!token) throw new Error(labReportStatusMessage("compliance", 401) ?? "Sign in to generate a compliance report.");
 
                 const copyleft = packages.filter(p => p.license_risk === "copyleft").map(p => ({ name: p.name, version: p.version, license: p.license || "" }));
                 const weakCopyleft = packages.filter(p => p.license_risk === "weak-copyleft").map(p => ({ name: p.name, license: p.license || "" }));
@@ -2380,8 +2385,8 @@ export default function App() {
                   }),
                 });
 
-                if (res.status === 403) throw new Error("Sign in to generate a compliance report. Costs 50 tokens.");
-                if (res.status === 429) throw new Error("Daily limit reached. Try again tomorrow.");
+                const labMsg = labReportStatusMessage("compliance", res.status);
+                if (labMsg) throw new Error(labMsg);
                 if (!res.ok) { const err = await res.json().catch(() => ({})); throw new Error((err as { error?: string }).error ?? `Request failed (${res.status})`); }
 
                 setComplianceLabResult(await res.json() as ComplianceLabResult);
@@ -2402,7 +2407,7 @@ export default function App() {
                     <button className="lab-back" onClick={() => setView("dependencies")}>← Dependencies</button>
                     <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 3 }}>
                       <span className="lab-title-text">Compliance Report</span>
-                      <span className="lab-pro-tag">50 TOKENS</span>
+                      <span className="lab-pro-tag">USES TOKENS</span>
                     </div>
                     <p className="lab-subtitle">
                       {r && scanPath
@@ -2412,14 +2417,14 @@ export default function App() {
                   </div>
                   <div className="lab-header-actions">
                     {r && (
-                      <button className="lab-export-btn" onClick={() => { const t = document.title; document.title = `Compliance Report - ${codebaseName}`; window.print(); document.title = t; }}>
+                      <button className="lab-export-btn" onClick={() => { const t = document.title; document.title = `Compliance Report: ${codebaseName}`; window.print(); document.title = t; }}>
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
                         Export Report
                       </button>
                     )}
                     {hasData && signedIn && (
                       <button className={`lab-run-primary ${complianceLabRunning ? "lab-btn-loading" : ""}`} onClick={runComplianceLab} disabled={complianceLabRunning}>
-                        {complianceLabRunning ? <><span className="lab-spinner" /> Analysing...</> : r ? "Re-generate" : "Generate report"}
+                        {complianceLabRunning ? <><span className="lab-spinner" /> Analyzing…</> : r ? "Re-generate" : "Generate report"}
                       </button>
                     )}
                   </div>
@@ -2428,7 +2433,7 @@ export default function App() {
                 {!signedIn && (
                   <div className="lab-state-card lab-pro-gate">
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-                    Sign in to generate a compliance report. Costs 50 tokens.
+                    Sign in to generate a compliance report. It uses tokens based on the AI work it takes.
                     <button className="lab-upgrade-btn" onClick={() => setShowAuthForm(true)}>Sign in →</button>
                   </div>
                 )}
@@ -2572,7 +2577,7 @@ export default function App() {
                       const isStale = r.cachePath ? staleCaches.has(r.path) : false;
                       return (
                         <li key={r.path} className={`history-item-wrap${isStale ? " history-item-stale" : ""}`}>
-                          <button className="history-item" onClick={() => openRecent(r)} title={isStale ? "Cache removed — click to re-scan" : undefined}>
+                          <button className="history-item" onClick={() => openRecent(r)} title={isStale ? "Cache removed. Click to re-scan" : undefined}>
                             <span className={`history-type-badge ${r.type === "sast" ? "activity-badge-sast" : "activity-badge-dast"}`}>
                               {(r.type ?? "sast").toUpperCase()}
                             </span>
@@ -2722,15 +2727,15 @@ export default function App() {
                               </span>
                               <span className="dep-col-eco dep-eco-text">{pkg.ecosystem}</span>
                               <span className={`dep-col-cves ${pkg.cve_count > 0 ? "dep-cve-count" : "dep-cve-none"}`}>
-                                {pkg.cve_count > 0 ? pkg.cve_count : "—"}
+                                {pkg.cve_count > 0 ? pkg.cve_count : "0"}
                               </span>
                               <span className="dep-col-sev">
                                 {pkg.highest_severity
                                   ? <span className={`dep-sev-badge dep-sev-${pkg.highest_severity}`}>{pkg.highest_severity}</span>
-                                  : <span className="dep-safe">safe</span>}
+                                  : <span className="dep-safe">no known CVEs</span>}
                               </span>
                               <span className={`dep-col-fix dep-fix-mono ${!pkg.fix_version && pkg.cve_count > 0 ? "dep-no-fix" : ""}`}>
-                                {pkg.fix_version ?? (pkg.cve_count > 0 ? "no fix" : "—")}
+                                {pkg.fix_version ?? (pkg.cve_count > 0 ? "no fix" : "Not needed")}
                               </span>
                             </button>
 
@@ -2834,7 +2839,7 @@ export default function App() {
                     <button className="lab-back" onClick={() => setView("sast")}>← {simple ? "Codebase Scanning" : "Static Analysis"}</button>
                     <div className="lab-title-row">
                       <span className="lab-title-text">Security Report</span>
-                      <span className="lab-pro-tag">100 TOKENS</span>
+                      <span className="lab-pro-tag">USES TOKENS</span>
                     </div>
                     <p className="lab-subtitle">
                       {r && scanPath
@@ -2852,7 +2857,7 @@ export default function App() {
                         onClick={runThreatLab}
                         disabled={isLabRunning}
                       >
-                        {isLabRunning ? <><span className="lab-spinner" /> Analysing…</> : r ? "Re-generate" : "Generate report"}
+                        {isLabRunning ? <><span className="lab-spinner" /> Analyzing…</> : r ? "Re-generate" : "Generate report"}
                       </button>
                     )}
                   </div>
@@ -2861,19 +2866,19 @@ export default function App() {
                 {/* ── State messages ── */}
                 {!hasData && (
                   <div className="lab-state-card">
-                    <p className="lab-no-data">Run a scan first from Static Analysis or Dependencies — then come back here.</p>
+                    <p className="lab-no-data">Run a scan first from Static Analysis or Dependencies, then come back here.</p>
                   </div>
                 )}
                 {hasData && !signedIn && (
                   <div className="lab-state-card lab-pro-gate">
                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-                    Sign in to generate a security report. Costs 100 tokens.
+                    Sign in to generate a security report. It uses tokens based on the AI work it takes.
                     <button className="lab-upgrade-btn" onClick={() => setShowAuthForm(true)}>Sign in →</button>
                   </div>
                 )}
                 {hasData && signedIn && !r && !isLabRunning && (
                   <div className="lab-state-card">
-                    <p className="lab-no-data">Analyzes your last scan — manual trigger only, results cached 6 hours.</p>
+                    <p className="lab-no-data">Analyzes your last scan: manual trigger only, results cached 6 hours.</p>
                   </div>
                 )}
                 {labError && <p className="lab-error">{labError}</p>}
@@ -3039,7 +3044,7 @@ export default function App() {
                     <p className="page-header-desc">
                       {simple
                         ? "Connect the AI tool you build with. It can then read what Trojan found and fix it for you. Just ask it to \"fix the issues Trojan found\"."
-                        : "Connect your editor so Trojan can hand off findings as ready-to-run fix prompts, all local via MCP."}
+                        : "Connect your editor so Trojan can hand off findings as ready-to-run fix prompts over a local MCP connection."}
                     </p>
                     <div className="page-header-actions">
                       <div className="overview-status-badge">
@@ -3132,7 +3137,7 @@ export default function App() {
                           <span className="autofix-how-num">1</span>
                           <div>
                             <strong>AI reads findings</strong>
-                            <p>Calls <code>get_fixable_findings</code> — gets all vulnerabilities with surrounding code context.</p>
+                            <p>Calls <code>get_fixable_findings</code>: gets all vulnerabilities with surrounding code context.</p>
                           </div>
                         </div>
                         <div className="autofix-how-step">
@@ -3188,7 +3193,7 @@ export default function App() {
 
           {view === "profile" && (() => {
             const fams = [
-              { name: "Non-technical founder", desc: "Plain language, no jargon — what each risk means for your business and customers." },
+              { name: "Non-technical founder", desc: "Plain language, no jargon: what each risk means for your business and customers." },
               { name: "Junior developer",      desc: "Balanced detail, with security concepts explained as they come up." },
               { name: "Experienced developer", desc: "Full technical detail, security jargon, code-level." },
             ];
@@ -3288,14 +3293,14 @@ export default function App() {
                       <textarea
                         className="profile-textarea profile-textarea--tall"
                         value={profile.aboutYou ?? ""}
-                        placeholder={"Describe your priorities, risk tolerance, and the kind of summaries you find useful. For example:\n\n• I work on products in a regulated industry (healthcare), so compliance and data privacy are top concerns.\n• I prefer short, prioritized action lists — not exhaustive reports.\n• I care most about risks that affect end users or could cause a breach.\n• I'm comfortable with technical terms but need context on security-specific concepts."}
+                        placeholder={"Describe your priorities, risk tolerance, and the kind of summaries you find useful. For example:\n\n• I work on products in a regulated industry (healthcare), so compliance and data privacy are top concerns.\n• I prefer short, prioritized action lists, not exhaustive reports.\n• I care most about risks that affect end users or could cause a breach.\n• I'm comfortable with technical terms but need context on security-specific concepts."}
                         onChange={e => {
                           setProfile({ ...profile, aboutYou: e.target.value } as UserProfile);
                           setProfileSaved(false);
                           setProfileJustSaved(false);
                         }}
                       />
-                      <span className="profile-hint">This context is used across all Trojan AI features — findings explanations, security reports, remediation advice, and more.</span>
+                      <span className="profile-hint">This context is used across all Trojan AI features: findings explanations, security reports, remediation advice, and more.</span>
                     </div>
                   </div>
 

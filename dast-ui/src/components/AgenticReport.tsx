@@ -73,7 +73,7 @@ export function AgenticReport() {
               <FindingsList findings={scan.findings} onSelect={setSelected} />
             ) : (
               <p className="text-sm text-muted-foreground py-12 text-center">
-                No confirmed findings — the agent completed without surfacing an exploitable issue.
+                No confirmed findings. The agent completed without surfacing an exploitable issue.
               </p>
             )}
           </div>

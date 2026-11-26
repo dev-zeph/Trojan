@@ -70,7 +70,7 @@ export function ContextChangeBanner({
             {kind === "learn" ? (
               <>
                 <strong>Help Trojan learn about your app.</strong>
-                <span>Its checks fit better when it knows what you built. The first time is free.</span>
+                <span>Its checks fit better when it knows what you built. The first look at each project is free.</span>
               </>
             ) : (
               <>
@@ -82,7 +82,7 @@ export function ContextChangeBanner({
           </div>
           <div className="au-banner-actions">
             <button type="button" className="oc-nav-next" onClick={() => setOpen(true)}>
-              {kind === "learn" ? "Tell Trojan about my app" : "Update what Trojan knows"}
+              {kind === "learn" ? "Let Trojan look at my app" : "Update what Trojan knows"}
             </button>
             <button type="button" className="au-link" onClick={() => setDismissed(true)}>Not now</button>
           </div>

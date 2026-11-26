@@ -33,18 +33,18 @@ export function NodeDetail({ node, onClose }: Props) {
             {node.handler && (
               <div className="rounded border border-indigo-500/30 overflow-hidden">
                 <div className="px-3 py-1.5 text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 bg-indigo-500/10 flex items-center justify-between">
-                  <span>SOURCE — what the code reveals</span>
+                  <span>SOURCE: what the code reveals</span>
                   <span className="font-mono text-[10px] text-muted-foreground">{node.handler.file}:{node.handler.line}</span>
                 </div>
                 <div className="px-3 py-2 font-mono text-[11px] text-muted-foreground">
-                  {node.handler.symbol ? `handler ${node.handler.symbol}()` : 'handler'} — grey-box read
+                  {node.handler.symbol ? `handler ${node.handler.symbol}()` : 'handler'}: grey-box read
                 </div>
               </div>
             )}
             {node.evidence && (
               <div className="rounded border border-emerald-500/30 overflow-hidden">
                 <div className="px-3 py-1.5 text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 bg-emerald-500/10">
-                  RUNTIME — what the target confirmed
+                  RUNTIME: what the target confirmed
                 </div>
                 <pre className="px-3 py-2 font-mono text-[11px] whitespace-pre-wrap break-all max-h-48 overflow-y-auto">{node.evidence}</pre>
               </div>
@@ -55,9 +55,9 @@ export function NodeDetail({ node, onClose }: Props) {
 
       {!proved && (
         <div className="p-4 text-xs text-muted-foreground">
-          {node.status === 'untested' && 'Discovered from the crawl — not yet tested.'}
+          {node.status === 'untested' && 'Discovered from the crawl, not yet tested.'}
           {node.status === 'testing' && 'The agent is probing this endpoint now.'}
-          {node.status === 'safe' && 'Tested — no issue surfaced.'}
+          {node.status === 'safe' && 'Tested: no issue surfaced.'}
           {node.handler && (
             <div className="mt-3 rounded border border-indigo-500/30 px-3 py-2">
               <span className="text-[11px] font-semibold text-indigo-600 dark:text-indigo-400">Source mapped</span>

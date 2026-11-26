@@ -295,7 +295,7 @@ function AttackDetail({ t, isSelected, onBack, onStar, onUse }: { t: AttackTempl
             <p className="am-story">{t.breach_story}</p>
           ) : (
             <>
-              <p className="am-disclosure-note">This runs against your own app, within your rules of engagement — the safety envelope overrides anything here. Read it before you run it.</p>
+              <p className="am-disclosure-note">This runs against your own app, within your rules of engagement. The safety envelope overrides anything here. Read it before you run it.</p>
               <ol className="am-steps">{steps.map((s, i) => <li key={i}>{s}</li>)}</ol>
             </>
           )}
@@ -311,9 +311,9 @@ function AttackDetail({ t, isSelected, onBack, onStar, onUse }: { t: AttackTempl
           </div>
           <div className="am-panel">
             <div className="am-panel-h">Trust</div>
-            <TrustLine>First-party — authored &amp; verified by Trojan</TrustLine>
+            <TrustLine>First-party: authored &amp; verified by Trojan</TrustLine>
             <TrustLine>Runs within your rules of engagement</TrustLine>
-            <TrustLine>Report-only — non-destructive, single-proof</TrustLine>
+            <TrustLine>Report-only: non-destructive, single-proof</TrustLine>
           </div>
         </aside>
       </div>

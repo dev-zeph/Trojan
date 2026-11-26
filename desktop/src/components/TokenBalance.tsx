@@ -32,9 +32,9 @@ export function TokenBalance({ balance, lowThreshold = 400, onTopUp, compact }: 
       onClick={onTopUp}
       title={
         loading ? "Checking your token balance"
-        : empty ? "You are out of Trojan Tokens — click to top up"
-        : low ? `${balance.toLocaleString()} Trojan Tokens left — click to top up`
-        : `${balance.toLocaleString()} Trojan Tokens — click to top up`
+        : empty ? "You are out of Trojan Tokens. Click to top up"
+        : low ? `${balance.toLocaleString()} Trojan Tokens left. Click to top up`
+        : `${balance.toLocaleString()} Trojan Tokens. Click to top up`
       }
       style={{
         display: "flex", alignItems: "center", gap: 6,
@@ -49,7 +49,7 @@ export function TokenBalance({ balance, lowThreshold = 400, onTopUp, compact }: 
         <path d="M12 7v10M9.5 9.5h5M9.5 14.5h5" strokeLinecap="round" />
       </svg>
       <span style={{ flex: 1, textAlign: "left" }}>
-        {loading ? "—" : balance.toLocaleString()}
+        {loading ? "…" : balance.toLocaleString()}
       </span>
       <span style={{ opacity: 0.65, fontSize: 10 }}>
         {empty ? "TOP UP" : "TOKENS"}
@@ -67,9 +67,9 @@ export function TokenBalance({ balance, lowThreshold = 400, onTopUp, compact }: 
  * promise. The figures come from measured runs (docs/agentic-dast.md) and
  * should be replaced with the p75 out of usage_events once that has history.
  */
-export function RunCostHint({ balance, model }: { balance: number | null; model: "sonnet" | "opus" }) {
+export function RunCostHint({ balance, model, whenYouAddCode = false }: { balance: number | null; model: "sonnet" | "opus"; whenYouAddCode?: boolean }) {
   const typical = model === "opus" ? 915 : 365;
-  const range = model === "opus" ? "250–950" : "100–400";
+  const range = model === "opus" ? "250–950" : "100 to 400";
   const affordable = balance !== null && balance >= typical;
 
   return (
@@ -80,7 +80,7 @@ export function RunCostHint({ balance, model }: { balance: number | null; model:
     }}>
       <div style={{ display: "flex", justifyContent: "space-between" }}>
         <span>Typical cost</span>
-        <span style={{ fontWeight: 600 }}>{range} tokens</span>
+        <span style={{ fontWeight: 600 }}>{range} tokens{whenYouAddCode ? ", plus a small amount when you add your app's code" : ""}</span>
       </div>
       <div style={{ opacity: 0.7, lineHeight: 1.5 }}>
         Charged per step as the agent works, not upfront. If you run out
