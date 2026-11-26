@@ -20,6 +20,8 @@ var sensitiveQueryNames = map[string]bool{
 	"token": true, "access_token": true, "access-token": true,
 	"refresh_token": true, "refresh-token": true, "id_token": true, "id-token": true,
 	"jwt": true, "session": true, "auth": true,
+	"access_key": true, "access-key": true, "accesskey": true,
+	"bearer": true, "otp": true,
 }
 
 // RedactTemplateRequest returns a copy of req whose TargetURL and every
@@ -151,6 +153,10 @@ func redactPath(path string) string {
 			parts[i] = maskValue(decoded, hits[0].Type)
 			continue
 		}
+		if i > 0 && isSensitivePathKey(parts[i-1]) && len(decoded) >= 4 {
+			parts[i] = maskValue(decoded, "url_path")
+			continue
+		}
 		if shouldMaskSegment(decoded) {
 			parts[i] = maskValue(decoded, "url_path")
 		}
@@ -272,4 +278,15 @@ func isOrdinarySlug(s string) bool {
 
 func maskValue(v, typ string) string {
 	return redact.Descriptor(redact.Secret{Value: v, Type: typ}, "", "")
+}
+
+func isSensitivePathKey(seg string) bool {
+	n := strings.ToLower(seg)
+	switch n {
+	case "api_key", "api-key", "apikey", "access_key", "access-key", "accesskey",
+		"access_token", "access-token", "token", "secret", "auth", "jwt",
+		"password", "bearer", "key", "otp":
+		return true
+	}
+	return false
 }

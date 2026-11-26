@@ -17,6 +17,7 @@ import (
 	"github.com/dev-zeph/trojan/internal/config"
 	"github.com/dev-zeph/trojan/internal/memory"
 	"github.com/dev-zeph/trojan/internal/normalizer"
+	"github.com/dev-zeph/trojan/internal/redact"
 	"github.com/dev-zeph/trojan/internal/scanners"
 )
 
@@ -88,17 +89,102 @@ func VerifyOnce(projectPath, id string) (*VerifyResult, error) {
 			return nil, fmt.Errorf("couldn't confirm the fix right now. Try verify_fix again in a moment")
 		}
 	}
-	fresh, _ = normalizer.Reduce(fresh)
+	// Do not Reduce: path filters and cross-finding dedupe can drop the
+	// finding's own file when the same value also appears elsewhere.
 
 	res := &VerifyResult{Fixed: true, Scanner: target.Scanner, RuleID: target.RuleID, FindingID: id, File: target.FilePath}
-	want := normalizer.RelToProject(projectPath, target.FilePath)
-	for _, f := range fresh {
-		if f.RuleID == target.RuleID && normalizer.RelToProject(projectPath, f.FilePath) == want {
-			res.Fixed = false
-			res.StillAt = append(res.StillAt, fmt.Sprintf("%s:%d", f.FilePath, f.LineNumber))
-		}
+	if findingStillPresent(*target, projectPath, absFile, fresh) {
+		res.Fixed = false
+		res.StillAt = stillAtLocations(*target, projectPath, absFile, fresh)
 	}
 	return res, nil
+}
+
+const verifyLineSlack = 5
+
+func findingStillPresent(target normalizer.Finding, projectPath, absFile string, fresh []normalizer.Finding) bool {
+	want := normalizer.RelToProject(projectPath, target.FilePath)
+	for _, f := range fresh {
+		if !sameVerifyRule(f.RuleID, target.RuleID) {
+			continue
+		}
+		got := normalizer.RelToProject(projectPath, f.FilePath)
+		if got != want && !sameVerifyFile(absFile, f.FilePath, projectPath) {
+			continue
+		}
+		if target.LineNumber <= 0 || f.LineNumber <= 0 || absInt(f.LineNumber-target.LineNumber) <= verifyLineSlack {
+			return true
+		}
+	}
+	if val := secretValueForVerify(target); val != "" && absFile != "" {
+		if body, err := os.ReadFile(absFile); err == nil && bytes.Contains(body, []byte(val)) {
+			return true
+		}
+	}
+	return false
+}
+
+func stillAtLocations(target normalizer.Finding, projectPath, absFile string, fresh []normalizer.Finding) []string {
+	var out []string
+	want := normalizer.RelToProject(projectPath, target.FilePath)
+	for _, f := range fresh {
+		if !sameVerifyRule(f.RuleID, target.RuleID) {
+			continue
+		}
+		got := normalizer.RelToProject(projectPath, f.FilePath)
+		if got != want && !sameVerifyFile(absFile, f.FilePath, projectPath) {
+			continue
+		}
+		out = append(out, fmt.Sprintf("%s:%d", f.FilePath, f.LineNumber))
+	}
+	if len(out) == 0 {
+		out = append(out, want)
+	}
+	return out
+}
+
+func sameVerifyRule(a, b string) bool {
+	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
+}
+
+func sameVerifyFile(absFile, stored, projectPath string) bool {
+	if absFile == "" || stored == "" {
+		return false
+	}
+	other, ok := normalizer.ResolveAgainstRoot(projectPath, stored)
+	if !ok {
+		return false
+	}
+	return filepath.Clean(absFile) == filepath.Clean(other)
+}
+
+func secretValueForVerify(f normalizer.Finding) string {
+	blob := strings.TrimSpace(f.CodeSnippet + "\n" + f.SurroundingCode)
+	if hits := redact.Find(blob); len(hits) > 0 {
+		best := hits[0]
+		for _, h := range hits[1:] {
+			if len(h.Value) > len(best.Value) {
+				best = h
+			}
+		}
+		if len(best.Value) >= 4 {
+			return best.Value
+		}
+	}
+	// gitleaks Match is often the raw value, possibly wrapped in quotes.
+	v := strings.TrimSpace(f.CodeSnippet)
+	v = strings.Trim(v, `"'`)
+	if len(v) >= 8 && !strings.ContainsAny(v, " \n\t") {
+		return v
+	}
+	return ""
+}
+
+func absInt(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
 }
 
 func relPath(root, p string) string {

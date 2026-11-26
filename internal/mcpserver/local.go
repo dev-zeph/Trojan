@@ -405,6 +405,9 @@ func ScanSummary(res *normalizer.ScanResult, savedPath string) string {
 	} else if savedPath != "" {
 		rel = filepath.ToSlash(filepath.Join(".trojan", "scans", filepath.Base(savedPath)))
 	}
+	if n == 0 {
+		return fmt.Sprintf("Scan done: no findings. Saved to %s.", rel)
+	}
 	if counts == "" {
 		return fmt.Sprintf("Scan done: %d %s. Saved to %s. Ask your AI editor to run get_findings.", n, word, rel)
 	}

@@ -20,7 +20,6 @@ type previewSecret struct {
 	Prefix  string   `json:"prefix,omitempty"`
 	Looks   string   `json:"looks"`
 	Entropy float64  `json:"entropy"`
-	Class   string   `json:"class"`
 	Checks  []string `json:"checks,omitempty"`
 	File    string   `json:"file,omitempty"`
 	Line    int      `json:"line,omitempty"`
@@ -34,7 +33,9 @@ func handlePreviewRedaction(project projectFunc) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		view := strings.ToLower(strings.TrimSpace(req.GetString("view", "")))
 		if view == "both" {
-			view = "all"
+			// Historical alias for the default (ai + upload). Never treat it
+			// as "all", which would send full local values.
+			view = ""
 		}
 		switch view {
 		case "", "ai", "upload", "local", "all":
@@ -121,7 +122,6 @@ func classifyPreview(path string, line int, s string) []previewSecret {
 			Prefix:  redact.SafePrefixFor(sec),
 			Looks:   redact.Looks(a.Class),
 			Entropy: round2(redact.Entropy(sec.Value)),
-			Class:   string(a.Class),
 			Checks:  a.Checks,
 			File:    path,
 			Line:    line,
@@ -136,7 +136,7 @@ func previewResult(detected []previewSecret, resp map[string]any, includeLocal b
 		return mcp.NewToolResultError("failed to serialize result"), nil
 	}
 	var b strings.Builder
-	b.WriteString(previewSummary(detected))
+	b.WriteString(previewSummary(detected, resp["input"]))
 	if includeLocal {
 		b.WriteString("\nWarning: the local view includes the full secret values and will go to your AI assistant.\n")
 	}
@@ -145,16 +145,20 @@ func previewResult(detected []previewSecret, resp map[string]any, includeLocal b
 	return mcp.NewToolResultText(b.String()), nil
 }
 
-func previewSummary(detected []previewSecret) string {
+func previewSummary(detected []previewSecret, input any) string {
+	kind, _ := input.(string)
+	if len(detected) == 0 {
+		if kind == "finding" {
+			return "**No code preview for this finding.** Semgrep doesn't share the matching line. When Trojan sends this finding to its AI, the code around it goes through the same secret swap.\n"
+		}
+		return "**No secrets found in this input.** Nothing here needed swapping. If you expected a secret, it may be in a format Trojan doesn't detect yet.\n"
+	}
 	var b strings.Builder
 	b.WriteString("**What Trojan does with secrets in this code**\n")
-	switch n := len(detected); n {
-	case 0:
-		b.WriteString("Found 0 secrets. Trojan swaps each one for a label before its AI models see the code. Anything not listed here was not detected and is not swapped.\n")
-	case 1:
+	if len(detected) == 1 {
 		b.WriteString("Found 1 secret. Trojan swaps each one for a label before its AI models see the code. Anything not listed here was not detected and is not swapped.\n")
-	default:
-		fmt.Fprintf(&b, "Found %d secrets. Trojan swaps each one for a label before its AI models see the code. Anything not listed here was not detected and is not swapped.\n", n)
+	} else {
+		fmt.Fprintf(&b, "Found %d secrets. Trojan swaps each one for a label before its AI models see the code. Anything not listed here was not detected and is not swapped.\n", len(detected))
 	}
 	b.WriteString("\n**What the AI sees**\n")
 	b.WriteString("A label for each secret, like `<SECRET removed by Trojan: type=stripe_secret_key, len=32, prefix=sk_live_, looks=real>`. It says what kind of key it is and how long it is. It does not include the key.\n")
@@ -163,10 +167,6 @@ func previewSummary(detected []previewSecret) string {
 	b.WriteString("\n**What stays on your computer**\n")
 	b.WriteString("The full values stay in your files and in Trojan's local scan results. Ask for view=\"local\" to see them here.\n")
 	b.WriteString("\n**Secrets found**\n")
-	if len(detected) == 0 {
-		b.WriteString("- None detected in this input.\n")
-		return b.String()
-	}
 	for _, s := range detected {
 		fmt.Fprintf(&b, "- %s", friendlySecretType(s.Type, s.Prefix))
 		fmt.Fprintf(&b, ", %d characters", s.Length)
@@ -177,15 +177,15 @@ func previewSummary(detected []previewSecret) string {
 			}
 		}
 		b.WriteString(". ")
-		b.WriteString(looksSentence(s.Looks, s.Checks))
+		b.WriteString(looksSentence(s.Looks, s.Type, s.Checks))
 		b.WriteByte('\n')
 	}
 	return b.String()
 }
 
-func looksSentence(looks string, checks []string) string {
+func looksSentence(looks, typ string, checks []string) string {
 	if looks == "placeholder" {
-		if why := checksPhrase(checks); why != "" {
+		if why := checksPhrase(typ, checks); why != "" {
 			return "Looks like a placeholder: " + why + "."
 		}
 		return "Looks like a placeholder."
@@ -193,14 +193,14 @@ func looksSentence(looks string, checks []string) string {
 	return "Looks real."
 }
 
-func checksPhrase(checks []string) string {
+func checksPhrase(typ string, checks []string) string {
 	var parts []string
 	for _, c := range checks {
 		switch c {
 		case "checksum_invalid":
-			parts = append(parts, "it fails the provider's format check")
+			parts = append(parts, "it fails "+providerPossessive(typ)+" format check")
 		case "test_path":
-			parts = append(parts, "it is in a test or fixture folder")
+			parts = append(parts, "it is in an example or test file")
 		case "placeholder_pattern":
 			parts = append(parts, "it looks like sample text")
 		case "low_entropy":
@@ -222,6 +222,8 @@ func friendlySecretType(typ, prefix string) string {
 			return "Stripe secret key (test)"
 		}
 		return "Stripe secret key"
+	case "stripe_restricted_key":
+		return "Stripe restricted key"
 	case "stripe_webhook_secret":
 		return "Stripe webhook secret"
 	case "github_token", "github_fine_grained_pat":
@@ -252,6 +254,8 @@ func friendlySecretType(typ, prefix string) string {
 		return "Password"
 	case "url_query":
 		return "URL parameter"
+	case "url_path":
+		return "URL path"
 	case "http_header", "authorization_header":
 		return "HTTP header"
 	case "cookie_header", "session_cookie":
@@ -265,6 +269,21 @@ func friendlySecretType(typ, prefix string) string {
 
 // compactFinding is the subset of a finding whose fields can carry a secret,
 // shown so the three views can be compared field by field.
+func providerPossessive(typ string) string {
+	switch typ {
+	case "github_token", "github_fine_grained_pat":
+		return "GitHub's"
+	case "npm_token":
+		return "npm's"
+	case "aws_access_key", "aws_secret_key":
+		return "AWS's"
+	case "stripe_secret_key", "stripe_restricted_key", "stripe_webhook_secret":
+		return "Stripe's"
+	default:
+		return "the provider's"
+	}
+}
+
 func compactFinding(f normalizer.Finding) map[string]any {
 	return map[string]any{
 		"title":            f.Title,

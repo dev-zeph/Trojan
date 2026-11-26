@@ -1,7 +1,6 @@
 package normalizer
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,13 +10,7 @@ import (
 // inside Trojan reads as if Trojan itself needs a sign-in, with a clear note.
 func CodePreviewOrPlaceholder(snippet, file string, line int) string {
 	if strings.EqualFold(strings.TrimSpace(snippet), "requires login") {
-		if file == "" {
-			return "Code preview not available for this finding."
-		}
-		if line > 0 {
-			return fmt.Sprintf("Code preview not available for this finding. See %s line %d.", file, line)
-		}
-		return fmt.Sprintf("Code preview not available for this finding. See %s.", file)
+		return "**No code preview for this finding.** Semgrep doesn't share the matching line. When Trojan sends this finding to its AI, the code around it goes through the same secret swap."
 	}
 	return snippet
 }

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/dev-zeph/trojan/internal/normalizer"
@@ -84,6 +85,19 @@ func (g Gitleaks) Run(projectPath string) ([]normalizer.Finding, error) {
 			results = mergeGitleaksResults(results, hist)
 		}
 	}
+
+	sort.SliceStable(results, func(i, j int) bool {
+		if results[i].File != results[j].File {
+			return results[i].File < results[j].File
+		}
+		if results[i].StartLine != results[j].StartLine {
+			return results[i].StartLine < results[j].StartLine
+		}
+		if results[i].RuleID != results[j].RuleID {
+			return results[i].RuleID < results[j].RuleID
+		}
+		return results[i].Secret < results[j].Secret
+	})
 
 	findings := make([]normalizer.Finding, 0, len(results))
 	for i, r := range results {

@@ -43,10 +43,10 @@ const localInstructions = `Trojan is the user's security scanner. It holds findi
 
 - For code tools, always pass project_path: the absolute path of the project folder you are working in.
 - Many users aren't security experts. Explain findings in plain language: what could happen and to whom, before how to fix it.
-- For dependencies, call check_intel: it matches exact installed versions to Trojan's breach-aware intel (any signed-in account). Matches are proposals ("matched, unproven"), never say the app is vulnerable until prove_intel_match confirms it. Offer prove_intel_match after check_intel; its hosted test spends credits and needs the owner's explicit yes (owner_confirmed). Credentials never go in chat.
-- After fixing a finding, call verify_fix with its id to prove it is gone instead of just marking it fixed. verify_fix handles both kinds: for a code finding it re-runs the scanner; for a website / pen-test finding it replays the request that proved it (seconds, no credits) and marks it fixed only if the problem is really gone.
+- For dependencies, call check_intel: it matches exact installed versions to Trojan's breach-aware intel (any signed-in account). Matches are proposals ("matched, unproven"), never say the app is vulnerable until prove_intel_match confirms it. Offer prove_intel_match after check_intel; its hosted test uses tokens and needs the owner's explicit yes (owner_confirmed). Credentials never go in chat.
+- After fixing a finding, call verify_fix with its id to prove it is gone instead of just marking it fixed. verify_fix handles both kinds: for a code finding it re-runs the scanner; for a website / pen-test finding it replays the request that proved it (seconds, no tokens) and marks it fixed only if the problem is really gone.
 - get_all_findings shows code and website findings in one list, each with a source and an id. To re-check several website findings at once (or a whole test) after a fix, use retest_website_findings instead of rerunning start_website_test.
-- start_website_test and generate_report spend the user's Trojan credits; say so when you use them. Never set owner_confirmed without the user's explicit yes.
+- start_website_test and generate_report use the user's Trojan tokens; say so when you use them. Never set owner_confirmed without the user's explicit yes.
 - To test a live site: call website_test_doctor(url) first (free: checks the site is up and the saved test accounts log in, estimates cost/time), then start_website_test(url, project_path, wait=true), which blocks until the test is done and returns its findings. Don't hand-roll sleep/poll loops. Pass project_path to get findings placed on file:line with related code findings, and a list of routes the test never reached.
 - Trojan's project context (get_project_context) describes what the app does, its sensitive data and trust boundaries, and makes Trojan's testing smarter. If it is missing, offer to draft it from the codebase. After significant changes (new features or routes, a new database or data type, auth changes, new third-party services), ask the user: "Want me to update Trojan's project context to match?" Always show the user what you will save before calling update_project_context.
 
@@ -120,7 +120,7 @@ func newServer(project projectFunc, perRequest bool, opts ...server.ServerOption
 	s.AddTool(
 		tool("verify_fix",
 			mcp.WithDescription("After changing code to fix a finding, re-run the Trojan check that found it. If the problem is gone the finding is marked fixed; if not, you get where it still occurs. "+
-				"Prefer this over mark_fixed. Also takes website / pen-test finding ids: it replays the recorded attack (seconds, no credits) instead of rerunning start_website_test."),
+				"Prefer this over mark_fixed. Also takes website / pen-test finding ids: it replays the recorded attack (seconds, no tokens) instead of rerunning start_website_test."),
 			idArg,
 		),
 		handleVerifyFix(project),
@@ -199,11 +199,11 @@ func newServer(project projectFunc, perRequest bool, opts ...server.ServerOption
 		tool("prove_intel_match",
 			mcp.WithDescription("Move a check_intel match forward. Always starts with a free version check: if the affected version is no longer installed the match is fixed; a malicious release is confirmed; a vulnerability with no playbook is confirmed by version only (whether the code is affected is not tested). "+
 				"Confirmed matches become findings (get_findings, verify_fix). "+
-				"If the advisory has a Trojan playbook AND you pass target_url, it starts a hosted verification test of that live site: that spends the user's Trojan credits, so without owner_confirmed=true it only returns the confirmation request and starts nothing. "+
-				"Set owner_confirmed only after the user explicitly says they own the site and OKs the credit spend. Call it again on a match in the proving state to read the result."),
+				"If the advisory has a Trojan playbook AND you pass target_url, it starts a hosted verification test of that live site: that uses the user's Trojan tokens, so without owner_confirmed=true it only returns the confirmation request and starts nothing. "+
+				"Set owner_confirmed only after the user explicitly says they own the site and OKs spending tokens. Call it again on a match in the proving state to read the result."),
 			mcp.WithString("match_id", mcp.Required(), mcp.Description("The match id from check_intel.")),
 			mcp.WithString("target_url", mcp.Description("Optional: the live site to verify against (only used when a playbook exists), e.g. https://myapp.com or http://localhost:3000.")),
-			mcp.WithBoolean("owner_confirmed", mcp.Description("Set only after the user has explicitly confirmed they own or may test this site and agreed to spend Trojan credits.")),
+			mcp.WithBoolean("owner_confirmed", mcp.Description("Set only after the user has explicitly confirmed they own or may test this site and agreed to spend Trojan tokens.")),
 		),
 		handleProveIntelMatch(project),
 	)
@@ -228,7 +228,7 @@ func newServer(project projectFunc, perRequest bool, opts ...server.ServerOption
 	// ── Security brain (code graph, rules, memory) ──
 	registerGraphTools(s, tool, project)
 
-	// ── Reports (spend the user's Trojan credits) ──
+	// ── Reports (use the user's Trojan tokens) ──
 	s.AddTool(
 		tool("generate_report",
 			mcp.WithDescription("Generate a Trojan report and save it as Markdown and HTML files the user can open, print to PDF, or send. Uses the user's Trojan tokens. "+
@@ -263,8 +263,8 @@ func newServer(project projectFunc, perRequest bool, opts ...server.ServerOption
 	)
 	s.AddTool(
 		mcp.NewTool("start_website_test",
-			mcp.WithDescription("Start Trojan's AI penetration test of a live website or local dev server. Spends the user's Trojan credits and takes several minutes. "+
-				"Run website_test_doctor(url=...) first: it checks the site is up and the saved test accounts log in, and estimates cost and time, without spending credits. "+
+			mcp.WithDescription("Start Trojan's AI penetration test of a live website or local dev server. Uses the user's Trojan tokens and takes several minutes. "+
+				"Run website_test_doctor(url=...) first: it checks the site is up and the saved test accounts log in, and estimates cost and time, without spending tokens. "+
 				"With wait=true the call blocks until the test finishes and returns the findings, coverage and next steps in one go (streams progress notifications while it runs); "+
 				"if it is still running when max_wait_minutes passes, it returns live progress and you call website_test_status(wait=true) to keep waiting. "+
 				"Without wait it returns at once: check website_test_status, then read get_website_findings. "+
@@ -294,7 +294,7 @@ func newServer(project projectFunc, perRequest bool, opts ...server.ServerOption
 	s.AddTool(
 		mcp.NewTool("retest_website_findings",
 			mcp.WithDescription("The fix-verification step for live website / pen-test findings: after you change the code behind a finding from get_website_findings, call this with its id to prove the fix. "+
-				"It replays the exact request that proved each finding (seconds, no credits, no 10-minute full rerun) and reports each as fixed, still open, or inconclusive, marking fixed ones resolved. "+
+				"It replays the exact request that proved each finding (seconds, no tokens, no 10-minute full rerun) and reports each as fixed, still open, or inconclusive, marking fixed ones resolved. "+
 				"This is the website equivalent of verify_fix; use it instead of start_website_test to check a fix. "+
 				"Without ids, re-checks every open finding for the site; pass ids to re-check only those. A finding with no recorded proof (older tests) is inconclusive: run start_website_test instead."),
 			mcp.WithString("url", mcp.Description("The tested site (or its host). Defaults to the site holding the given ids, else the most recently tested site.")),
@@ -305,9 +305,9 @@ func newServer(project projectFunc, perRequest bool, opts ...server.ServerOption
 	)
 	s.AddTool(
 		mcp.NewTool("website_test_doctor",
-			mcp.WithDescription("Preflight for a website pen-test, BEFORE spending credits. Always checks: signed in, pen-test engine present, token balance. "+
+			mcp.WithDescription("Preflight for a website pen-test, before spending tokens. Always checks: signed in, pen-test engine present, token balance. "+
 				"With url it also checks: the site answers, ownership status, and that every saved test account really logs in (a failing login aborts the whole test), and returns an estimate of cost (tokens) and time. "+
-				"Spends no Trojan credits; with url it sends a few requests to the target (one GET plus one login per saved account). Returns {ready, checks[], estimate, note}; fix any check with ok=false before starting."),
+				"Uses no Trojan tokens; with url it sends a few requests to the target (one GET plus one login per saved account). Returns {ready, checks[], estimate, note}; fix any check with ok=false before starting."),
 			mcp.WithString("url", mcp.Description("The site you plan to test. Omit to check only the local setup.")),
 		),
 		handleWebsiteTestDoctor,

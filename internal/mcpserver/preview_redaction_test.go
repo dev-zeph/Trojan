@@ -29,7 +29,7 @@ var previewStripe = "sk_" + "live_" + "51MExampleKeyNotReal000000"
 func TestPreviewRedactionTextViews(t *testing.T) {
 	project, _ := fixture(t)
 	text := `const key = "` + previewAWS + `"; // stripe: ` + previewStripe
-	out, isErr := callTool(t, handlePreviewRedaction(project), map[string]any{"text": text, "view": "both"})
+	out, isErr := callTool(t, handlePreviewRedaction(project), map[string]any{"text": text, "view": "all"})
 	if isErr {
 		t.Fatal(out)
 	}
@@ -245,7 +245,39 @@ func TestGetFindingReplacesSemgrepLoginSnippet(t *testing.T) {
 	if strings.Contains(out, `"requires login"`) {
 		t.Fatalf("semgrep placeholder left in place: %s", out)
 	}
-	if !strings.Contains(out, "Code preview not available for this finding. See src/config.ts line 2.") {
+	if !strings.Contains(out, "No code preview for this finding") {
 		t.Fatalf("expected preview placeholder: %s", out)
+	}
+}
+
+func TestPreviewRedactionBothOmitsLocal(t *testing.T) {
+	project, _ := fixture(t)
+	text := `const key = "` + previewAWS + `"; // stripe: ` + previewStripe
+	out, isErr := callTool(t, handlePreviewRedaction(project), map[string]any{"text": text, "view": "both"})
+	if isErr {
+		t.Fatal(out)
+	}
+	if strings.Contains(out, `"local":`) {
+		t.Fatalf("view=both must not return the local view:\n%s", out)
+	}
+	if !strings.Contains(out, `"ai"`) || !strings.Contains(out, `"upload"`) {
+		t.Fatalf("view=both should include ai and upload:\n%s", out)
+	}
+	if strings.Contains(out, previewAWS) || strings.Contains(out, previewStripe) {
+		t.Fatalf("view=both leaked a raw secret")
+	}
+}
+
+func TestPreviewRedactionZeroSecretsCopy(t *testing.T) {
+	project, _ := fixture(t)
+	out, isErr := callTool(t, handlePreviewRedaction(project), map[string]any{"text": "hello world, no keys here"})
+	if isErr {
+		t.Fatal(out)
+	}
+	if !strings.Contains(out, "No secrets found in this input") {
+		t.Fatalf("zero-secret copy missing:\n%s", out)
+	}
+	if strings.Contains(out, "Found 0 secrets") || strings.Contains(out, "sk_live_") && strings.Contains(out, "Found 0") {
+		t.Fatalf("old zero-secret summary still present:\n%s", out)
 	}
 }

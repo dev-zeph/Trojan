@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 
 	"github.com/dev-zeph/trojan/internal/normalizer"
@@ -68,6 +69,7 @@ func semgrepArgs(projectPath string, extraConfigs []string) []string {
 		"--exclude", "__pycache__",
 		"--exclude", "coverage",
 		"--exclude", "*.min.js",
+		"--exclude", ".trojan",
 		projectPath,
 	)
 	return args
@@ -143,6 +145,16 @@ func (s Semgrep) Run(projectPath string) ([]normalizer.Finding, error) {
 	if err := json.Unmarshal(output, &result); err != nil {
 		return nil, fmt.Errorf("failed to parse semgrep output: %w", err)
 	}
+
+	sort.SliceStable(result.Results, func(i, j int) bool {
+		if result.Results[i].Path != result.Results[j].Path {
+			return result.Results[i].Path < result.Results[j].Path
+		}
+		if result.Results[i].Start.Line != result.Results[j].Start.Line {
+			return result.Results[i].Start.Line < result.Results[j].Start.Line
+		}
+		return result.Results[i].CheckID < result.Results[j].CheckID
+	})
 
 	findings := make([]normalizer.Finding, 0, len(result.Results))
 	for i, r := range result.Results {

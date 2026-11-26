@@ -140,7 +140,7 @@ func TestClassifyPreChecks(t *testing.T) {
 		{"xxxxxxxxxxxxxxxx", "generic_secret", "", LikelyPlaceholder, "placeholder_pattern"},
 		{"<your-token>", "generic_secret", "", LikelyPlaceholder, "placeholder_pattern"},
 		{"dummy-secret-123", "generic_secret", "", LikelyPlaceholder, "placeholder_pattern"},
-		{"Tr0ub4dor&3", "generic_secret", ".env.example", LikelyPlaceholder, "test_path"},
+		{"Tr0ub4dor&3", "generic_secret", ".env.example", LikelyReal, "test_path"}, // test_path does not flip looks
 		{"Tr0ub4dor&3", "generic_secret", "config/prod.env", LikelyReal, ""},
 		{"Zk9xLm3Qp7Rt2Vw8Yb4Nc6Hj0Ks5TyQe2LkF9", "generic_secret", "spec/fixtures/keys.yml", LikelyReal, "test_path"}, // high entropy survives a test path
 	}
@@ -387,5 +387,141 @@ func TestVendorPrefixOnlyOnKnownPrefixes(t *testing.T) {
 	s = Secret{Value: "Tr0ub4dor&8BiK", Type: "password"}
 	if SafePrefixFor(s) != "" {
 		t.Fatalf("generic must have empty prefix, got %q", SafePrefixFor(s))
+	}
+}
+
+func TestEncodedVendorKeysAreDetected(t *testing.T) {
+	body := fakeStripe
+	cases := []struct {
+		name, text string
+	}{
+		{"url_json", "https://x.com/a?data=%7B%22key%22%3A%20%22" + body + "%22%7D"},
+		{"pct_eq", "x%3D" + body},
+		{"pct_space", "x%20" + body},
+		{"json_u", `x\u0022` + body},
+		{"underscore", "pref_" + body},
+		{"token_ghp", "token%3D" + fakeGitHub()},
+	}
+	for _, c := range cases {
+		hits := Find(c.text)
+		if len(hits) == 0 {
+			t.Errorf("%s: detected nothing in %q", c.name, c.text)
+			continue
+		}
+		red := Text(c.text)
+		if strings.Contains(red, body) || strings.Contains(red, fakeGitHub()) {
+			t.Errorf("%s: raw value survived: %s", c.name, red)
+		}
+		if !strings.Contains(red, "SECRET removed by Trojan") {
+			t.Errorf("%s: missing label: %s", c.name, red)
+		}
+	}
+}
+
+func TestLongValuesAreFullyMasked(t *testing.T) {
+	long := strings.Repeat("Ab1", 133) + "Z" // 400 chars, not a vendor key
+	if len(long) != 400 {
+		t.Fatalf("len=%d", len(long))
+	}
+	env := "API_KEY=" + long
+	red := Text(env)
+	if strings.Contains(red, long) || strings.Contains(red, long[256:]) {
+		t.Fatalf("400-char env leaked: %s", red)
+	}
+	if !strings.Contains(red, "len=400") {
+		t.Fatalf("expected len=400, got %s", red)
+	}
+
+	quoted := `api_key: "` + long + `x"` // 401 inside quotes
+	red = Text(quoted)
+	if strings.Contains(red, long) {
+		t.Fatalf("quoted long value leaked: %s", red)
+	}
+
+	pw := strings.Repeat("Cd2", 85) // 255
+	u := "postgres://u:" + pw + "@h/db"
+	red = Text(u)
+	if strings.Contains(red, pw) {
+		t.Fatalf("long url password leaked: %s", red)
+	}
+}
+
+func TestAWSKeyInExampleStaysReal(t *testing.T) {
+	k := "AKIA" + "ABCDEFGHIJKLMNOP" // 20-char access key shape; fake
+	a := Classify(k, "aws_access_key", ".env.example")
+	if a.Class != LikelyReal {
+		t.Fatalf("looks=%s checks=%v, want real", a.Class, a.Checks)
+	}
+	if !strings.Contains(strings.Join(a.Checks, "+"), "test_path") {
+		t.Fatalf("expected why=test_path, got %v", a.Checks)
+	}
+	lab := Descriptor(Secret{Value: k, Type: "aws_access_key"}, ".env.example", "")
+	if !strings.Contains(lab, "looks=real") || !strings.Contains(lab, "why=test_path") {
+		t.Fatalf("label=%s", lab)
+	}
+}
+
+func TestTypeNamesForEnvAndURL(t *testing.T) {
+	hex := "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+	hits := Find("JWT_SECRET=" + hex)
+	if len(hits) == 0 || hits[0].Type == "session_cookie" {
+		t.Fatalf("JWT_SECRET should not be session_cookie: %+v", hits)
+	}
+	hits = Find("https://x.com/?token=" + hex)
+	if len(hits) == 0 || hits[0].Type != "url_query" {
+		t.Fatalf("?token= should be url_query: %+v", hits)
+	}
+	rk := "rk_" + "live_" + "ABCDEFGH12"
+	hits = Find("k=" + rk)
+	// may need surrounding word boundary; also as raw
+	hits = Find(rk + " ")
+	if len(hits) == 0 || hits[0].Type != "stripe_restricted_key" {
+		t.Fatalf("rk_live_ should be stripe_restricted_key: %+v", hits)
+	}
+	secretVal := "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789ab"
+	hits = Find("SECRET_KEY='" + secretVal + "'")
+	if len(hits) == 0 || hits[0].Type == "password" {
+		t.Fatalf("SECRET_KEY should not be password: %+v", hits)
+	}
+}
+
+func TestP2FormsAreMasked(t *testing.T) {
+	val := "Fclb" + "thHV8fa56vORRwkgLcLsbMTrRvHX"
+	user := "ad" + "min"
+	curlUser := func(flag string) string {
+		return "curl " + flag + " " + user + ":" + val + " https://example.com"
+	}
+	cases := []string{
+		"https://x.com/?access_key=" + val + "&a=1",
+		"https://x.com/?accessKey=" + val,
+		curlUser("-u"),
+		curlUser("--user"),
+		"https://x.com/?x=1&amp;api_key=" + val,
+		"https://x.com/?bearer=" + val,
+		"Authorization: " + val,
+		"Ocp-Apim-Subscription-Key: " + val,
+		"https://x.com/api_key/" + val + "/items",
+	}
+	for _, c := range cases {
+		red := Text(c)
+		if strings.Contains(red, val) {
+			t.Errorf("leaked in %q -> %s", c, red)
+		}
+		if !strings.Contains(red, "SECRET removed by Trojan") {
+			t.Errorf("no label for %q -> %s", c, red)
+		}
+	}
+}
+
+func TestJWTDanglingQuoteIsRemoved(t *testing.T) {
+	tok := fakeJWT
+	// A gitleaks-style snippet that includes only the trailing quote.
+	in := tok + `"`
+	out := Text(in)
+	if strings.HasSuffix(out, `>"`) || strings.HasSuffix(out, `"`) && !strings.HasSuffix(out, `>`) {
+		t.Fatalf("dangling quote left: %s", out)
+	}
+	if strings.Contains(out, tok) {
+		t.Fatalf("jwt leaked: %s", out)
 	}
 }

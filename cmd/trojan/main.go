@@ -54,9 +54,14 @@ func main() {
 	version = strings.TrimPrefix(version, "v")
 
 	rootCmd := &cobra.Command{
-		Use:   "trojan",
-		Short: "A developer-first security CLI",
-		Long:  "Trojan scans your codebase for vulnerabilities and opens a local web UI with plain-English explanations.",
+		Use:     "trojan",
+		Short:   "A developer-first security CLI",
+		Long:    "Trojan scans your codebase for vulnerabilities and opens a local web UI with plain-English explanations.",
+		Version: "v" + version,
+	}
+	rootCmd.SetVersionTemplate("trojan {{.Version}}\n")
+	if f := rootCmd.Flags().Lookup("version"); f != nil {
+		f.Shorthand = "v"
 	}
 
 	rootCmd.AddCommand(versionCmd())

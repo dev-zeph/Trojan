@@ -128,3 +128,57 @@ func TestScanSummary(t *testing.T) {
 		t.Fatalf("\n got: %s\nwant: %s", got, want)
 	}
 }
+
+func TestFindingStillPresentSameValueTwoFiles(t *testing.T) {
+	key := "sk_" + "live_" + "VerifyFixRegressionKey99"
+	f1 := normalizer.Finding{
+		ID: "gitleaks-0", Scanner: "gitleaks", RuleID: "stripe-access-token",
+		FilePath: "src/config.ts", LineNumber: 3, CodeSnippet: key,
+	}
+	f2 := normalizer.Finding{
+		ID: "gitleaks-1", Scanner: "gitleaks", RuleID: "stripe-access-token",
+		FilePath: ".env.example", LineNumber: 2, CodeSnippet: key,
+	}
+	// Fresh scan still reports both locations (no cross-file collapse).
+	fresh := []normalizer.Finding{f1, f2}
+	if !findingStillPresent(f1, "/proj", "/proj/src/config.ts", fresh) {
+		t.Fatal("config.ts finding must still be present")
+	}
+	if !findingStillPresent(f2, "/proj", "/proj/.env.example", fresh) {
+		t.Fatal(".env.example finding must still be present")
+	}
+	// If a buggy reducer dropped the config.ts row and kept only .env.example,
+	// the value-in-file check still prevents a false FIXED.
+	tmp := t.TempDir()
+	src := PathWrite(t, tmp, "src/config.ts", "const k = \""+key+"\";\n")
+	if !findingStillPresent(f1, tmp, src, []normalizer.Finding{f2}) {
+		t.Fatal("must not report FIXED when the value is still in the finding's file")
+	}
+	// Gone from the finding's own file: really fixed, even if another file has it.
+	srcGone := PathWrite(t, tmp, "src/gone.ts", "const k = \"rotated\";\n")
+	gone := f1
+	gone.FilePath = "src/gone.ts"
+	if findingStillPresent(gone, tmp, srcGone, []normalizer.Finding{f2}) {
+		t.Fatal("a removed value in the finding's file should be treated as fixed")
+	}
+}
+
+func PathWrite(t *testing.T, root, rel, body string) string {
+	t.Helper()
+	path := filepath.Join(root, rel)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestScanSummaryNoFindings(t *testing.T) {
+	got := ScanSummary(&normalizer.ScanResult{}, "/tmp/app/.trojan/scans/empty.json")
+	want := "Scan done: no findings. Saved to .trojan/scans/empty.json."
+	if got != want {
+		t.Fatalf("\n got: %s\nwant: %s", got, want)
+	}
+}

@@ -17,22 +17,23 @@ var dropDirs = map[string]bool{
 	".venv":            true,
 	"venv":             true,
 	// Build / generated output.
-	"dist":   true,
-	"build":  true,
-	"out":    true,
-	".next":  true,
-	"target": true, // Java/Rust build dir
-	"obj":    true,
+	"dist":        true,
+	"build":       true,
+	"out":         true,
+	".next":       true,
+	"target":      true, // Java/Rust build dir
+	"obj":         true,
 	"__pycache__": true,
 	// Test scaffolding.
-	"test":       true,
-	"tests":      true,
-	"testdata":   true,
-	"__tests__":  true,
-	"__mocks__":  true,
-	"spec":       true,
+	"test":      true,
+	"tests":     true,
+	"testdata":  true,
+	"__tests__": true,
+	"__mocks__": true,
+	"spec":      true,
 	// VCS.
-	".git": true,
+	".git":    true,
+	".trojan": true, // scan output, caches, and prior reports
 }
 
 // FilterPaths drops findings located in non-shipping code — dependency,
