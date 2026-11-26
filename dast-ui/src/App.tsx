@@ -139,7 +139,7 @@ export default function App() {
             <p className="text-4xl font-bold tracking-tight text-foreground">Great work.</p>
             <p className="text-lg font-medium text-foreground">No runtime vulnerabilities found.</p>
             <p className="text-sm text-muted-foreground max-w-sm mx-auto">
-              {scan.project_path} passed the penetration test — no known attack patterns matched across 6,000+ templates.
+              {scan.project_path} passed the penetration test. No known attack patterns matched across 6,000+ templates.
             </p>
           </div>
         ) : (

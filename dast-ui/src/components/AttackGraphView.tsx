@@ -90,7 +90,7 @@ export function AttackGraphView({ graph, selectedId, onSelect }: Props) {
               onClick={() => onSelect(p.node)}
               tabIndex={0}
               role="button"
-              aria-label={`${p.node.method ?? ''} ${p.node.label} — ${p.node.status}`}
+              aria-label={`${p.node.method ?? ''} ${p.node.label}: ${p.node.status}`}
               onKeyDown={ev => { if (ev.key === 'Enter') onSelect(p.node) }}
             >
               {sel && (

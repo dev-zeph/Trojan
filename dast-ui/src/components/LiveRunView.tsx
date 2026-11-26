@@ -212,7 +212,7 @@ function TerminalBanner({ run, onViewFindings }: { run: RunState; onViewFindings
   return (
     <div className={`rounded border p-5 space-y-2 ${isError ? 'border-red-500/40 bg-red-500/10' : stopped ? 'border-yellow-500/40 bg-yellow-500/10' : 'border-emerald-500/40 bg-emerald-500/10'}`}>
       <p className="text-sm font-semibold">
-        {isError ? 'Run failed' : stopped ? `Stopped — ${run.stopReason} (partial results)` : 'Run complete'}
+        {isError ? 'Run failed' : stopped ? `Stopped: ${run.stopReason} (partial results)` : 'Run complete'}
       </p>
       {(run.summary || run.errorDetail) && (
         <p className="text-sm text-foreground/70 leading-relaxed max-w-2xl whitespace-pre-line">{run.errorDetail || run.summary}</p>
@@ -288,7 +288,7 @@ function TimelineRow({ event }: { event: AgentEvent }) {
     case 'stopped':
       return <p className="pl-4 py-2 text-xs uppercase tracking-widest text-yellow-600 dark:text-yellow-400">stopped: {event.detail}</p>
     case 'approval_request':
-      return <p className="pl-4 py-1.5 text-xs text-red-600 dark:text-red-400 flex items-center gap-2"><span>⏸</span><span className="break-all">awaiting approval — {event.detail}</span></p>
+      return <p className="pl-4 py-1.5 text-xs text-red-600 dark:text-red-400 flex items-center gap-2"><span>⏸</span><span className="break-all">awaiting approval: {event.detail}</span></p>
     case 'approval_resolved':
       return (
         <p className={`pl-4 py-1.5 text-xs flex items-center gap-2 ${event.approved ? 'text-emerald-600 dark:text-emerald-400' : 'text-muted-foreground'}`}>

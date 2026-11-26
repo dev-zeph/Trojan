@@ -17,7 +17,7 @@ interface Props {
 }
 
 const TIERS: { key: Tier; label: string; desc: string }[] = [
-  { key: 'passive', label: 'Passive', desc: 'GET/HEAD only — safe anywhere, including production.' },
+  { key: 'passive', label: 'Passive', desc: 'GET/HEAD only: safe anywhere, including production.' },
   { key: 'safe-active', label: 'Safe-active', desc: 'Adds non-destructive POST confirmation (injection / reflected-XSS).' },
   { key: 'aggressive', label: 'Aggressive', desc: 'Stored-XSS + state-touching probes. Staging only.' },
 ]

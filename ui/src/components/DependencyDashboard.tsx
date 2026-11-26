@@ -21,7 +21,7 @@ export function DependencyDashboard({ packages }: Props) {
     return (
       <div className="space-y-6">
         <p className="text-xs uppercase tracking-widest text-muted-foreground">Dependencies</p>
-        <p className="text-muted-foreground text-sm">No dependency data — run a scan on a project with a lock file.</p>
+        <p className="text-muted-foreground text-sm">No dependency data. Run a scan on a project with a lock file.</p>
       </div>
     )
   }
@@ -59,7 +59,7 @@ export function DependencyDashboard({ packages }: Props) {
           {vulnerable.length > 0
             ? `${vulnerable.length} with known CVEs · ${critical.length} critical or high severity.`
             : 'No known vulnerabilities detected in your dependencies.'}
-          {' '}Ecosystems: {ecosystems.join(', ') || '—'}.
+          {' '}Ecosystems: {ecosystems.join(', ') || 'none'}.
         </p>
       </div>
 
@@ -163,7 +163,7 @@ export function DependencyDashboard({ packages }: Props) {
 
                 {/* CVE count */}
                 <span className={`w-16 text-center text-sm font-medium ${pkg.cve_count > 0 ? 'text-foreground' : 'text-muted-foreground/40'}`}>
-                  {pkg.cve_count > 0 ? pkg.cve_count : '—'}
+                  {pkg.cve_count > 0 ? pkg.cve_count : '0'}
                 </span>
 
                 {/* Severity badge */}
@@ -177,7 +177,7 @@ export function DependencyDashboard({ packages }: Props) {
 
                 {/* Fix version */}
                 <span className={`w-24 text-right text-xs font-mono ${pkg.fix_version ? 'text-foreground' : 'text-muted-foreground/40'}`}>
-                  {pkg.fix_version ?? (pkg.cve_count > 0 ? 'no fix' : '—')}
+                  {pkg.fix_version ?? (pkg.cve_count > 0 ? 'no fix' : 'Not needed')}
                 </span>
               </button>
 
