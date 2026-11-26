@@ -113,3 +113,74 @@ func TestWriteTemplatesToDirRewritesIDs(t *testing.T) {
 		}
 	}
 }
+
+// R4-P3-1 leftovers: block scalar ids lose their continuation lines, and
+// anchors, aliases, explicit keys and indented top levels are rejected.
+func TestSetTemplateIDBlockScalarsAndRejections(t *testing.T) {
+	rewritten := map[string]string{
+		"foldedBlock":   "id: >-\n  alphapets-x\n  more\ninfo: {}\n",
+		"literalBlock":  "id: |\n  alphapets-x\n\n  tail\ninfo: {}\n",
+		"plainWrapped":  "id: alphapets\n  -x\ninfo: {}\n",
+		"emptyThenTab":  "id:\n\talphapets-x\ninfo: {}\n",
+		"secondBlockId": "id: a\ninfo: {}\nid: >\n  alphapets-y\nhttp: []\n",
+	}
+	for name, in := range rewritten {
+		out, ok := SetTemplateID(in, 1)
+		if !ok {
+			t.Errorf("%s: rejected", name)
+			continue
+		}
+		if strings.Contains(out, "alphapets") || strings.Contains(out, "more") || strings.Contains(out, "tail") {
+			t.Errorf("%s: old id text left: %q", name, out)
+		}
+		if ids := topLevelIDs(out); len(ids) != 1 || ids[0] != "id: trojan-custom-001" {
+			t.Errorf("%s: ids %q in %q", name, ids, out)
+		}
+		if !strings.Contains(out, "info: {}") {
+			t.Errorf("%s: other keys lost: %q", name, out)
+		}
+	}
+	if out, _ := SetTemplateID("id: >-\n  alphapets-x\ninfo:\n  name: y\n", 2); out != "id: trojan-custom-002\ninfo:\n  name: y\n" {
+		t.Errorf("block scalar: %q", out)
+	}
+	rejected := map[string]string{
+		"anchor":               "id: &a alphapets-x\ninfo:\n  name: *a\n",
+		"alias":                "base: &a alphapets-x\nid: *a\n",
+		"quotedAnchor":         "\"id\" : &site alphapets-x\n",
+		"explicitKey":          "? id\n: alphapets-x\ninfo: {}\n",
+		"explicitKeyTab":       "info: {}\n?\tid\n: alphapets-x\n",
+		"explicitBare":         "?\n  id\n: alphapets-x\n",
+		"indentedTop":          "  id: alphapets-x\n  info: {}\n",
+		"indentedAfterComment": "# c\n\n    id: alphapets-x\n",
+		"indentedAfterMarker":  "---\n  id: alphapets-x\n",
+	}
+	for name, in := range rejected {
+		if out, ok := SetTemplateID(in, 1); ok {
+			t.Errorf("%s: accepted: %q", name, out)
+		}
+		if unsafeTemplate(strings.TrimPrefix(in, "\uFEFF")) == "" {
+			t.Errorf("%s: unsafeTemplate gave no reason", name)
+		}
+	}
+}
+
+func TestUnsafeTemplateAllowsNormalTemplates(t *testing.T) {
+	for _, ok := range []string{
+		"id: x\ninfo:\n  name: y\n  tags: a,b\nhttp:\n  - method: GET\n    path:\n      - \"{{BaseURL}}/?q=1\"\n",
+		"# comment\n---\nid: x\nvariables:\n  a: &anc 1\n  b: *anc\n",
+		"info: {name: y}\nid: x\n",
+	} {
+		if r := unsafeTemplate(ok); r != "" {
+			t.Errorf("rejected (%s): %q", r, ok)
+		}
+	}
+}
+
+func TestIsIndented(t *testing.T) {
+	cases := map[string]bool{"  x": true, "\tx": true, "x": false, "   ": false, "": false}
+	for in, want := range cases {
+		if got := isIndented(in); got != want {
+			t.Errorf("isIndented(%q) = %v", in, got)
+		}
+	}
+}

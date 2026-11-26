@@ -11,6 +11,7 @@ import (
 
 	"github.com/dev-zeph/trojan/internal/fingerprint"
 	"github.com/dev-zeph/trojan/internal/orgcontext"
+	"github.com/dev-zeph/trojan/internal/outbound"
 )
 
 // inferContextURL is a var so tests can point it at an httptest server.
@@ -61,7 +62,7 @@ func InferContext(description string, fp fingerprint.Fingerprint, projectID stri
 		return nil, err
 	}
 	// base64-wrapped so Cloudflare's WAF never sees raw route/path strings.
-	body, err := json.Marshal(map[string]string{"encoded": base64.StdEncoding.EncodeToString(inner)})
+	body, err := json.Marshal(map[string]string{"encoded": base64.StdEncoding.EncodeToString(outbound.ScrubJSON(inner, ""))})
 	if err != nil {
 		return nil, err
 	}

@@ -45,6 +45,7 @@ import { FeedbackForm } from "./components/FeedbackForm";
 import { TokenBalance, RunCostHint } from "./components/TokenBalance";
 import { ScanGateNotice } from "./components/ScanGateNotice";
 import { runScanGate, fetchLicenseBalance, type ScanGate } from "./lib/scanGate";
+import { findingsForUpload, folderName, relativeToProject } from "./lib/outboundPath";
 import type {
   NavView,
   ScanType,
@@ -696,8 +697,9 @@ export default function App() {
         },
         body: JSON.stringify({
           encoded: encodeBody({
-            project_path: scanData.project_path ?? "",
-            findings,
+            // Folder name and project-relative paths only: never the home folder.
+            project_path: folderName(scanData.project_path),
+            findings: findingsForUpload(scanData.project_path, findings),
             packages: pkgs,
             user_familiarity: profile?.familiarity ?? 1,
           }),
@@ -919,7 +921,8 @@ export default function App() {
         headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
         body: JSON.stringify({
           encoded: encodeBody({
-            target: scan?.project_path ?? scanPath,
+            // A website address passes through; a local path is cut to its last element.
+            target: relativeToProject("", scan?.project_path ?? scanPath),
             findings: findings.map((f) => ({
               id: f.ID,
               title: f.Title,
@@ -929,7 +932,7 @@ export default function App() {
               evidence: f.CodeSnippet,
               rationale: f.RawMessage,
               verdictReason: f.VerdictReason,
-              sourceFile: f.source_file,
+              sourceFile: relativeToProject("", f.source_file),
               sourceLine: f.source_line,
             })),
             user_familiarity: profile?.familiarity ?? 1,
@@ -2372,7 +2375,7 @@ export default function App() {
                   headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
                   body: JSON.stringify({
                     encoded: encodeBody({
-                      project_path: scanPath ?? "",
+                      project_path: folderName(scanPath),
                       licenses: { total_packages: packages.length, copyleft, weak_copyleft: weakCopyleft, unknown_count: unknownCount, permissive_count: permissiveCount },
                       privacy: { data_types: (privacyReport?.data_types ?? []).map(d => ({ name: d.name, category: d.category, detection_count: d.detection_count })), third_party: (privacyReport?.third_party ?? []).map(t => ({ name: t.name, data_types: t.data_types ?? [] })) },
                       user_familiarity: profile?.familiarity ?? 1,

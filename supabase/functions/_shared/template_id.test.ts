@@ -1,5 +1,5 @@
 import { assertEquals, assert, assertFalse } from 'jsr:@std/assert@1'
-import { isFlowStyleTemplate, setTemplateId, setTemplateIds } from './template_id.ts'
+import { firstContentLine, isFlowStyleTemplate, isIndented, setTemplateId, setTemplateIds, unsafeTemplate } from './template_id.ts'
 
 const topLevelIds = (t: string) => t.match(/^\uFEFF?(?:"id"|'id'|id)[ \t]*:.*$/gm) ?? []
 
@@ -69,4 +69,57 @@ Deno.test('setTemplateIds drops flow-style templates and numbers the rest withou
     setTemplateIds(['id: a\n', '{id: acme-flow}', '--- {id: acme-doc}', '"id": b\n']),
     ['id: trojan-custom-001\n', 'id: trojan-custom-002\n'],
   )
+})
+
+// R4-P3-1 leftovers: block scalar ids lose their continuation lines; anchors,
+// aliases, explicit keys ("? id") and indented top levels are rejected.
+Deno.test('setTemplateId drops block scalar and wrapped id values', () => {
+  const cases: Record<string, string> = {
+    foldedBlock: 'id: >-\n  alphapets-x\n  more\ninfo: {}\n',
+    literalBlock: 'id: |\n  alphapets-x\n\n  tail\ninfo: {}\n',
+    plainWrapped: 'id: alphapets\n  -x\ninfo: {}\n',
+    emptyThenTab: 'id:\n\talphapets-x\ninfo: {}\n',
+    secondBlockId: 'id: a\ninfo: {}\nid: >\n  alphapets-y\nhttp: []\n',
+  }
+  for (const [name, input] of Object.entries(cases)) {
+    const out = setTemplateId(input, 1)
+    assert(out !== null, `${name}: rejected`)
+    assertFalse(/alphapets|more|tail/.test(out), `${name}: ${out}`)
+    assertEquals(topLevelIds(out), ['id: trojan-custom-001'], name)
+    assert(out.includes('info: {}'), `${name}: other keys lost`)
+  }
+  assertEquals(setTemplateId('id: >-\n  alphapets-x\ninfo:\n  name: y\n', 2), 'id: trojan-custom-002\ninfo:\n  name: y\n')
+})
+
+Deno.test('setTemplateId rejects anchors, aliases, explicit keys and indented top levels', () => {
+  const cases: Record<string, string> = {
+    anchor: 'id: &a alphapets-x\ninfo:\n  name: *a\n',
+    alias: 'base: &a alphapets-x\nid: *a\n',
+    quotedAnchor: '"id" : &site alphapets-x\n',
+    explicitKey: '? id\n: alphapets-x\ninfo: {}\n',
+    explicitKeyTab: 'info: {}\n?\tid\n: alphapets-x\n',
+    explicitBare: '?\n  id\n: alphapets-x\n',
+    indentedTop: '  id: alphapets-x\n  info: {}\n',
+    indentedAfterComment: '# c\n\n    id: alphapets-x\n',
+    indentedAfterMarker: '---\n  id: alphapets-x\n',
+  }
+  for (const [name, input] of Object.entries(cases)) {
+    assertEquals(setTemplateId(input, 1), null, name)
+    assert(unsafeTemplate(input) !== '', `${name}: no reason`)
+  }
+  assertEquals(setTemplateIds(['id: a\n', '? id\n: b\n', 'id: &x c\n', 'id: d\n']), ['id: trojan-custom-001\n', 'id: trojan-custom-002\n'])
+})
+
+Deno.test('unsafeTemplate allows normal templates, and helpers behave', () => {
+  for (const t of [
+    'id: x\ninfo:\n  name: y\nhttp:\n  - method: GET\n    path:\n      - "{{BaseURL}}/?q=1"\n',
+    '# comment\n---\nid: x\nvariables:\n  a: &anc 1\n  b: *anc\n',
+    'info: {name: y}\nid: x\n',
+  ]) assertEquals(unsafeTemplate(t), '', t)
+  assertEquals(firstContentLine('# c\n\n--- {id: x}\n'), '{id: x}')
+  assertEquals(firstContentLine('---\n  id: x'), '  id: x')
+  assert(isIndented('  x'))
+  assert(isIndented('\tx'))
+  assertFalse(isIndented('x'))
+  assertFalse(isIndented('   '))
 })

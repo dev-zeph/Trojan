@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/dev-zeph/trojan/internal/normalizer"
+	"github.com/dev-zeph/trojan/internal/outbound"
 )
 
 // synthesizeURL is a var (not const) so tests can point it at an
@@ -154,7 +155,7 @@ func SynthesizeFinding(finding normalizer.Finding, accessToken string, familiari
 		return nil, err
 	}
 
-	req, err := http.NewRequest(http.MethodPost, synthesizeURL, bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, synthesizeURL, bytes.NewReader(outbound.ScrubJSON(body, "")))
 	if err != nil {
 		return nil, err
 	}

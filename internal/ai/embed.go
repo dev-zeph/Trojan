@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/dev-zeph/trojan/internal/outbound"
 )
 
 const embedBatchSize = 128 // must match MAX_TEXTS in the embed edge function
@@ -66,7 +68,7 @@ func embedBatch(texts []string, inputType EmbedInputType, accessToken string) ([
 	if err != nil {
 		return nil, err
 	}
-	body, err := json.Marshal(map[string]string{"encoded": base64.StdEncoding.EncodeToString(inner)})
+	body, err := json.Marshal(map[string]string{"encoded": base64.StdEncoding.EncodeToString(outbound.ScrubJSON(inner, ""))})
 	if err != nil {
 		return nil, err
 	}

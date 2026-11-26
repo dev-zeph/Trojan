@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/dev-zeph/trojan/internal/outbound"
 )
 
 // Transport runs a single reasoning turn: given the conversation so far, it
@@ -70,7 +72,7 @@ func (t *EdgeTransport) Turn(ctx context.Context, messages []Message) (*TurnResu
 	if err != nil {
 		return nil, err
 	}
-	body, err := json.Marshal(map[string]string{"encoded": base64.StdEncoding.EncodeToString(inner)})
+	body, err := json.Marshal(map[string]string{"encoded": base64.StdEncoding.EncodeToString(outbound.ScrubJSON(inner, ""))})
 	if err != nil {
 		return nil, err
 	}

@@ -25,6 +25,8 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"path"
+	"path/filepath"
 	"strings"
 
 	"github.com/dev-zeph/trojan/internal/graph"
@@ -107,6 +109,27 @@ type NodeView struct {
 	Client   bool   `json:"client_side,omitempty"`
 }
 
+// modelFile is the node's file as the model sees it: relative to the project.
+// The graph keeps absolute paths, which name the user's home folder; its keys
+// ("src/app.js#GET /u") already carry the project-relative path, so that is
+// used when it matches. Otherwise just the file name is shown. Security
+// history stores relative paths too, so the model's get_security_history
+// file filter now matches.
+func modelFile(n graph.Node) string {
+	f := filepath.ToSlash(n.File)
+	if f == "" || !filepath.IsAbs(n.File) {
+		return f
+	}
+	rel := n.Key
+	if i := strings.Index(rel, "#"); i >= 0 {
+		rel = rel[:i]
+	}
+	if rel != "" && !strings.HasPrefix(rel, "/") && strings.HasSuffix(f, "/"+rel) {
+		return rel
+	}
+	return path.Base(f)
+}
+
 func viewOf(n graph.Node) NodeView {
 	return NodeView{
 		ID:       n.ID,
@@ -115,9 +138,9 @@ func viewOf(n graph.Node) NodeView {
 		Client:   n.ClientSide,
 		Kind:     string(n.Kind),
 		Name:     n.Name,
-		File:     n.File,
+		File:     modelFile(n),
 		Line:     n.Line,
-		Location: fmt.Sprintf("%s:%d", n.File, n.Line),
+		Location: fmt.Sprintf("%s:%d", modelFile(n), n.Line),
 		Source:   n.Source,
 		PII:      n.PII,
 		SinkRule: n.SinkRule,

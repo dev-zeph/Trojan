@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/dev-zeph/trojan/internal/normalizer"
+	"github.com/dev-zeph/trojan/internal/outbound"
 )
 
 // triageURL is a var (not const) so tests can point TriageFindings at an
@@ -207,7 +208,7 @@ func triageBatch(findings []normalizer.Finding, accessToken string) (map[int]Ver
 	if err != nil {
 		return nil, err
 	}
-	body, err := json.Marshal(map[string]string{"encoded": base64.StdEncoding.EncodeToString(inner)})
+	body, err := json.Marshal(map[string]string{"encoded": base64.StdEncoding.EncodeToString(outbound.ScrubJSON(inner, ""))})
 	if err != nil {
 		return nil, err
 	}

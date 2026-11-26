@@ -969,7 +969,7 @@ func dastVerifyCmd() *cobra.Command {
 				userEmail = cfg.UserEmail
 			}
 			if accessToken == "" {
-				printDastLoginMessage(targetURL)
+				fmt.Print(verifyLoginMessage())
 				return
 			}
 
@@ -1958,12 +1958,19 @@ func humanizeInt(n int) string {
 	return string(out)
 }
 
-// dastLoginMessage is what trojan dast (classic or agentic) and trojan verify
-// print while signed out. Plain words and no em dash: it names a website test,
+// dastLoginMessage is what trojan dast (classic or agentic) prints while
+// signed out. Plain words and no em dash: it names a website test,
 // not one scan mode.
 func dastLoginMessage(targetURL string) string {
 	return "\n  Sign in to run a website test. Every account gets 500 free tokens a month.\n\n" +
 		"  Trojan tests " + targetURL + " and writes up what it finds.\n" +
+		"  Run trojan login, or sign in from the Trojan desktop app, then try again.\n\n"
+}
+
+// verifyLoginMessage is what trojan verify (domain ownership) prints while
+// signed out: its own first line, then the same sign-in steps as trojan dast.
+func verifyLoginMessage() string {
+	return "\n  Sign in to verify that you own this site. Every account gets 500 free tokens a month.\n\n" +
 		"  Run trojan login, or sign in from the Trojan desktop app, then try again.\n\n"
 }
 

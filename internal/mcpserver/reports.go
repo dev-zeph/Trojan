@@ -20,6 +20,7 @@ import (
 	"github.com/dev-zeph/trojan/internal/config"
 	"github.com/dev-zeph/trojan/internal/gitignore"
 	"github.com/dev-zeph/trojan/internal/normalizer"
+	"github.com/dev-zeph/trojan/internal/outbound"
 )
 
 // ── generate_report ──────────────────────────────────────────────────────────
@@ -43,7 +44,7 @@ func callEdge(fn string, payload any, out any) error {
 	if err != nil {
 		return err
 	}
-	body, _ := json.Marshal(map[string]string{"encoded": base64.StdEncoding.EncodeToString(inner)})
+	body, _ := json.Marshal(map[string]string{"encoded": base64.StdEncoding.EncodeToString(outbound.ScrubJSON(inner, ""))})
 	req, err := http.NewRequest(http.MethodPost, edgeBase+fn, bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -156,7 +157,10 @@ func securityReport(projectPath string, scan *normalizer.ScanResult) (*report, e
 		ComplianceSummary string `json:"compliance_summary"`
 	}
 	if err := callEdge("threat-lab", map[string]any{
-		"project_path": projectPath, "findings": nonNil(scan.Findings), "packages": nonNil(scan.Packages), "user_familiarity": familiarity(),
+		// The folder name only: threat-lab puts project_path in the model prompt
+		// ("Project: ..."), and an absolute path names the user's home folder.
+		"project_path": outbound.FolderName(projectPath), "findings": nonNil(outbound.Findings(projectPath, scan.Findings)),
+		"packages": nonNil(scan.Packages), "user_familiarity": familiarity(),
 	}, &r); err != nil {
 		return nil, err
 	}
@@ -241,7 +245,8 @@ func complianceReport(projectPath string, scan *normalizer.ScanResult) (*report,
 		Recommendations  []string `json:"recommendations"`
 	}
 	if err := callEdge("compliance-lab", map[string]any{
-		"project_path": projectPath,
+		// compliance-lab only uses the last path element (as the project name).
+		"project_path": outbound.FolderName(projectPath),
 		"licenses": map[string]any{"total_packages": len(scan.Packages), "copyleft": nonNil(copyleft), "weak_copyleft": nonNil(weak),
 			"unknown_count": unknown, "permissive_count": permissive},
 		"privacy":          privacy,
