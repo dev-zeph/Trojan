@@ -62,3 +62,31 @@ func TestExtendRun(t *testing.T) {
 		t.Fatalf("extendRun=%d want 6", got)
 	}
 }
+
+func TestDecodeShadowSlashEscapes(t *testing.T) {
+	src := `{"apiKey":\"` + `VALUE` + `\"}`
+	dec, _ := decodeShadow(src)
+	if !strings.Contains(dec, `{"apiKey":"VALUE"}`) && !strings.Contains(dec, `"apiKey":"VALUE"`) {
+		t.Fatalf("backslash-quote decode=%q", dec)
+	}
+	src = `api_key=\x22VALUE\x22`
+	dec, m := decodeShadow(src)
+	if !strings.Contains(dec, `api_key="VALUE"`) {
+		t.Fatalf(`\x22 decode=%q`, dec)
+	}
+	i := strings.Index(dec, "VALUE")
+	os, oe := mapDecodedSpan(m, i, i+len("VALUE"))
+	if src[os:oe] != "VALUE" {
+		t.Fatalf("mapped %q", src[os:oe])
+	}
+}
+
+func TestExtendRunUnbounded(t *testing.T) {
+	s := "abc" + strings.Repeat("Z", 20000) + " end"
+	if got := extendRun(s, 3, " \t", 0); got != 20003 {
+		t.Fatalf("unbounded extendRun=%d want 20003", got)
+	}
+	if got := extendRun(s, 3, " \t", 10); got != 13 {
+		t.Fatalf("capped extendRun=%d want 13", got)
+	}
+}

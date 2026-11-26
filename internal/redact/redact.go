@@ -50,61 +50,78 @@ type Secret struct {
 // value (0 = whole match). check, when set, rejects a candidate value that is
 // not secret-like (used by the generic rules so ordinary code is left alone).
 type detector struct {
-	typ   string
-	re    *regexp.Regexp
-	group int
-	check func(v string) bool
-	hints []string // cheap pre-filter: skip the regexp unless one appears (lower-case = case-insensitive)
-	stop  string   // if set, extend the match through all bytes not in this set
+	typ       string
+	re        *regexp.Regexp
+	group     int
+	nameGroup int               // if set, the capture must pass nameCheck or SensitiveParamName
+	nameCheck func(string) bool // optional; defaults to SensitiveParamName
+	check     func(v string) bool
+	hints     []string // cheap pre-filter: skip the regexp unless one appears (lower-case = case-insensitive)
+	stop      string   // if set, extend the match through all bytes not in this set
 }
 
-// maxSecretRun is the regexp and extend cap for a single secret value.
-// Detectors use a hard upper bound so the regex cannot backtrack forever;
-// extendRun then hides the rest of the same non-delimiter run.
-const maxSecretRun = 8192
+// Detection limits kept on purpose:
+//   - Values of 1 or 2 characters assigned to a secret name are not
+//     redacted: too many ordinary identifiers would collide.
+//   - A 3-character value is taken for password/pass/pwd and for
+//     secret-named query or assignment parameters when the value is
+//     not a plain word. Generic, YAML, and Bearer rules still want 4+.
+//   - Base64-wrapped keys are unwrapped one level when the blob is at
+//     least 20 characters and decodes to text that itself contains a
+//     detected secret. Nested or binary wrappers are left alone.
+//   - A letter immediately before a vendor prefix (for example xsk_live_)
+//     is still missed; a digit immediately before it (1sk_live_) is caught.
 
 // Provider formats first (most specific), generic assignment rules last. A
 // later detector never overrides an overlapping earlier match.
 var detectors = []detector{
 	{typ: "private_key", re: regexp.MustCompile(`-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----(?:[\s\\n]*(?:[A-Za-z0-9+/=]{8,}|[A-Za-z-]+: [^\n]*))+[\s\\n]*(?:-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----)?`), hints: []string{"PRIVATE KEY"}},
-	{typ: "aws_access_key", re: regexp.MustCompile(`(?:^|[^A-Za-z0-9])((?:AKIA|ASIA|ABIA|ACCA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|APKA)[A-Z0-9]{16})(?:[^A-Za-z0-9]|$)`), group: 1, hints: []string{"AKIA", "ASIA", "ABIA", "ACCA", "AGPA", "AIDA", "AROA", "AIPA", "ANPA", "ANVA", "APKA"}},
+	{typ: "aws_access_key", re: regexp.MustCompile(`(?:^|[^A-Za-z])((?:AKIA|ASIA|ABIA|ACCA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|APKA)[A-Z0-9]{16})(?:[^A-Za-z0-9]|$)`), group: 1, hints: []string{"AKIA", "ASIA", "ABIA", "ACCA", "AGPA", "AIDA", "AROA", "AIPA", "ANPA", "ANVA", "APKA"}},
 	{typ: "aws_secret_key", re: regexp.MustCompile(`(?i)aws[a-z0-9_.\-]{0,20}?(?:secret|sk)[a-z0-9_.\-]*["']?\s*(?:[:=]|=>)\s*["']?([A-Za-z0-9/+]{40})(?:[^A-Za-z0-9/+]|$)`), group: 1, hints: []string{"aws"}},
-	{typ: "github_fine_grained_pat", re: regexp.MustCompile(`(?:^|[^A-Za-z0-9])(github_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59})(?:[^A-Za-z0-9]|$)`), group: 1, hints: []string{"github_pat_"}},
-	{typ: "github_token", re: regexp.MustCompile(`(?:^|[^A-Za-z0-9])(gh[pousr]_[A-Za-z0-9]{36,251})(?:[^A-Za-z0-9]|$)`), group: 1, hints: []string{"ghp_", "gho_", "ghu_", "ghs_", "ghr_"}},
-	{typ: "npm_token", re: regexp.MustCompile(`(?:^|[^A-Za-z0-9])(npm_[A-Za-z0-9]{36})(?:[^A-Za-z0-9]|$)`), group: 1, hints: []string{"npm_"}},
-	{typ: "stripe_secret_key", re: regexp.MustCompile(`(?:^|[^A-Za-z0-9])(sk_(?:live|test)_[A-Za-z0-9]{10,247})(?:[^A-Za-z0-9]|$)`), group: 1, hints: []string{"sk_live_", "sk_test_"}},
-	{typ: "stripe_restricted_key", re: regexp.MustCompile(`(?:^|[^A-Za-z0-9])(rk_(?:live|test)_[A-Za-z0-9]{10,247})(?:[^A-Za-z0-9]|$)`), group: 1, hints: []string{"rk_live_", "rk_test_"}},
-	{typ: "stripe_webhook_secret", re: regexp.MustCompile(`(?:^|[^A-Za-z0-9])(whsec_[A-Za-z0-9]{24,})(?:[^A-Za-z0-9]|$)`), group: 1, hints: []string{"whsec_"}},
-	{typ: "slack_token", re: regexp.MustCompile(`(?:^|[^A-Za-z0-9])(xox[abposr]-[A-Za-z0-9-]{10,})(?:[^A-Za-z0-9]|$)`), group: 1, hints: []string{"xox"}},
+	{typ: "github_fine_grained_pat", re: regexp.MustCompile(`(?:^|[^A-Za-z])(github_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59})(?:[^A-Za-z0-9]|$)`), group: 1, hints: []string{"github_pat_"}},
+	{typ: "github_token", re: regexp.MustCompile(`(?:^|[^A-Za-z])(gh[pousr]_[A-Za-z0-9]{36,})(?:[^A-Za-z0-9]|$)`), group: 1, hints: []string{"ghp_", "gho_", "ghu_", "ghs_", "ghr_"}},
+	{typ: "npm_token", re: regexp.MustCompile(`(?:^|[^A-Za-z])(npm_[A-Za-z0-9]{36})(?:[^A-Za-z0-9]|$)`), group: 1, hints: []string{"npm_"}},
+	{typ: "stripe_secret_key", re: regexp.MustCompile(`(?:^|[^A-Za-z])(sk_(?:live|test)_[A-Za-z0-9]{10,})(?:[^A-Za-z0-9]|$)`), group: 1, hints: []string{"sk_live_", "sk_test_"}},
+	{typ: "stripe_restricted_key", re: regexp.MustCompile(`(?:^|[^A-Za-z])(rk_(?:live|test)_[A-Za-z0-9]{10,})(?:[^A-Za-z0-9]|$)`), group: 1, hints: []string{"rk_live_", "rk_test_"}},
+	{typ: "stripe_webhook_secret", re: regexp.MustCompile(`(?:^|[^A-Za-z])(whsec_[A-Za-z0-9]{24,})(?:[^A-Za-z0-9]|$)`), group: 1, hints: []string{"whsec_"}},
+	{typ: "slack_token", re: regexp.MustCompile(`(?:^|[^A-Za-z])(xox[abposr]-[A-Za-z0-9-]{10,})(?:[^A-Za-z0-9]|$)`), group: 1, hints: []string{"xox"}},
 	{typ: "slack_webhook", re: regexp.MustCompile(`hooks\.slack\.com/services/(T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]{16,})`), group: 1, hints: []string{"hooks.slack.com"}},
-	{typ: "google_api_key", re: regexp.MustCompile(`(?:^|[^A-Za-z0-9])(AIza[0-9A-Za-z_\-]{35})`), group: 1, hints: []string{"AIza"}},
-	{typ: "anthropic_api_key", re: regexp.MustCompile(`(?:^|[^A-Za-z0-9])(sk-ant-[A-Za-z0-9_\-]{20,})`), group: 1, hints: []string{"sk-ant-"}},
-	{typ: "openai_api_key", re: regexp.MustCompile(`(?:^|[^A-Za-z0-9])(sk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_\-]{20,})`), group: 1, hints: []string{"sk-"}},
-	{typ: "sendgrid_api_key", re: regexp.MustCompile(`(?:^|[^A-Za-z0-9])(SG\.[A-Za-z0-9_\-]{22}\.[A-Za-z0-9_\-]{43})(?:[^A-Za-z0-9]|$)`), group: 1, hints: []string{"SG."}},
-	{typ: "twilio_api_key", re: regexp.MustCompile(`(?:^|[^A-Za-z0-9])(SK[0-9a-f]{32})(?:[^A-Za-z0-9]|$)`), group: 1, hints: []string{"SK"}},
-	{typ: "jwt", re: regexp.MustCompile(`(?:^|[^A-Za-z0-9])(eyJ[A-Za-z0-9_\-]{5,}\.eyJ[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]*)`), group: 1, hints: []string{"eyJ"}},
+	{typ: "google_api_key", re: regexp.MustCompile(`(?:^|[^A-Za-z])(AIza[0-9A-Za-z_\-]{35})`), group: 1, hints: []string{"AIza"}},
+	{typ: "anthropic_api_key", re: regexp.MustCompile(`(?:^|[^A-Za-z])(sk-ant-[A-Za-z0-9_\-]{20,})`), group: 1, hints: []string{"sk-ant-"}},
+	{typ: "openai_api_key", re: regexp.MustCompile(`(?:^|[^A-Za-z])(sk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_\-]{20,})`), group: 1, hints: []string{"sk-"}},
+	{typ: "sendgrid_api_key", re: regexp.MustCompile(`(?:^|[^A-Za-z])(SG\.[A-Za-z0-9_\-]{22}\.[A-Za-z0-9_\-]{43})(?:[^A-Za-z0-9]|$)`), group: 1, hints: []string{"SG."}},
+	{typ: "twilio_api_key", re: regexp.MustCompile(`(?:^|[^A-Za-z])(SK[0-9a-f]{32})(?:[^A-Za-z0-9]|$)`), group: 1, hints: []string{"SK"}},
+	{typ: "jwt", re: regexp.MustCompile(`(?:^|[^A-Za-z])(eyJ[A-Za-z0-9_\-]{5,}\.eyJ[A-Za-z0-9_\-]{5,}\.[A-Za-z0-9_\-]*)`), group: 1, hints: []string{"eyJ"}},
 	// Username may be empty so redis://:password@host is caught.
-	{typ: "url_password", re: regexp.MustCompile(`(?:^|[^A-Za-z0-9])[a-zA-Z][a-zA-Z0-9+.\-]{1,20}://[^\s:/@"'<>]{0,64}:([^\s@/"'<>]{3,1000})@`), group: 1, check: notTemplateRef, hints: []string{"://"}, stop: " \t\r\n@/\"'<>"},
-	{typ: "password", re: regexp.MustCompile(`(?i)(?:^|[\s;])(?:-u|--user)\s+["']?[^:\s"']{0,64}:([^\s"']{3,1000})`), group: 1, check: secretNamedValueOK, hints: []string{"-u", "--user"}, stop: " \t\r\n\"'"},
-	{typ: "authorization_header", re: regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9-])(?:authorization|proxy-authorization)["']?\s*[:=]\s*["']?(?:(?:bearer|basic|token|apikey)\s+)?([A-Za-z0-9._~+/=\-]{8,1000})`), group: 1, check: notTemplateRef, hints: []string{"authorization"}, stop: " \t\r\n\"'<>"},
-	{typ: "http_header", re: regexp.MustCompile(`(?i)(?:^|[\s{,;'"\-])(?:x-api-key|api-key|x-auth-token|x-access-token|apikey|ocp-apim-subscription-key|[a-z][a-z0-9-]*subscription-key|[a-z][a-z0-9-]*-api-key)\s*[:=]\s*["']?([^\s"'\\<>]{4,1000})`), group: 1, check: notTemplateRef, hints: []string{"x-api-key", "api-key", "x-auth-token", "x-access-token", "apikey", "ocp-apim", "subscription-key"}, stop: " \t\r\n\"'\\<>"},
+	{typ: "url_password", re: regexp.MustCompile(`(?:^|[^A-Za-z])[a-zA-Z][a-zA-Z0-9+.\-]{1,20}://[^\s:/@"'<>]{0,64}:([^\s@/"'<>]{3,})@`), group: 1, check: notTemplateRef, hints: []string{"://"}, stop: " \t\r\n@/\"'<>"},
+	{typ: "password", re: regexp.MustCompile(`(?i)(?:^|[\s;])(?:-u|--user)\s+["']?[^:\s"']{0,64}:([^\s"']{3,})`), group: 1, check: secretNamedValueOK, hints: []string{"-u", "--user"}, stop: " \t\r\n\"'"},
+	{typ: "authorization_header", re: regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9-])(?:authorization|proxy-authorization)["']?\s*[:=]\s*["']?(?:(?:bearer|basic|token|apikey)\s+)?([A-Za-z0-9._~+/=\-]{8,})`), group: 1, check: notTemplateRef, hints: []string{"authorization"}, stop: " \t\r\n\"'<>"},
+	{typ: "http_header", re: regexp.MustCompile(`(?i)(?:^|[\s{,;'"\-])(?:x-api-key|api-key|x-auth-token|x-access-token|apikey|ocp-apim-subscription-key|[a-z][a-z0-9-]*subscription-key|[a-z][a-z0-9-]*-api-key)\s*[:=]\s*["']?([^\s"'\\<>]{4,})`), group: 1, check: notTemplateRef, hints: []string{"x-api-key", "api-key", "x-auth-token", "x-access-token", "apikey", "ocp-apim", "subscription-key"}, stop: " \t\r\n\"'\\<>"},
 	{typ: "cookie_header", re: regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9-])(?:cookie|set-cookie)["']?\s*[:=]\s*["']?([^\r\n]{8,})`), group: 1, check: cookieHeaderOK, hints: []string{"cookie"}},
 	// Cookie-like names only. Generic token=/jwt= in a URL or JWT_SECRET= must not steal this type.
-	{typ: "session_cookie", re: regexp.MustCompile(`(?i)(?:^|[\s;])(?:[a-z0-9_.-]*(?:session|sess|sid)|jsessionid|phpsessid)[a-z0-9_.-]*=([A-Za-z0-9%._~+/\-]{16,}={0,2})`), group: 1, check: looksRandom, hints: []string{"session", "sess", "sid", "jsessionid", "phpsessid"}, stop: " \t\r\n;\"'&<>"},
+	{typ: "session_cookie", re: regexp.MustCompile(`(?i)(?:^|[\s;])([A-Za-z][A-Za-z0-9_.-]*)=([A-Za-z0-9%._~+/\-]{16,}={0,2})`), group: 2, nameGroup: 1, nameCheck: isSessionCookieName, check: looksRandom, hints: []string{"=", "session", "sess", "sid", "cookie"}, stop: " \t\r\n;\"'&<>"},
 	// Query and fragment values of secret-named parameters, quoted or not.
-	{typ: "url_query", re: regexp.MustCompile(`(?i)[?&#](?:api[_-]?key|apikey|access[_-]?key|client[_-]?secret|private[_-]?token|access[_-]?token|refresh[_-]?token|id[_-]?token|x-amz-security-token|x-amz-credential|x-amz-signature|signature|password|passwd|secret|bearer|otp|token|jwt|session|auth|code|sig|pwd|key|pass)=([^&\s"'<>#]{4,1000})`), group: 1, check: urlQueryValueOK, hints: []string{"?", "&", "#"}, stop: " \t\r\n&\"'<>#"},
-	// /api_key/<value>/ and similar path segments.
-	{typ: "url_path", re: regexp.MustCompile(`(?i)(?:^|[/?])(?:api[_-]?key|apikey|access[_-]?key|access[_-]?token|client[_-]?secret|secret|password|bearer|token|auth|jwt)/([^/\s"'<>?]{4,1000})`), group: 1, check: urlQueryValueOK, hints: []string{"api_key", "apikey", "access_key", "access-key", "token", "bearer", "secret", "auth", "jwt", "password"}, stop: " \t\r\n/\"'<>?"},
+	// The name is captured and checked with SensitiveParamName so new
+	// stems (secret_key, sessionid, apiToken) are covered without a
+	// fixed list, and words like keyboard are not.
+	{typ: "url_query", re: regexp.MustCompile(`(?i)[?&#]([A-Za-z][A-Za-z0-9_.%-]{0,80})=([^&\s"'<>#]{3,})`), group: 2, nameGroup: 1, check: urlQueryValueOK, hints: []string{"?", "&", "#"}, stop: " \t\r\n&\"'<>#"},
 	// Secret-named keys with an unquoted value (password=hunter2, pass: 6DciK).
 	// "secret" is not included: SECRET= and SECRET_KEY= are generic_secret.
 	// No entropy minimum: weak passwords are the ones that matter most.
-	{typ: "password", re: regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_])(?:password|passwd|pwd|pass)(?:[_-][A-Za-z0-9_]+)?["']?\s*[:=]\s*["']?([^\s"'#]{4,1000})`), group: 1, check: secretNamedValueOK, hints: []string{"password", "passwd", "pwd", "pass"}, stop: " \t\r\n\"'#"},
+	{typ: "password", re: regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_])(?:password|passwd|pwd|pass)(?:[_-][A-Za-z0-9_]+)?["']?\s*[:=]\s*["']?([^\s"'#;]{3,})`), group: 1, check: secretNamedValueOK, hints: []string{"password", "passwd", "pwd", "pass"}, stop: " \t\r\n\"'#;"},
 	// Generic: a secret-named key assigned a quoted literal.
-	{typ: "generic_secret", re: regexp.MustCompile(`(?i)(?:api[_\-]?key|apikey|secret|token|passw(?:or)?d|pwd|access[_\-]?key|private[_\-]?key|client[_\-]?secret|auth[_\-]?key|credentials?|bearer)[a-z0-9_\-]*["']?\s*(?:[:=]|=>|:=)\s*["'` + "`" + `]([^"'` + "`" + `\s]{6,1000})["'` + "`" + `]`), group: 1, check: genericValueOK, hints: []string{"key", "secret", "token", "passw", "pwd", "credential", "bearer"}, stop: "\"'` \t\r\n"},
+	{typ: "generic_secret", re: regexp.MustCompile(`(?i)(?:api[_\-]?key|apikey|secret|token|passw(?:or)?d|pwd|access[_\-]?key|private[_\-]?key|client[_\-]?secret|auth[_\-]?key|credentials?|bearer)[a-z0-9_\-]*["']?\s*(?:[:=]|=>|:=)\s*["'` + "`" + `]([^"'` + "`" + `\s]{6,})["'` + "`" + `]`), group: 1, check: genericValueOK, hints: []string{"key", "secret", "token", "passw", "pwd", "credential", "bearer"}, stop: "\"'` \t\r\n"},
 	// Generic: .env / shell style uppercase NAME=value (unquoted).
-	{typ: "generic_secret", re: regexp.MustCompile(`(?m)^\s*(?:export\s+)?[A-Z0-9_]*(?:KEY|SECRET|TOKEN|PASSWORD|PASSWD|PASS|PWD|CREDENTIALS?)[A-Z0-9_]*\s*=\s*([^\s"'#]{6,1000})`), group: 1, check: genericValueOK, hints: []string{"key", "secret", "token", "pass", "pwd", "credential"}, stop: " \t\r\n\"'#"},
+	{typ: "generic_secret", re: regexp.MustCompile(`(?im)^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^\s"'#]{6,})`), group: 2, nameGroup: 1, check: genericValueOK, hints: []string{"="}, stop: " \t\r\n\"'#"},
+	// Fallback literals: process.env.X || "value" and the ?? form.
+	{typ: "generic_secret", re: regexp.MustCompile(`(?i)process\.env\.[A-Za-z_][A-Za-z0-9_]*\s*(?:\?\?|\|\|)\s*["'` + "`" + `]([^"'` + "`" + `\s]{4,})["'` + "`" + `]`), group: 1, check: genericValueOK, hints: []string{"process.env"}, stop: "\"'` \t\r\n"},
+	// Bearer tokens in backtick literals or without an Authorization: prefix.
+	{typ: "authorization_header", re: regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9])(?:bearer)\s+([A-Za-z0-9._~+/=\-]{4,})`), group: 1, check: urlQueryValueOK, hints: []string{"bearer"}, stop: " \t\r\n\"'`<>"},
 	// Generic: YAML style secret-named key with an unquoted scalar.
-	{typ: "generic_secret", re: regexp.MustCompile(`(?im)^\s*[a-z0-9_\-]*(?:password|passwd|secret|token|api[_\-]?key|private[_\-]?key|client[_\-]?secret)[a-z0-9_\-]*:[ \t]+([^\s"'#{}\[\]]{8,1000})[ \t]*$`), group: 1, check: func(v string) bool { return genericValueOK(v) && looksRandom(v) }, hints: []string{"key", "secret", "token", "passw", "pwd", "credential", "bearer"}, stop: " \t\r\n\"'#{}[]"},
+	{typ: "generic_secret", re: regexp.MustCompile(`(?im)^\s*[a-z0-9_\-]*(?:password|passwd|secret|token|api[_\-]?key|private[_\-]?key|client[_\-]?secret)[a-z0-9_\-]*:[ \t]+([^\s"'#{}\[\]]{8,})[ \t]*$`), group: 1, check: func(v string) bool { return genericValueOK(v) && looksRandom(v) }, hints: []string{"key", "secret", "token", "passw", "pwd", "credential", "bearer"}, stop: " \t\r\n\"'#{}[]"},
+	// Unquoted or mid-line assignments to a secret-named key (auth_token=...,
+	// signing_key=..., Api_Key= when not already caught by the env rule).
+	{typ: "generic_secret", re: regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_])([A-Za-z][A-Za-z0-9_.-]{0,80})["']?\s*[:=]\s*["'` + "`" + `]?([^\s"'#;]{3,})`), group: 2, nameGroup: 1, check: urlQueryValueOK, hints: []string{"=", ":"}, stop: " \t\r\n\"'#;"},
 }
 
 // Find returns every secret detected in text, sorted by position, with no
@@ -136,8 +153,22 @@ func findSecrets(text string, alsoDecoded bool) []Secret {
 			if s < 0 || e <= s {
 				continue
 			}
+			if d.nameGroup > 0 {
+				ns, ne := m[2*d.nameGroup], m[2*d.nameGroup+1]
+				if ns < 0 {
+					continue
+				}
+				name := text[ns:ne]
+				ok := SensitiveParamName(name)
+				if d.nameCheck != nil {
+					ok = d.nameCheck(name)
+				}
+				if !ok {
+					continue
+				}
+			}
 			if d.stop != "" {
-				e = extendRun(text, e, d.stop, maxSecretRun)
+				e = extendRun(text, e, d.stop, 0)
 			}
 			v := text[s:e]
 			if d.check != nil && !d.check(v) {
@@ -149,19 +180,25 @@ func findSecrets(text string, alsoDecoded bool) []Secret {
 			out = append(out, Secret{Start: s, End: e, Value: v, Type: d.typ})
 		}
 	}
+	for _, sec := range findNamedPathValues(text, taken) {
+		out = append(out, sec)
+	}
 	if alsoDecoded {
 		dec, toOrig := decodeShadowN(text, 2)
 		if dec != "" && dec != text {
-			for _, s := range findSecrets(dec, false) {
-				os, oe := mapDecodedSpan(toOrig, s.Start, s.End)
+			for _, sec := range findSecrets(dec, false) {
+				os, oe := mapDecodedSpan(toOrig, sec.Start, sec.End)
 				if os < 0 || oe <= os || oe > len(text) {
 					continue
 				}
 				if taken(os, oe) {
 					continue
 				}
-				out = append(out, Secret{Start: os, End: oe, Value: s.Value, Type: s.Type})
+				out = append(out, Secret{Start: os, End: oe, Value: sec.Value, Type: sec.Type})
 			}
+		}
+		for _, sec := range findBase64Wrapped(text, taken) {
+			out = append(out, sec)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Start < out[j].Start })
@@ -219,21 +256,23 @@ func looksRandom(v string) bool {
 	return Entropy(v) >= 3.0
 }
 
-// secretNamedValueOK accepts any non-placeholder, non-code value of 4+ chars
-// assigned to password/pass/pwd/secret, including weak passwords.
+// secretNamedValueOK accepts any non-placeholder, non-code value of 3+ chars
+// assigned to password/pass/pwd, including weak passwords. 1 and 2 character
+// leftovers are left alone; see the package limits comment.
 func secretNamedValueOK(v string) bool {
-	if len(v) < 4 || !notTemplateRef(v) || reCodeish.MatchString(v) {
+	if len(v) < 3 || !notTemplateRef(v) || reCodeish.MatchString(v) {
 		return false
 	}
 	// UI labels and type names ("Password", "string") are not secrets.
 	return !reWordy.MatchString(v)
 }
 
-// urlQueryValueOK redacts query/fragment values of secret-named params.
+// urlQueryValueOK redacts query/fragment and secret-named assignment values.
 // Short plain words (code=home, key=id) are left alone; everything else of
-// 4+ chars, including weak tokens, is taken.
+// 3+ chars, including weak tokens, is taken. 1 and 2 character leftovers
+// are left alone; see the package limits comment.
 func urlQueryValueOK(v string) bool {
-	if len(v) < 4 || !notTemplateRef(v) {
+	if len(v) < 3 || !notTemplateRef(v) || reCodeish.MatchString(v) {
 		return false
 	}
 	return !reWordy.MatchString(v)

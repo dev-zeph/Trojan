@@ -387,6 +387,11 @@ func ScanOnce(projectPath string) (*normalizer.ScanResult, error) {
 	return res, err
 }
 
+// skippedLocalEnvNote is appended when the project has a local-only .env
+// (or .env.*) that the secrets scan does not report. The skip is
+// deliberate; this sentence is how the summary says so.
+const skippedLocalEnvNote = "Skipped .env (local secrets file). Trojan checks .env.example and committed files."
+
 // ScanSummary is the scan-once completion line: a count, where it was saved,
 // and the next MCP step.
 func ScanSummary(res *normalizer.ScanResult, savedPath string) string {
@@ -405,13 +410,17 @@ func ScanSummary(res *normalizer.ScanResult, savedPath string) string {
 	} else if savedPath != "" {
 		rel = filepath.ToSlash(filepath.Join(".trojan", "scans", filepath.Base(savedPath)))
 	}
+	note := ""
+	if res.ProjectPath != "" && scanners.ProjectSkippedLocalEnv(res.ProjectPath) {
+		note = " " + skippedLocalEnvNote
+	}
 	if n == 0 {
-		return fmt.Sprintf("Scan done: no findings. Saved to %s.", rel)
+		return fmt.Sprintf("Scan done: no findings. Saved to %s.", rel) + note
 	}
 	if counts == "" {
-		return fmt.Sprintf("Scan done: %d %s. Saved to %s. Ask your AI editor to run get_findings.", n, word, rel)
+		return fmt.Sprintf("Scan done: %d %s. Saved to %s. Ask your AI editor to run get_findings.", n, word, rel) + note
 	}
-	return fmt.Sprintf("Scan done: %d %s (%s). Saved to %s. Ask your AI editor to run get_findings.", n, word, counts, rel)
+	return fmt.Sprintf("Scan done: %d %s (%s). Saved to %s. Ask your AI editor to run get_findings.", n, word, counts, rel) + note
 }
 
 func severityCounts(findings []normalizer.Finding) string {

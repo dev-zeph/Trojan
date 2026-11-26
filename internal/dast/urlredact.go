@@ -7,22 +7,9 @@ import (
 	"github.com/dev-zeph/trojan/internal/redact"
 )
 
-// Sensitive query and fragment parameter names. Values are masked; names and
-// the rest of the URL shape are kept so template generation still sees the
-// route and which parameters exist.
-var sensitiveQueryNames = map[string]bool{
-	"api_key": true, "api-key": true, "apikey": true, "key": true,
-	"secret": true, "client_secret": true, "client-secret": true,
-	"password": true, "passwd": true, "pwd": true, "pass": true,
-	"sig": true, "signature": true,
-	"x-amz-signature": true, "x-amz-credential": true, "x-amz-security-token": true,
-	"code": true, "private_token": true, "private-token": true,
-	"token": true, "access_token": true, "access-token": true,
-	"refresh_token": true, "refresh-token": true, "id_token": true, "id-token": true,
-	"jwt": true, "session": true, "auth": true,
-	"access_key": true, "access-key": true, "accesskey": true,
-	"bearer": true, "otp": true,
-}
+// Query, fragment and path names are classified by redact.SensitiveParamName
+// (token/secret/key/sid/session/auth and related stems) so values are masked
+// without a fixed list. Names and the rest of the URL shape stay visible.
 
 // RedactTemplateRequest returns a copy of req whose TargetURL and every
 // Endpoint.URL have been rewritten for the dast-templates call: param names
@@ -141,6 +128,7 @@ func redactPath(path string) string {
 	leading := strings.HasPrefix(path, "/")
 	trailing := strings.HasSuffix(path, "/") && len(path) > 1
 	parts := strings.Split(path, "/")
+	orig := append([]string(nil), parts...)
 	for i, seg := range parts {
 		if seg == "" {
 			continue
@@ -153,9 +141,15 @@ func redactPath(path string) string {
 			parts[i] = maskValue(decoded, hits[0].Type)
 			continue
 		}
-		if i > 0 && isSensitivePathKey(parts[i-1]) && len(decoded) >= 4 {
-			parts[i] = maskValue(decoded, "url_path")
-			continue
+		if i > 0 {
+			prev := orig[i-1]
+			if prevDec, err := url.PathUnescape(prev); err == nil {
+				prev = prevDec
+			}
+			if isSensitivePathKey(prev) && len(decoded) >= 4 {
+				parts[i] = maskValue(decoded, "url_path")
+				continue
+			}
 		}
 		if shouldMaskSegment(decoded) {
 			parts[i] = maskValue(decoded, "url_path")
@@ -212,8 +206,7 @@ func redactQueryPair(part string) string {
 	if err != nil {
 		decoded = val
 	}
-	name := strings.ToLower(key)
-	sensitive := sensitiveQueryNames[name]
+	sensitive := redact.SensitiveParamName(key)
 	if !sensitive {
 		if hits := redact.Find(decoded); len(hits) > 0 {
 			return key + "=" + maskValue(decoded, hits[0].Type)
@@ -281,12 +274,5 @@ func maskValue(v, typ string) string {
 }
 
 func isSensitivePathKey(seg string) bool {
-	n := strings.ToLower(seg)
-	switch n {
-	case "api_key", "api-key", "apikey", "access_key", "access-key", "accesskey",
-		"access_token", "access-token", "token", "secret", "auth", "jwt",
-		"password", "bearer", "key", "otp":
-		return true
-	}
-	return false
+	return redact.SensitiveParamName(seg)
 }

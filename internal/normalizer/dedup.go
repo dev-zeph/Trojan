@@ -1,8 +1,11 @@
 package normalizer
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 // dedupLineSpan is how many lines apart two findings on the same file and issue
@@ -24,6 +27,9 @@ const dedupLineSpan = 2
 //   - Two findings merge only when they share the same normalized file AND the
 //     same issue class (primary CWE if present, else coarse Category) AND their
 //     lines fall within dedupLineSpan of each other.
+//   - Secret findings (Category "secrets" or the gitleaks scanner) also require
+//     the same RuleID and the same value hash. Adjacent different keys in one
+//     file (Stripe on line 1, GitHub on line 2) must stay two findings.
 //
 // The surviving representative is the highest-severity finding in the cluster
 // (ties broken by input order for determinism). Its AgreedScanners records every
@@ -48,7 +54,7 @@ func Dedup(findings []Finding) []Finding {
 		groups[k] = append(groups[k], i)
 	}
 
-	absorbed := make(map[int]bool)  // indices merged away into a representative
+	absorbed := make(map[int]bool)   // indices merged away into a representative
 	merged := make(map[int][]string) // rep index -> unioned scanner set
 
 	for _, idxs := range groups {
@@ -114,7 +120,28 @@ func dedupKey(f Finding) string {
 	if len(f.CWEIDs) > 0 {
 		class = f.CWEIDs[0]
 	}
-	return normPath(f.FilePath) + "\x00" + class
+	key := normPath(f.FilePath) + "\x00" + class
+	if isSecretFinding(f) {
+		key += "\x00" + f.RuleID + "\x00" + secretValueHash(f.CodeSnippet)
+	}
+	return key
+}
+
+// isSecretFinding reports whether f is a secret (gitleaks or the secrets
+// category). Those are deduped only when rule and value also match, so
+// two different keys on consecutive lines are not merged.
+func isSecretFinding(f Finding) bool {
+	if strings.EqualFold(f.Scanner, "gitleaks") {
+		return true
+	}
+	return strings.EqualFold(f.Category, "secrets")
+}
+
+// secretValueHash is a stable digest of the local secret value (the
+// CodeSnippet for gitleaks findings). It is used only as a grouping key.
+func secretValueHash(v string) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(v)))
+	return hex.EncodeToString(sum[:])
 }
 
 func normPath(p string) string {

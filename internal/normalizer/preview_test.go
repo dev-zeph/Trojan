@@ -8,7 +8,7 @@ import (
 
 func TestCodePreviewOrPlaceholder(t *testing.T) {
 	got := CodePreviewOrPlaceholder("requires login", "src/config.ts", 2)
-	want := "**No code preview for this finding.** Semgrep doesn't share the matching line. When Trojan sends this finding to its AI, the code around it goes through the same secret swap."
+	want := "Code preview not available for this finding. See src/config.ts line 2."
 	if got != want {
 		t.Fatalf("got %q", got)
 	}

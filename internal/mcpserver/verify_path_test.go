@@ -182,3 +182,16 @@ func TestScanSummaryNoFindings(t *testing.T) {
 		t.Fatalf("\n got: %s\nwant: %s", got, want)
 	}
 }
+
+func TestScanSummarySkippedEnv(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("X=1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res := &normalizer.ScanResult{ProjectPath: dir}
+	got := ScanSummary(res, dir+"/.trojan/scans/empty.json")
+	want := "Scan done: no findings. Saved to .trojan/scans/empty.json. Skipped .env (local secrets file). Trojan checks .env.example and committed files."
+	if got != want {
+		t.Fatalf("\n got: %s\nwant: %s", got, want)
+	}
+}

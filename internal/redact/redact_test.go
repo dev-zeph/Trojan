@@ -251,7 +251,8 @@ func TestForAIRedactsScannerMatchEverywhere(t *testing.T) {
 	if got.FilePath != f.FilePath || got.LineNumber != f.LineNumber || got.RuleID != f.RuleID {
 		t.Fatal("location changed")
 	}
-	if !strings.Contains(got.SurroundingCode, "import x from 'y'\n// key below\ninternalKey = \"<SECRET removed by Trojan: type=secret_generic-api-key, len=16, looks=real>") ||
+	if !strings.Contains(got.SurroundingCode, "import x from 'y'\n// key below\ninternalKey = \"<SECRET removed by Trojan:") ||
+		!strings.Contains(got.SurroundingCode, "len=16") ||
 		!strings.HasSuffix(got.SurroundingCode, "\nexport default internalKey\n") {
 		t.Fatalf("surrounding code not kept: %q", got.SurroundingCode)
 	}

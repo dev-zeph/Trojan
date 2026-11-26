@@ -109,3 +109,31 @@ func TestRedactTemplateRequestAndCacheKey(t *testing.T) {
 		t.Fatal("query param names should be unchanged")
 	}
 }
+
+func TestRedactURLRound5ParamNames(t *testing.T) {
+	val := "6Yzk" + "Qp2n" + "R8wL" + "t4xH" + "b9cV" + "m1sF"
+	names := []string{
+		"secret_key", "auth_token", "sid", "session_token", "sessionid",
+		"oauth_token", "oauth_verifier", "jwt_token", "apiToken",
+		"app_secret", "signing_key", "private_key", "ticket",
+	}
+	for _, name := range names {
+		in := "https://x.com/a?" + name + "=" + val
+		got := RedactURL(in)
+		if strings.Contains(got, val) {
+			t.Errorf("%s leaked: %s", name, got)
+		}
+		if !strings.Contains(got, name+"=") {
+			t.Errorf("%s name lost: %s", name, got)
+		}
+	}
+	// Under 16 characters so shouldMaskSegment does not fire; only a
+	// sensitive name should redact these.
+	short := "6Yzk" + "Qp2n"
+	for _, name := range []string{"keyboard", "monkey", "author", "sidebar", "designation"} {
+		in := "https://x.com/a?" + name + "=" + short
+		if got := RedactURL(in); got != in {
+			t.Errorf("harmless name %s rewritten: %s", name, got)
+		}
+	}
+}

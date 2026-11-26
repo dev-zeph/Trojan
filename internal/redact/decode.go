@@ -7,7 +7,7 @@ import (
 )
 
 // decodeShadow returns a copy of s with URL percent-escapes, JSON \uXXXX
-// escapes, and a small set of HTML entities unescaped, plus a map from each
+// and \xNN / backslash-quote escapes, and a small set of HTML entities unescaped, plus a map from each
 // decoded byte offset (and one past the end) to the corresponding original
 // byte offset. The original string is not modified; callers use the map to
 // place masks back on s.
@@ -38,6 +38,21 @@ func decodeShadow(s string) (string, []int) {
 				}
 				b.Write(buf[:n])
 				i += 6
+				continue
+			}
+		}
+		if s[i] == '\\' && i+3 < len(s) && (s[i+1] == 'x' || s[i+1] == 'X') && isHexByte(s[i+2]) && isHexByte(s[i+3]) {
+			toOrig = append(toOrig, i)
+			b.WriteByte(unhexByte(s[i+2], s[i+3]))
+			i += 4
+			continue
+		}
+		if s[i] == '\\' && i+1 < len(s) {
+			n := s[i+1]
+			if n == '"' || n == '\'' || n == '\\' || n == '/' {
+				toOrig = append(toOrig, i)
+				b.WriteByte(n)
+				i += 2
 				continue
 			}
 		}
@@ -173,18 +188,16 @@ func mapDecodedSpan(toOrig []int, start, end int) (int, int) {
 }
 
 // extendRun grows end through consecutive bytes that are not in stop.
-// A cap keeps a runaway run from hanging the process; callers still mask
-// the whole accepted run.
+// A cap of 0 or less means "to the next delimiter or the end of the
+// string": redaction must be length-independent, and a delimiter set
+// already keeps the walk linear.
 func extendRun(text string, end int, stop string, cap int) int {
 	if stop == "" || end >= len(text) {
 		return end
 	}
-	if cap <= 0 {
-		cap = maxSecretRun
-	}
-	limit := end + cap
-	if limit > len(text) {
-		limit = len(text)
+	limit := len(text)
+	if cap > 0 && end+cap < limit {
+		limit = end + cap
 	}
 	for end < limit {
 		c := text[end]

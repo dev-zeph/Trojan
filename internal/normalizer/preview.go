@@ -3,14 +3,16 @@ package normalizer
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
 // CodePreviewOrPlaceholder replaces Semgrep's "requires login" snippet, which
-// inside Trojan reads as if Trojan itself needs a sign-in, with a clear note.
+// inside Trojan reads as if Trojan itself needs a sign-in, with a plain-text
+// note. The markdown form must not land in the AI or upload code_snippet.
 func CodePreviewOrPlaceholder(snippet, file string, line int) string {
 	if strings.EqualFold(strings.TrimSpace(snippet), "requires login") {
-		return "**No code preview for this finding.** Semgrep doesn't share the matching line. When Trojan sends this finding to its AI, the code around it goes through the same secret swap."
+		return "Code preview not available for this finding. See " + file + " line " + strconv.Itoa(line) + "."
 	}
 	return snippet
 }

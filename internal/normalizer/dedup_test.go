@@ -106,3 +106,53 @@ func TestDedupEmptyAndSingle(t *testing.T) {
 		t.Errorf("single finding: got %+v, want AgreedScanners=[semgrep]", got)
 	}
 }
+
+func TestDedupSecretsRequireRuleAndValue(t *testing.T) {
+	stripe := "sk_" + "live_" + "DedupStripeKeyValue001"
+	github := "gh" + "p_" + "DedupGithubKeyValue00000000000000001"
+	in := []Finding{
+		{ID: "gitleaks-0", Scanner: "gitleaks", Category: "secrets", Severity: SeverityHigh, FilePath: "config.ts", LineNumber: 1, RuleID: "stripe-access-token", CodeSnippet: stripe},
+		{ID: "gitleaks-1", Scanner: "gitleaks", Category: "secrets", Severity: SeverityHigh, FilePath: "config.ts", LineNumber: 2, RuleID: "github-pat", CodeSnippet: github},
+	}
+	got := Dedup(in)
+	if len(got) != 2 {
+		t.Fatalf("Stripe+GitHub on consecutive lines: got %d findings, want 2", len(got))
+	}
+
+	var keys []Finding
+	for i := 1; i <= 10; i++ {
+		keys = append(keys, Finding{
+			ID: "gitleaks-" + itoa(i), Scanner: "gitleaks", Category: "secrets",
+			Severity: SeverityHigh, FilePath: "config.ts", LineNumber: i,
+			RuleID: "generic-api-key", CodeSnippet: "keyval" + itoa(i) + "Zx9Q",
+		})
+	}
+	got = Dedup(keys)
+	if len(got) != 10 {
+		t.Fatalf("10 consecutive keys: got %d findings, want 10", len(got))
+	}
+
+	// Same rule and same value within the span still merge.
+	dup := []Finding{
+		{ID: "gitleaks-0", Scanner: "gitleaks", Category: "secrets", Severity: SeverityHigh, FilePath: "config.ts", LineNumber: 1, RuleID: "stripe-access-token", CodeSnippet: stripe},
+		{ID: "gitleaks-1", Scanner: "gitleaks", Category: "secrets", Severity: SeverityHigh, FilePath: "config.ts", LineNumber: 2, RuleID: "stripe-access-token", CodeSnippet: stripe},
+	}
+	got = Dedup(dup)
+	if len(got) != 1 {
+		t.Fatalf("same secret two lines apart should merge, got %d", len(got))
+	}
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var b [12]byte
+	i := len(b)
+	for n > 0 {
+		i--
+		b[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(b[i:])
+}

@@ -245,7 +245,7 @@ func TestGetFindingReplacesSemgrepLoginSnippet(t *testing.T) {
 	if strings.Contains(out, `"requires login"`) {
 		t.Fatalf("semgrep placeholder left in place: %s", out)
 	}
-	if !strings.Contains(out, "No code preview for this finding") {
+	if !strings.Contains(out, "Code preview not available for this finding") {
 		t.Fatalf("expected preview placeholder: %s", out)
 	}
 }
