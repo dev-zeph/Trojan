@@ -70,6 +70,49 @@ func (v *Vault) Redact(text string) string {
 	})
 }
 
+// Lookup returns the raw value behind a ref, locally.
+func (v *Vault) Lookup(ref string) (string, bool) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	val, ok := v.byRef[strings.TrimSpace(ref)]
+	return val, ok
+}
+
+// RefOf returns the existing ref for a raw value, if any.
+func (v *Vault) RefOf(value string) (string, bool) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	r, ok := v.byValue[value]
+	return r, ok
+}
+
+// Remember stores a value produced locally (e.g. a forged JWT) under a new or
+// existing ref, makes sure it is redacted wherever it later appears (a server
+// echoing it back), and returns the ref and the label the model may see.
+func (v *Vault) Remember(typ, value string) (ref, label string) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	ref = v.refFor(value)
+	v.finder.Known(typ, value)
+	v.knownGen++
+	return ref, Descriptor(Secret{Value: value, Type: typ}, "", ref)
+}
+
+// ParseRef accepts "S3", "ref=S3" or a whole label "<SECRET: ref=S3, …>".
+func ParseRef(s string) string {
+	s = strings.TrimSpace(s)
+	if m := reDescriptorRef.FindStringSubmatch(s); m != nil {
+		return m[1]
+	}
+	s = strings.TrimPrefix(s, "ref=")
+	if reBareRef.MatchString(s) {
+		return s
+	}
+	return ""
+}
+
+var reBareRef = regexp.MustCompile(`^S\d+$`)
+
 var reDescriptorRef = regexp.MustCompile(`<SECRET:[^>]*?\bref=(S\d+)\b[^>]*>`)
 
 // Restore maps descriptors (anything of the form <SECRET: … ref=Sn …>) back

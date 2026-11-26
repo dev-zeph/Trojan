@@ -28,6 +28,10 @@ const (
 	toolRememberFact  = "remember_fact"
 	toolDiffResponses = "diff_responses"
 	toolFinish        = "finish"
+	// toolJWTMutate forges a JWT locally from a vault ref (jwt_tools.go). The
+	// edge function must declare it (see docs in secret-redaction notes) before
+	// the model can call it; older edge functions simply never offer it.
+	toolJWTMutate = "jwt_mutate"
 )
 
 // EventType classifies a progress event streamed during a run (§10.2 live view).
@@ -432,6 +436,15 @@ func executeTool(ctx context.Context, tb *Toolbox, b blockPeek, step int, emit f
 		}
 		emit(Event{Type: EventToolResult, Step: step, Tool: toolDiffResponses, Detail: diffDetail(res)})
 		return marshalResult(res), false, false
+
+	case toolJWTMutate:
+		out, isErr := tb.JWTMutate(b.Input)
+		detail := "jwt_mutate: " + out
+		if len(detail) > 200 {
+			detail = detail[:200] + "…"
+		}
+		emit(Event{Type: EventToolResult, Step: step, Tool: toolJWTMutate, Detail: detail})
+		return out, isErr, false
 
 	case toolFinish:
 		var f struct {

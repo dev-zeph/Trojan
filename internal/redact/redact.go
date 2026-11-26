@@ -345,6 +345,11 @@ var reProviderPrefix = regexp.MustCompile(`^(?:(?:sk|rk)_(?:live|test)_|gh[pousr
 
 func providerPrefix(v string) string { return reProviderPrefix.FindString(v) }
 
+// SafePrefixFor returns the public prefix a descriptor would show for a secret
+// (the provider prefix when there is one, else a few leading chars). Exported
+// so the preview/MCP layer can display it without re-deriving it.
+func SafePrefixFor(s Secret) string { return visiblePrefix(s.Value, s.Type) }
+
 func safePrefix(v string, n int) string {
 	if len(v) < n {
 		return ""

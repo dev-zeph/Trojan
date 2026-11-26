@@ -157,6 +157,15 @@ func newServer(project projectFunc, perRequest bool, opts ...server.ServerOption
 
 	// ── Overviews ──
 	s.AddTool(
+		tool("preview_redaction",
+			mcp.WithDescription(`Show exactly how Trojan redacts secrets before anything leaves this machine. Pass a finding "id" (from get_findings) or raw "text". Returns three views: "local" (the full value, stored only here), "ai" (the <SECRET: …> descriptor actually sent to the AI models), and "upload" (the prefix…last4 mask used in an uploaded report), plus the local classification of each secret (type, length, prefix, entropy, class, checks). Read-only; makes no network call.`),
+			mcp.WithString("id", mcp.Description("A finding id from the latest scan to preview. Either this or text is required.")),
+			mcp.WithString("text", mcp.Description("Raw text to run through redaction (e.g. a sample config line). Either this or id is required.")),
+			mcp.WithString("view", mcp.Description(`Which views to return: "both" (default), "ai", "upload" or "local".`)),
+		),
+		handlePreviewRedaction(project),
+	)
+	s.AddTool(
 		tool("get_security_summary",
 			mcp.WithDescription("A short overview for answering \"is my app safe?\": open findings by severity, the most urgent ones, personal data the app handles, vulnerable packages, and whether Trojan's project context is set up."),
 		),
