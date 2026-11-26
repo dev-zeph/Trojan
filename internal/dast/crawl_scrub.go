@@ -28,7 +28,7 @@ import (
 const (
 	// ScrubVersion is mixed into the cache key, so a change to these rules
 	// never serves a template built under the old rules.
-	ScrubVersion = "crawl-scrub-v1"
+	ScrubVersion = "crawl-scrub-v2"
 
 	maxScrubEndpoints = 200
 	maxScrubNames     = 50

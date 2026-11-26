@@ -8,7 +8,7 @@
 // placeholders. Both sides are checked against
 // internal/dast/testdata/crawl_scrub_vectors.json.
 
-export const SCRUB_VERSION = 'crawl-scrub-v1'
+export const SCRUB_VERSION = 'crawl-scrub-v2'
 
 const MAX_ENDPOINTS = 200
 const MAX_NAMES = 50
