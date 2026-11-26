@@ -676,8 +676,10 @@ export default function App() {
     setLabError(null);
 
     try {
-      // Fetch current scan data from Go server
-      const scanRes = await fetch(`${currentServerUrl}/api/scans/latest`);
+      // Fetch current scan data from Go server. mask=secrets: this copy is
+      // uploaded, so secret values come back masked (prefix…last4); file, line
+      // and code are unchanged. The local UI fetches the unmasked scan.
+      const scanRes = await fetch(`${currentServerUrl}/api/scans/latest?mask=secrets`);
       if (!scanRes.ok) throw new Error("Could not fetch scan data");
       const scanData = await scanRes.json();
       // Findings the AI false-positive check hid are not real problems, so they
@@ -910,6 +912,12 @@ export default function App() {
       const scan = await scanRes.json();
       const findings: any[] = Array.isArray(scan?.findings) ? scan.findings : [];
       setDastFindings(findings);
+      // The uploaded copy masks secret values (prefix…last4) but keeps every
+      // location; the printed report above keeps the full local findings.
+      const maskedRes = await fetch(`${url}/api/scans/latest?mask=secrets`);
+      if (!maskedRes.ok) throw new Error("Could not load findings from the report.");
+      const masked = await maskedRes.json();
+      const uploadFindings: any[] = Array.isArray(masked?.findings) ? masked.findings : [];
 
       const token = await getFreshToken();
       if (!token) throw new Error("Sign in with Pro to generate a report.");
@@ -920,7 +928,7 @@ export default function App() {
         body: JSON.stringify({
           encoded: encodeBody({
             target: scan?.project_path ?? scanPath,
-            findings: findings.map((f) => ({
+            findings: uploadFindings.map((f) => ({
               id: f.ID,
               title: f.Title,
               severity: String(f.Severity ?? "").toLowerCase(),

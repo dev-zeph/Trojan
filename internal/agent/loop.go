@@ -129,6 +129,8 @@ func BuildSeed(in SeedInput, opts Options) string {
 
 // Run drives the loop: seed is the first user message (see BuildSeed).
 func Run(ctx context.Context, tb *Toolbox, tr Transport, seed string, opts Options) (*Result, error) {
+	// Source chunks and the seed are redacted before every turn (redact_transport.go).
+	tr = redactingTransport(tr)
 	res := &Result{}
 	messages := []Message{userTextMessage(seed)}
 	seen := map[string]bool{}

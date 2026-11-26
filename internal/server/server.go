@@ -11,6 +11,7 @@ import (
 
 	"github.com/dev-zeph/trojan/internal/config"
 	"github.com/dev-zeph/trojan/internal/normalizer"
+	"github.com/dev-zeph/trojan/internal/redact"
 )
 
 const licenseCacheTTL = 5 * time.Minute
@@ -227,6 +228,12 @@ func (s *Server) handleLatestScan(w http.ResponseWriter, r *http.Request) {
 	resp.ProjectPath = scan.ProjectPath
 	resp.CoverageNote = scan.CoverageNote
 	resp.Findings = withMemoryDecisions(scan.ProjectPath, scan.Findings)
+	// ?mask=secrets is the copy the desktop uploads for reports (threat-lab,
+	// pentest-report): secret values masked to prefix…last4, locations and code
+	// unchanged. The local UI fetches without it and shows the full value.
+	if r.URL.Query().Get("mask") == "secrets" {
+		resp.Findings = redact.ForUploadAll(resp.Findings)
+	}
 	resp.TriageNote = scan.TriageNote
 	resp.LockedCount = 0
 	resp.Packages = scan.Packages

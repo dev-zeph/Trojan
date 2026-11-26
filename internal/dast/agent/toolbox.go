@@ -14,6 +14,7 @@ import (
 	"github.com/dev-zeph/trojan/internal/dast"
 	"github.com/dev-zeph/trojan/internal/greybox"
 	"github.com/dev-zeph/trojan/internal/normalizer"
+	"github.com/dev-zeph/trojan/internal/redact"
 )
 
 // SourceReader gives the agent read access to the target's own source — the
@@ -212,6 +213,13 @@ type Toolbox struct {
 	probeSeq   int
 	probes     map[int]capturedProbe
 	probeOrder []int
+
+	// vault redacts secrets (captured tokens/cookies, keys in response bodies
+	// and source) from every user turn before it is sent to the model, and maps
+	// the descriptors the model hands back in tool inputs to the raw values,
+	// locally. In memory only, never checkpointed. See redact_transport.go.
+	vaultOnce sync.Once
+	vault     *redact.Vault
 }
 
 // NewToolbox wires the tools to a safety envelope, a run budget, and the crawl

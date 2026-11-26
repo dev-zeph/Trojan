@@ -20,6 +20,7 @@ import (
 	"github.com/dev-zeph/trojan/internal/config"
 	"github.com/dev-zeph/trojan/internal/gitignore"
 	"github.com/dev-zeph/trojan/internal/normalizer"
+	"github.com/dev-zeph/trojan/internal/redact"
 )
 
 // ── generate_report ──────────────────────────────────────────────────────────
@@ -156,7 +157,9 @@ func securityReport(projectPath string, scan *normalizer.ScanResult) (*report, e
 		ComplianceSummary string `json:"compliance_summary"`
 	}
 	if err := callEdge("threat-lab", map[string]any{
-		"project_path": projectPath, "findings": nonNil(scan.Findings), "packages": nonNil(scan.Packages), "user_familiarity": familiarity(),
+		// Uploaded reports keep exact locations and code but mask secret
+		// values to prefix…last4 (internal/redact).
+		"project_path": projectPath, "findings": nonNil(redact.ForUploadAll(scan.Findings)), "packages": nonNil(scan.Packages), "user_familiarity": familiarity(),
 	}, &r); err != nil {
 		return nil, err
 	}
@@ -291,7 +294,8 @@ func websiteReport(rawURL string) (*report, string, error) {
 	}
 	var findings []pf
 	var listed []string
-	for _, f := range scan.Findings {
+	// Mask secret values (prefix…last4) in the uploaded copy; locations stay exact.
+	for _, f := range redact.ForUploadAll(scan.Findings) {
 		findings = append(findings, pf{
 			ID: f.ID, Title: f.Title, Severity: strings.ToLower(string(f.Severity)), Verdict: f.Verdict,
 			MatchedAt: f.FilePath, Evidence: f.CodeSnippet, Rationale: f.RawMessage,

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/dev-zeph/trojan/internal/normalizer"
+	"github.com/dev-zeph/trojan/internal/redact"
 )
 
 // synthesizeURL is a var (not const) so tests can point it at an
@@ -132,21 +133,25 @@ func SynthesizeFinding(finding normalizer.Finding, accessToken string, familiari
 		return cached, nil
 	}
 
+	// Secret values never go on the wire: the copy sent for explanation carries
+	// descriptors instead (internal/redact). The local finding, cache key and
+	// UI keep the raw value.
+	wire := redact.ForAI(finding)
 	payload := map[string]any{
 		"ruleId":          synthesisRuleID(finding),
 		"scanner":         finding.Scanner,
 		"category":        finding.Category,
 		"severity":        string(finding.Severity),
-		"title":           finding.Title,
-		"rawMessage":      finding.RawMessage,
+		"title":           wire.Title,
+		"rawMessage":      wire.RawMessage,
 		"language":        finding.Language,
 		"filePath":        finding.FilePath,
-		"codeSnippet":     finding.CodeSnippet,
-		"surroundingCode": finding.SurroundingCode,
+		"codeSnippet":     wire.CodeSnippet,
+		"surroundingCode": wire.SurroundingCode,
 		"projectType":     finding.ProjectType,
 		"framework":       finding.Framework,
 		"familiarity":     familiarity,
-		"aboutYou":        aboutYou,
+		"aboutYou":        redact.Text(aboutYou),
 	}
 
 	body, err := json.Marshal(payload)

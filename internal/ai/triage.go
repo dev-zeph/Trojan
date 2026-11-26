@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/dev-zeph/trojan/internal/normalizer"
+	"github.com/dev-zeph/trojan/internal/redact"
 )
 
 // triageURL is a var (not const) so tests can point TriageFindings at an
@@ -142,9 +143,14 @@ func parseBatchKey(key string, n int) (int, bool) {
 }
 
 // buildTriageWire converts a batch to the wire format with positional keys.
+// Secret values in the evidence, message and context are replaced with
+// descriptors (internal/redact) first: the model judges the finding from the
+// descriptor's type/length/entropy/class and the unchanged surrounding code,
+// never from the raw value. File and line are kept exactly.
 func buildTriageWire(findings []normalizer.Finding) []triageFindingWire {
 	wire := make([]triageFindingWire, len(findings))
 	for i, f := range findings {
+		f = redact.ForAI(f)
 		evidence := f.CodeSnippet
 		rationale := ""
 		if evidence == "" {

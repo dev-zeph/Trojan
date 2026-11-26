@@ -143,6 +143,10 @@ const DefaultMaxRunTokens = 0
 
 // Run drives the agent loop against a prepared Toolbox and Transport.
 func Run(ctx context.Context, tb *Toolbox, tr Transport, opts RunOptions) (*RunResult, error) {
+	// Every turn goes out through the secret-redacting wrapper: captured
+	// tokens/cookies, keys in HTTP responses and in source the agent reads are
+	// replaced with descriptors before the model sees them (redact_transport.go).
+	tr = redactingTransport(tr, tb)
 	emit := opts.OnEvent
 	if emit == nil {
 		emit = func(Event) {}
@@ -308,9 +312,13 @@ func dispatchBlocks(ctx context.Context, tb *Toolbox, content []json.RawMessage,
 		switch b.Type {
 		case "text":
 			if b.Text != "" {
-				emit(Event{Type: EventText, Step: step, Detail: b.Text})
+				emit(Event{Type: EventText, Step: step, Detail: tb.Vault().Restore(b.Text)})
 			}
 		case "tool_use":
+			// The model only ever saw descriptors; map any it handed back
+			// (<SECRET: ref=S3 …>) to the raw value locally, so a probe can
+			// replay a leaked key and the local UI shows the real value.
+			b.Input = tb.Vault().RestoreJSON(b.Input)
 			emit(Event{Type: EventToolUse, Step: step, Tool: b.Name, Detail: string(b.Input)})
 			out, isErr, done := executeTool(ctx, tb, b, step, emit)
 			if done {

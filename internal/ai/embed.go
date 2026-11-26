@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"github.com/dev-zeph/trojan/internal/redact"
 )
 
 const embedBatchSize = 128 // must match MAX_TEXTS in the embed edge function
@@ -59,8 +61,15 @@ func embedBatch(texts []string, inputType EmbedInputType, accessToken string) ([
 	if inputType == "" {
 		inputType = EmbedDocument
 	}
+	// Index chunks and retrieval queries (escalate.go's retrievalQuery carries
+	// the finding's snippet) are redacted before they reach Voyage. Vectors are
+	// barely affected: the descriptor keeps the code shape around the value.
+	wire := make([]string, len(texts))
+	for i, t := range texts {
+		wire[i] = redact.Text(t)
+	}
 	inner, err := json.Marshal(map[string]any{
-		"texts":     texts,
+		"texts":     wire,
 		"inputType": string(inputType),
 	})
 	if err != nil {
