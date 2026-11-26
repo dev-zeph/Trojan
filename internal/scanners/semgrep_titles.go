@@ -78,6 +78,13 @@ var semgrepWordCase = map[string]string{
 	"stripe": "Stripe", "slack": "Slack", "google": "Google", "twilio": "Twilio", "mailgun": "Mailgun",
 	"docker": "Docker", "django": "Django", "flask": "Flask", "react": "React", "express": "Express",
 	"laravel": "Laravel", "wordpress": "WordPress", "wp": "WordPress", "nextjs": "Next.js", "supabase": "Supabase",
+	// Known terms with their own casing (R4-P3-4).
+	"pgp": "PGP", "gpg": "GPG", "httponly": "HttpOnly", "samesite": "SameSite",
+	"dangerouslysetinnerhtml": "dangerouslySetInnerHTML", "innerhtml": "innerHTML", "outerhtml": "outerHTML",
+	"localstorage": "localStorage", "sessionstorage": "sessionStorage", "postmessage": "postMessage",
+	"graphql": "GraphQL", "mongodb": "MongoDB", "mysql": "MySQL", "postgres": "Postgres", "postgresql": "PostgreSQL",
+	"openssl": "OpenSSL", "heroku": "Heroku", "firebase": "Firebase", "vercel": "Vercel", "jsonwebtoken": "jsonwebtoken",
+	"oauth2": "OAuth 2", "saml": "SAML", "ldap": "LDAP", "smtp": "SMTP", "ftp": "FTP", "redos": "ReDoS",
 }
 
 // semgrepWord spells one word of a rule id: a word that already has capitals
@@ -96,10 +103,15 @@ func semgrepWord(w string) string {
 	return w
 }
 
-// capitalizeFirst upper-cases the first letter, leaving "npm" and "jQuery"
-// style names alone.
+// capitalizeFirst upper-cases the first letter of a title. A first word in
+// camelCase ("jQuery", "dangerouslySetInnerHTML", "useHTTPS") or a name that
+// is always lower case ("npm", "jsonwebtoken") keeps its casing.
 func capitalizeFirst(s string) string {
-	if s == "" || strings.HasPrefix(s, "npm") || strings.HasPrefix(s, "jQuery") {
+	if s == "" {
+		return s
+	}
+	first := strings.SplitN(s, " ", 2)[0]
+	if first == "npm" || first == "jsonwebtoken" || strings.ToLower(first[1:]) != first[1:] {
 		return s
 	}
 	return strings.ToUpper(s[:1]) + s[1:]

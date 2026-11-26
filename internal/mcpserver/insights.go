@@ -60,7 +60,7 @@ func handleSecuritySummary(project projectFunc) server.ToolHandlerFunc {
 			if len(top) == 5 || severityRank[f.Severity] < severityRank[normalizer.SeverityHigh] {
 				break
 			}
-			top = append(top, urgent{f.ID, string(f.Severity), f.Title, fmt.Sprintf("%s:%d", f.FilePath, f.LineNumber), f.Simply})
+			top = append(top, urgent{f.ID, string(f.Severity), f.Title, fmt.Sprintf("%s:%d", displayPath(projectPath, f.FilePath), f.LineNumber), f.Simply})
 		}
 
 		var personalData []string
@@ -77,7 +77,7 @@ func handleSecuritySummary(project projectFunc) server.ToolHandlerFunc {
 		}
 
 		return jsonResult(map[string]any{
-			"project":               projectPath,
+			"project":               projectLabel(projectPath),
 			"scanned_at":            scan.Timestamp,
 			"open_by_severity":      bySeverity,
 			"most_urgent":           top,

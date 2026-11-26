@@ -68,7 +68,7 @@ func TestSetTemplateIDEdgeCases(t *testing.T) {
 			t.Errorf("%s: BOM kept", name)
 		}
 	}
-	for _, flow := range []string{"{id: alphapets-x}", "# c\n{id: alphapets-x, info: {name: y}}\n", "  {\"id\": \"alphapets-x\"}"} {
+	for _, flow := range []string{"--- {id: alphapets-x}", "---\t{id: alphapets-x, info: {}}\n", "# c\n--- {id: alphapets-x}\n", "{id: alphapets-x}", "# c\n{id: alphapets-x, info: {name: y}}\n", "  {\"id\": \"alphapets-x\"}"} {
 		if out, ok := SetTemplateID(flow, 1); ok {
 			t.Errorf("flow-style template accepted: %q -> %q", flow, out)
 		}
@@ -80,6 +80,9 @@ func TestIsFlowStyleTemplate(t *testing.T) {
 		"{id: x}":                   true,
 		"\n# comment\n---\n{id: x}": true,
 		"id: x\ninfo: {name: y}\n":  false,
+		"--- {id: x}":               true,
+		"--- # doc\nid: x\n":        false,
+		"---\nid: x\n":              false,
 		"":                          false,
 	}
 	for in, want := range cases {

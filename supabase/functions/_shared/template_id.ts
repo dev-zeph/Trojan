@@ -13,11 +13,13 @@ const TOP_LEVEL_ID = /^(?:"id"|'id'|id)[ \t]*:[^\n]*(?:\n|$)/gm
 
 const BOM = '\uFEFF'
 
-/** True when the template's top level is a flow mapping ({id: x, ...}). */
+/** True when the template's top level is a flow mapping ({id: x, ...}), also after a document marker (--- {id: x}). */
 export function isFlowStyleTemplate(template: string): boolean {
   for (const line of template.split('\n')) {
-    const l = line.trim()
-    if (l === '' || l.startsWith('#') || l === '---') continue
+    let l = line.trim()
+    // A document marker can share its line with content: "--- {id: x}".
+    if (/^---(?:[ \t]|$)/.test(l)) l = l.slice(3).trim()
+    if (l === '' || l.startsWith('#')) continue
     return l.startsWith('{')
   }
   return false

@@ -43,7 +43,7 @@ Deno.test('setTemplateId handles quoted keys, space before the colon, a BOM and 
 })
 
 Deno.test('setTemplateId rejects flow-style templates', () => {
-  for (const t of ['{id: alphapets-x}', '# c\n{id: alphapets-x, info: {name: y}}\n', '  {"id": "alphapets-x"}']) {
+  for (const t of ['--- {id: alphapets-x}', '---\t{id: alphapets-x, info: {}}\n', '# c\n--- {id: alphapets-x}\n', '{id: alphapets-x}', '# c\n{id: alphapets-x, info: {name: y}}\n', '  {"id": "alphapets-x"}']) {
     assertEquals(setTemplateId(t, 1), null, t)
   }
 })
@@ -53,6 +53,10 @@ Deno.test('isFlowStyleTemplate looks at the first real line only', () => {
   assert(isFlowStyleTemplate('\n# comment\n---\n{id: x}'))
   assertFalse(isFlowStyleTemplate('id: x\ninfo: {name: y}\n'))
   assertFalse(isFlowStyleTemplate(''))
+  assert(isFlowStyleTemplate('--- {id: x}'))
+  assertFalse(isFlowStyleTemplate('--- # doc\nid: x\n'))
+  assertFalse(isFlowStyleTemplate('---\nid: x\n'))
+  assertFalse(isFlowStyleTemplate('---{id: x}'))
 })
 
 Deno.test('setTemplateIds numbers in order from 001', () => {
@@ -62,7 +66,7 @@ Deno.test('setTemplateIds numbers in order from 001', () => {
 
 Deno.test('setTemplateIds drops flow-style templates and numbers the rest without gaps', () => {
   assertEquals(
-    setTemplateIds(['id: a\n', '{id: acme-flow}', '"id": b\n']),
+    setTemplateIds(['id: a\n', '{id: acme-flow}', '--- {id: acme-doc}', '"id": b\n']),
     ['id: trojan-custom-001\n', 'id: trojan-custom-002\n'],
   )
 })

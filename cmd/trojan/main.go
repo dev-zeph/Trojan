@@ -1958,13 +1958,17 @@ func humanizeInt(n int) string {
 	return string(out)
 }
 
+// dastLoginMessage is what trojan dast (classic or agentic) and trojan verify
+// print while signed out. Plain words and no em dash: it names a website test,
+// not one scan mode.
+func dastLoginMessage(targetURL string) string {
+	return "\n  Sign in to run a website test. Every account gets 500 free tokens a month.\n\n" +
+		"  Trojan tests " + targetURL + " and writes up what it finds.\n" +
+		"  Run trojan login, or sign in from the Trojan desktop app, then try again.\n\n"
+}
+
 func printDastLoginMessage(targetURL string) {
-	fmt.Println()
-	fmt.Println("  Sign in to run a penetration test.")
-	fmt.Println()
-	fmt.Printf("  Agentic DAST crawls %s, probes it adaptively, and writes up what it finds.\n", targetURL)
-	fmt.Println("  Run `trojan login` — every account gets 500 free tokens a month.")
-	fmt.Println()
+	fmt.Print(dastLoginMessage(targetURL))
 }
 
 func loginCmd() *cobra.Command {

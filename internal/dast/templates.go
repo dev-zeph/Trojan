@@ -165,12 +165,15 @@ func saveTemplateCache(hash string, resp *TemplateResponse) {
 var templateIDLine = regexp.MustCompile(`(?m)^(?:"id"|'id'|id)[ \t]*:[^\n]*(?:\n|$)`)
 
 // isFlowStyleTemplate reports whether the template's top level is a flow
-// mapping ({id: x, info: ...}). Those are rejected: the id can't be rewritten
+// mapping ({id: x, info: ...}), also after a document marker (--- {id: x}). Those are rejected: the id can't be rewritten
 // safely without a YAML parser, and nuclei templates are written in block style.
 func isFlowStyleTemplate(t string) bool {
 	for _, line := range strings.Split(t, "\n") {
 		l := strings.TrimSpace(line)
-		if l == "" || strings.HasPrefix(l, "#") || l == "---" {
+		if strings.HasPrefix(l, "---") && (len(l) == 3 || l[3] == ' ' || l[3] == '\t') {
+			l = strings.TrimSpace(l[3:]) // a document marker can share its line with content: "--- {id: x}"
+		}
+		if l == "" || strings.HasPrefix(l, "#") {
 			continue
 		}
 		return strings.HasPrefix(l, "{")

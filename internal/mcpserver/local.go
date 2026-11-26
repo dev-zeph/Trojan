@@ -23,6 +23,7 @@ import (
 	"github.com/dev-zeph/trojan/internal/config"
 	"github.com/dev-zeph/trojan/internal/normalizer"
 	"github.com/dev-zeph/trojan/internal/reach"
+	"github.com/dev-zeph/trojan/internal/scangate"
 	"github.com/dev-zeph/trojan/internal/scanners"
 )
 
@@ -142,12 +143,17 @@ func guard(token func() string, next http.Handler) http.Handler {
 	})
 }
 
+// localSignInMessage is the desktop's local MCP refusal while signed out. It
+// is the same wording as the run_scan gate (scangate.SignInMessage plus
+// runScanSignInSteps), so every surface says the same thing.
+var localSignInMessage = scangate.SignInMessage + " " + runScanSignInSteps
+
 // requireSignIn blocks tool calls while nobody is signed in to Trojan. The
 // desktop app keeps ~/.trojan/config.json in sync with its session.
 func requireSignIn(next server.ToolHandlerFunc) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		if cfg, err := config.LoadConfig(); err != nil || cfg.AccessToken == "" {
-			return mcp.NewToolResultError("Trojan: sign in to the Trojan desktop app, then try again."), nil
+			return mcp.NewToolResultError(localSignInMessage), nil
 		}
 		return next(ctx, req)
 	}

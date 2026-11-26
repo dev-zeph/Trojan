@@ -65,7 +65,7 @@ const brainInstructions = `Trojan keeps a code graph of the whole project (every
 // every project); otherwise `project` returns the one fixed path.
 func newServer(project projectFunc, perRequest bool, opts ...server.ServerOption) *server.MCPServer {
 	base := []server.ServerOption{
-		server.WithDescription("Trojan security scanner — read and act on vulnerability findings in your codebase."),
+		server.WithDescription("Trojan security scanner: read and act on vulnerability findings in your codebase."),
 	}
 	if perRequest {
 		base = append(base, server.WithInstructions(localInstructions))
@@ -385,7 +385,7 @@ func handleGetFindings(project projectFunc) server.ToolHandlerFunc {
 		})
 
 		out, err := json.MarshalIndent(map[string]any{
-			"project":                projectPath,
+			"project":                projectLabel(projectPath),
 			"scanned_at":             scan.Timestamp,
 			"total":                  len(scan.Findings),
 			"shown":                  len(rows),
@@ -492,14 +492,10 @@ func handleRunScan(project projectFunc) server.ToolHandlerFunc {
 
 		scan, err := loadLatestScan(projectPath)
 		if err != nil {
-			return mcp.NewToolResultText("scan completed"), nil
+			return mcp.NewToolResultText("Scan finished."), nil
 		}
 
-		return mcp.NewToolResultText(fmt.Sprintf(
-			"scan completed — %d findings (%d open)",
-			len(scan.Findings),
-			countOpen(scan.Findings),
-		)), nil
+		return mcp.NewToolResultText(scanFinishedMessage(len(scan.Findings), countOpen(scan.Findings))), nil
 	}
 }
 
@@ -553,6 +549,28 @@ func addSignInHint(fc *findingContext, signedIn bool) {
 	if strings.TrimSpace(fc.Simply) == "" && !signedIn {
 		fc.Explanation = signInHint
 	}
+}
+
+// scanFinishedMessage is the run_scan success line.
+func scanFinishedMessage(total, open int) string {
+	return fmt.Sprintf("Scan finished: %d findings (%d open).", total, open)
+}
+
+// projectLabel is how the project folder is named to the user's AI tool: the
+// folder name only, never the absolute path (which shows the home folder and
+// so the user's name).
+func projectLabel(projectPath string) string {
+	if projectPath == "" {
+		return ""
+	}
+	if abs, err := filepath.Abs(projectPath); err == nil {
+		projectPath = abs
+	}
+	base := filepath.Base(projectPath)
+	if base == string(filepath.Separator) || base == "." {
+		return "."
+	}
+	return base
 }
 
 // displayPath is how a finding's location is shown to the user and their AI
