@@ -44,7 +44,7 @@ export function FounderHome({
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /></svg>
             </span>
             <span className="fh-card-title">Scan my code</span>
-            <span className="fh-card-desc">Pick your project folder. Trojan looks for leaked passwords and keys, weak spots, and places where user data could get out. Your code never leaves your computer.</span>
+            <span className="fh-card-desc">Pick your project folder. Trojan looks for leaked passwords and keys, weak spots, and places where user data could get out. Scans run on your computer. Code snippets go to our AI provider to check and explain findings.</span>
             <span className="fh-card-go">{isScanning ? "A check is running…" : "Choose folder →"}</span>
           </button>
 

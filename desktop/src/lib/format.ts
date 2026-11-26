@@ -41,7 +41,7 @@ export function friendlyError(raw: string): string {
   // telling the user to wait would leave them stuck. Checked first, because a
   // 402 body can also contain the word "limit".
   if (s.includes("insufficient_tokens") || s.includes("out of trojan tokens"))
-    return "You're out of Trojan Tokens. Top up to continue — your run is saved and will resume where it stopped.";
+    return "You're out of Trojan Tokens. Top up to continue. Your run is saved and will resume where it stopped.";
   if (s.includes("rate_limit_exceeded") || (s.includes("daily") && s.includes("limit")))
     return "Daily analysis limit reached. Resets at midnight UTC.";
   if (s.includes("ai service error") || s.includes("anthropic"))
@@ -51,7 +51,7 @@ export function friendlyError(raw: string): string {
   if (s.includes("service misconfigured"))
     return "The analysis service isn't configured correctly. Contact support.";
   if (s.includes("timed out") || s.includes("timeout") || s.includes("aborted"))
-    return "The request timed out. Try again — large codebases can take longer.";
+    return "The request timed out. Try again. Large codebases can take longer.";
 
   // ── Fallback — strip developer prefixes, keep the human part ────────────
   return raw.replace(/^Error:\s*/i, "").replace(/^Scan failed:\s*/i, "").trim() || "Something went wrong. Try again.";

@@ -32,9 +32,9 @@ export function TokenBalance({ balance, lowThreshold = 400, onTopUp, compact }: 
       onClick={onTopUp}
       title={
         loading ? "Checking your token balance"
-        : empty ? "You are out of Trojan Tokens — click to top up"
-        : low ? `${balance.toLocaleString()} Trojan Tokens left — click to top up`
-        : `${balance.toLocaleString()} Trojan Tokens — click to top up`
+        : empty ? "You are out of Trojan Tokens. Click to top up"
+        : low ? `${balance.toLocaleString()} Trojan Tokens left. Click to top up`
+        : `${balance.toLocaleString()} Trojan Tokens. Click to top up`
       }
       style={{
         display: "flex", alignItems: "center", gap: 6,
@@ -49,7 +49,7 @@ export function TokenBalance({ balance, lowThreshold = 400, onTopUp, compact }: 
         <path d="M12 7v10M9.5 9.5h5M9.5 14.5h5" strokeLinecap="round" />
       </svg>
       <span style={{ flex: 1, textAlign: "left" }}>
-        {loading ? "—" : balance.toLocaleString()}
+        {loading ? "-" : balance.toLocaleString()}
       </span>
       <span style={{ opacity: 0.65, fontSize: 10 }}>
         {empty ? "TOP UP" : "TOKENS"}

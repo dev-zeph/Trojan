@@ -133,7 +133,7 @@ export function Onboarding({ onDone }: { onDone: (p: UserProfile) => void }) {
 
               <div className="ob-footer-sep">
                 <button type="button" className="ob-footer-skip" onClick={() => setShowLocal(true)}>
-                  Continue without an account →
+                  Look around first →
                 </button>
               </div>
             </>

@@ -199,7 +199,7 @@ async fn await_ready_mut(app: &AppHandle, rx: &mut Receiver<CommandEvent>) -> Re
                 } else {
                     let tail: Vec<_> = last_stdout.iter().rev().take(2).rev().collect();
                     if tail.is_empty() {
-                        format!("process exited (code {:?}) — try rebuilding the sidecar", status.code)
+                        format!("process exited (code {:?}). Try rebuilding the sidecar", status.code)
                     } else {
                         tail.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(" · ")
                     }
@@ -209,7 +209,7 @@ async fn await_ready_mut(app: &AppHandle, rx: &mut Receiver<CommandEvent>) -> Re
             _ => {}
         }
     }
-    Err("Sidecar closed without starting — try rebuilding the binary.".to_string())
+    Err("Sidecar closed without starting. Try rebuilding the binary.".to_string())
 }
 
 /// Open a native OS folder picker and return the selected path.

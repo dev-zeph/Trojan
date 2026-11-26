@@ -268,8 +268,8 @@ export function LocalPrivacyBadge({ compact }: { compact?: boolean }) {
       </svg>
       <span>
         {compact
-          ? "Stored on your machine. Never uploaded to Trojan."
-          : "This context is written to your project (.trojan/context.yaml) and stays on your machine. Trojan never uploads it to the cloud."}
+          ? 'Saved on your machine. If you use "Draft with AI", your description, this file and a project summary are sent to our AI provider, and we keep the draft.'
+          : 'This context is written to your project (.trojan/context.yaml) and stays on your machine. If you use "Draft with AI", your description, this file and a project summary are sent to our AI provider, and we keep the draft.'}
       </span>
     </div>
   );
@@ -339,12 +339,12 @@ export function OrgContextWizard({ initial, onFinish, onSkip, simple = false, un
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
                 <rect x="3" y="11" width="18" height="11" rx="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" />
               </svg>
-              This never leaves your machine
+              This file stays on your machine unless you use "Draft with AI".
             </div>
             <p className="oc-privacy-panel-body">
               {simple
-                ? "What you write here is saved on your computer, inside your project. Trojan never uploads it, and you can change it any time."
-                : "Everything here is saved locally in your project (.trojan/context.yaml). Trojan never uploads it. You stay in control, and you can edit or delete it any time."}
+                ? 'What you write here is saved on your computer, inside your project. Trojan only sends it when you use "Draft with AI", and you can change it any time.'
+                : 'Everything here is saved locally in your project (.trojan/context.yaml). Trojan only sends it when you use "Draft with AI". You stay in control, and you can edit or delete it any time.'}
             </p>
           </div>
         </div>

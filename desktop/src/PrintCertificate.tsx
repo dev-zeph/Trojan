@@ -213,7 +213,7 @@ export function PrintCertificate({
                     <span className="cert-sev-dot" style={{ background: severityColor(v.severity) }} />
                     {v.severity}
                   </td>
-                  <td>{(v as { exploitability?: string }).exploitability ?? "—"}</td>
+                  <td>{(v as { exploitability?: string }).exploitability ?? "-"}</td>
                 </tr>
               ))}
             </tbody>
@@ -229,7 +229,7 @@ export function PrintCertificate({
           <ol className="cert-fix-list">
             {threatLabResult.priority_fixes.slice(0, 5).map((fix) => (
               <li key={fix.rank}>
-                <strong>{fix.title}</strong> — {fix.description}
+                <strong>{fix.title}</strong>: {fix.description}
                 {fix.command && (
                   <div className="cert-code">{fix.command}</div>
                 )}

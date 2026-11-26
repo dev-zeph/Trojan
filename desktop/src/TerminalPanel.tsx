@@ -15,7 +15,7 @@ const PROMPT = "\r\n\x1b[1;35m❯\x1b[0m ";
 
 const HELP_TEXT = [
   "",
-  "  \x1b[1;35mTrojan Terminal\x1b[0m  — available commands:",
+  "  \x1b[1;35mTrojan Terminal\x1b[0m: available commands:",
   "  \x1b[1mscan\x1b[0m \x1b[2m<path>\x1b[0m   Full SAST · Secrets · IaC scan",
   "  \x1b[1mdast\x1b[0m \x1b[2m<url>\x1b[0m    DAST scan against a live server",
   "  \x1b[1mdeps\x1b[0m \x1b[2m<path>\x1b[0m   Dependency vulnerability scan",
