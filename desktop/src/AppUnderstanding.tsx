@@ -229,7 +229,7 @@ export function AppUnderstanding({
           disabled={loading}
         />
         {runsFree ? (
-          <p className="au-note au-note-free"><strong>Free.</strong> Your first look at an app costs nothing.</p>
+          <p className="au-note au-note-free"><strong>Free.</strong> Your first look at each project costs nothing.</p>
         ) : (
           <p className="au-note au-note-cost" role="status">This update uses some of your tokens.</p>
         )}
@@ -362,7 +362,7 @@ export function AppUnderstanding({
           {phase === "saving" ? "Saving…" : "Save"}
         </button>
       </div>
-      <p className="au-note">Saved in your project. We also keep a copy of this draft on our servers.</p>
+      <p className="au-note">Save adds this to your project. We also keep a copy of this draft on our servers.</p>
     </>,
   );
 }

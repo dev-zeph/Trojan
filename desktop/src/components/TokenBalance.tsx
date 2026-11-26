@@ -67,7 +67,7 @@ export function TokenBalance({ balance, lowThreshold = 400, onTopUp, compact }: 
  * promise. The figures come from measured runs (docs/agentic-dast.md) and
  * should be replaced with the p75 out of usage_events once that has history.
  */
-export function RunCostHint({ balance, model }: { balance: number | null; model: "sonnet" | "opus" }) {
+export function RunCostHint({ balance, model, whenYouAddCode = false }: { balance: number | null; model: "sonnet" | "opus"; whenYouAddCode?: boolean }) {
   const typical = model === "opus" ? 915 : 365;
   const range = model === "opus" ? "250–950" : "100–400";
   const affordable = balance !== null && balance >= typical;
@@ -80,7 +80,7 @@ export function RunCostHint({ balance, model }: { balance: number | null; model:
     }}>
       <div style={{ display: "flex", justifyContent: "space-between" }}>
         <span>Typical cost</span>
-        <span style={{ fontWeight: 600 }}>{range} tokens</span>
+        <span style={{ fontWeight: 600 }}>{range} tokens{whenYouAddCode ? ", plus a small amount when you add your app's code" : ""}</span>
       </div>
       <div style={{ opacity: 0.7, lineHeight: 1.5 }}>
         Charged per step as the agent works, not upfront. If you run out

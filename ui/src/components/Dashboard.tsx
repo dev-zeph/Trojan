@@ -48,7 +48,7 @@ export function Dashboard({ scan, onViewFindings, onSelectFinding }: Props) {
             : `${counted.length} issue${counted.length === 1 ? '' : 's'} found.`}
         </h1>
         <p className="text-muted-foreground text-sm max-w-lg leading-relaxed">
-          Scanned with {scanners.length > 0 ? scanners.join(', ') : 'none'}.
+          {scanners.length > 0 ? `Scanned with ${scanners.join(', ')}.` : 'No scanners ran.'}
           {usedAI
             ? 'Scanning ran on your machine. The code around each finding was sent to Trojan’s AI to check and explain it.'
             : 'Results are local and have not left your machine.'}

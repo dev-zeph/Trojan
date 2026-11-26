@@ -70,7 +70,7 @@ export function ConsentGate({ url, onVerified }: Props) {
       <div className="space-y-2">
         <h2 className="text-xl font-bold tracking-tight">Prove you own {mint.domain}</h2>
         <p className="text-sm text-muted-foreground leading-relaxed">
-          Pen-testing a domain you don't control is illegal. Place the token below using any one method, then verify, the same model as Google Search Console.
+          Pen-testing a domain you don't control is illegal. Place the token below using any one method, then verify. It works like Google Search Console.
         </p>
       </div>
 

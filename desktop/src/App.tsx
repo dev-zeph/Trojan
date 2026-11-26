@@ -43,6 +43,7 @@ import { GettingStarted } from "./components/GettingStarted";
 import { CM } from "./components/CornerMarks";
 import { FeedbackForm } from "./components/FeedbackForm";
 import { TokenBalance, RunCostHint } from "./components/TokenBalance";
+import { attachPtInfoPlacement } from "./lib/tooltipPlacement";
 import { ScanGateNotice } from "./components/ScanGateNotice";
 import { runScanGate, fetchLicenseBalance, type ScanGate } from "./lib/scanGate";
 import type {
@@ -141,6 +142,7 @@ const SIMPLE_NAV: typeof NAV = ([
 
 // ── App ───────────────────────────────────────────────────────────────────
 export default function App() {
+  useEffect(() => attachPtInfoPlacement(), []);
   useScanNudges();
   const [profileLoaded, setProfileLoaded] = useState(false);
   const [profile, setProfile]             = useState<UserProfile | null>(null);
@@ -1503,8 +1505,10 @@ export default function App() {
                       </div>
                       <div className="stat-card">
                         <span className="stat-label">PACKAGES</span>
-                        <span className="stat-value">{packages.length}</span>
-                        <span className="stat-sub">audited</span>
+                        <span className="stat-value" style={{ fontSize: packages.length ? undefined : 16, marginTop: packages.length ? undefined : 4 }}>
+                          {packages.length || "Not checked"}
+                        </span>
+                        <span className="stat-sub">{packages.length ? "audited" : ""}</span>
                       </div>
                       <div className="stat-card">
                         <span className="stat-label">CVEs</span>
@@ -1634,7 +1638,7 @@ export default function App() {
                 </span>
                 <span className="oc-feature-text">
                   <span className="oc-feature-title">Context-aware scanning</span>
-                  <span className="oc-feature-sub">Tell Trojan what you are building and it tests intentionally, for security and privacy. Saved in your project, and only sent to our AI provider if you let Trojan look at your app.</span>
+                  <span className="oc-feature-sub">Tell Trojan what you are building and it tests intentionally, for security and privacy. Saved in your project, and only sent to our AI provider when you let Trojan look at your app or give a pen test your app's code.</span>
                 </span>
                 <span className="oc-feature-cta">Set up context {"→"}</span>
               </button>}
@@ -1746,7 +1750,7 @@ export default function App() {
                   </>
                 ) : (
                   <>
-                    <h1 className="page-header-title">Penetration Testing <span className="lab-pro-tag">365 TOKENS</span></h1>
+                    <h1 className="page-header-title">Penetration Testing <span className="lab-pro-tag">USES TOKENS</span></h1>
                     <p className="page-header-desc">Scan a running server for runtime vulnerabilities using Nuclei's 6,000+ templates plus AI-generated attack patterns.</p>
                   </>
                 )}
@@ -1855,7 +1859,7 @@ export default function App() {
                     <div style={{ fontSize: "0.85em", opacity: 0.7, marginTop: 4 }}>
                       {agGreyBox && greyBoxProject
                         ? `Using code from ${greyBoxProject.split("/").pop()}.`
-                        : "Pick your app's folder so the AI can read its code while it tests. The code it reads and your app's responses, including any login tokens or personal data in them, are sent to our AI provider. We keep the test report, not your code."}
+                        : "Pick your app's folder so the AI can read its code. Before testing, it reviews your code and app context to plan the attack, then reads more as it tests. That code, your context and your app's responses, including any login tokens or personal data in them, are sent to our AI provider. We keep the test report, not your code."}
                       <button type="button" className="pt-chip" style={{ marginLeft: 8 }} disabled={isScanning}
                         onClick={async () => { const picked = await invoke<string | null>("pick_folder"); if (picked) { setGreyBoxFolder(picked); setAgGreyBox(true); } }}>
                         {agGreyBox && greyBoxProject ? "Change folder" : "Choose folder"}
@@ -1867,7 +1871,7 @@ export default function App() {
                     </div>
 
                     <span className="scanner-grid-label" style={{ marginTop: 18 }}>COST</span>
-                    <RunCostHint balance={tokenBalance} model="sonnet" />
+                    <RunCostHint balance={tokenBalance} model="sonnet" whenYouAddCode />
                   </>
                 )}
 
@@ -1879,7 +1883,7 @@ export default function App() {
                         the crawled surface is, so one number would read as a
                         promise and be wrong most of the time. */}
                     <span className="scanner-grid-label" style={{ marginTop: 18 }}>COST</span>
-                    <RunCostHint balance={tokenBalance} model="sonnet" />
+                    <RunCostHint balance={tokenBalance} model="sonnet" whenYouAddCode />
 
                     {agTemplate && (
                       <div className="pt-template-banner">
@@ -1945,7 +1949,7 @@ export default function App() {
                         <div className="pt-card">
                           <div className="pt-row">
                             <span className="pt-card-h" style={{ margin: 0 }}>Grey-box
-                              <span className="pt-info" data-tip="Reads this project's source to find the missing check (IDOR, SQLi, authz gaps) instead of guessing. Index, vectors and source stay on your machine; the code the agent reads and your app's responses, including any login tokens in them, are sent to our AI provider so it can reason about attacks.">i</span>
+                              <span className="pt-info" data-tip="Reads this project's source to find the missing check (IDOR, SQLi, authz gaps) instead of guessing. A short white-box review runs first and uses tokens. The code the agent reads, your project context and your app's responses, including any login tokens, are sent to our AI provider. Your index and vectors stay on your machine.">i</span>
                             </span>
                             <button
                               type="button"
@@ -1999,7 +2003,7 @@ export default function App() {
                     {/* Identities — for authorization (IDOR/BOLA) testing */}
                     <div className="pt-idhead">
                       <span className="scanner-grid-label" style={{ margin: 0 }}>TEST LOGINS</span>
-                      <span className="pt-info" data-tip="Supply two or more logged-in sessions (name + an auth header like 'Authorization: Bearer ...' or 'Cookie: session=...'). The agent requests the same resource as each and compares, to catch broken object-level authorization. Sessions are passed to the scanner privately, not on the command line. During a run they're saved in a private file on your machine so the run can resume, and that file is deleted when the run finishes. The AI sees each session's name and any login tokens that appear in your app's responses.">i</span>
+                      <span className="pt-info" data-tip="Supply two or more logged-in sessions (name + an auth header like 'Authorization: Bearer ...' or 'Cookie: session=...'). The agent requests the same resource as each and compares, to catch broken object-level authorization. Sessions are passed to the scanner privately, not on the command line. During a run they're saved in a private file on your machine (~/.trojan/runs) so the run can resume. The file is deleted when a run completes. If you stop a run, it stays until you resume and complete it, or delete it yourself. The AI sees each session's name and any login tokens that appear in your app's responses.">i</span>
                     </div>
                     <div className="pt-card">
                       <p className="pt-idhint" style={{ marginTop: 0 }}>Lets Trojan check that one user can't see another user's data and that admin pages are locked.</p>
@@ -2143,7 +2147,7 @@ export default function App() {
                     {/* Loaded codebase bar */}
                     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 14px", background: "white", border: "1px solid var(--border)", marginBottom: 16 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <span style={{ fontSize: 12, color: "var(--muted-fg)" }}>Analysing</span>
+                        <span style={{ fontSize: 12, color: "var(--muted-fg)" }}>Analyzing</span>
                         <span style={{ fontSize: 13, fontWeight: 600, color: "var(--fg)" }}>{codebase}</span>
                         <span style={{ fontSize: 11, color: "var(--muted-fg)" }}>{packages.length} package{packages.length !== 1 ? "s" : ""}</span>
                       </div>
@@ -2233,7 +2237,7 @@ export default function App() {
                   {/* Loaded codebase bar */}
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 14px", background: "white", border: "1px solid var(--border)", marginBottom: 16 }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <span style={{ fontSize: 12, color: "var(--muted-fg)" }}>Analysing</span>
+                      <span style={{ fontSize: 12, color: "var(--muted-fg)" }}>Analyzing</span>
                       <span style={{ fontSize: 13, fontWeight: 600, color: "var(--fg)" }}>{codebase || "project"}</span>
                       <span style={{ fontSize: 11, color: "var(--muted-fg)" }}>{dataTypes.length} data type{dataTypes.length !== 1 ? "s" : ""}, {thirdParty.length} third part{thirdParty.length !== 1 ? "ies" : "y"}</span>
                     </div>
@@ -2360,7 +2364,7 @@ export default function App() {
               setComplianceLabError(null);
               try {
                 const token = await getFreshToken();
-                if (!token) throw new Error("Sign in to generate a compliance report");
+                if (!token) throw new Error("Sign in to generate a compliance report.");
 
                 const copyleft = packages.filter(p => p.license_risk === "copyleft").map(p => ({ name: p.name, version: p.version, license: p.license || "" }));
                 const weakCopyleft = packages.filter(p => p.license_risk === "weak-copyleft").map(p => ({ name: p.name, license: p.license || "" }));
@@ -2402,7 +2406,7 @@ export default function App() {
                     <button className="lab-back" onClick={() => setView("dependencies")}>← Dependencies</button>
                     <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 3 }}>
                       <span className="lab-title-text">Compliance Report</span>
-                      <span className="lab-pro-tag">50 TOKENS</span>
+                      <span className="lab-pro-tag">USES TOKENS</span>
                     </div>
                     <p className="lab-subtitle">
                       {r && scanPath
@@ -2412,14 +2416,14 @@ export default function App() {
                   </div>
                   <div className="lab-header-actions">
                     {r && (
-                      <button className="lab-export-btn" onClick={() => { const t = document.title; document.title = `Compliance Report - ${codebaseName}`; window.print(); document.title = t; }}>
+                      <button className="lab-export-btn" onClick={() => { const t = document.title; document.title = `Compliance Report: ${codebaseName}`; window.print(); document.title = t; }}>
                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
                         Export Report
                       </button>
                     )}
                     {hasData && signedIn && (
                       <button className={`lab-run-primary ${complianceLabRunning ? "lab-btn-loading" : ""}`} onClick={runComplianceLab} disabled={complianceLabRunning}>
-                        {complianceLabRunning ? <><span className="lab-spinner" /> Analysing...</> : r ? "Re-generate" : "Generate report"}
+                        {complianceLabRunning ? <><span className="lab-spinner" /> Analyzing…</> : r ? "Re-generate" : "Generate report"}
                       </button>
                     )}
                   </div>
@@ -2834,7 +2838,7 @@ export default function App() {
                     <button className="lab-back" onClick={() => setView("sast")}>← {simple ? "Codebase Scanning" : "Static Analysis"}</button>
                     <div className="lab-title-row">
                       <span className="lab-title-text">Security Report</span>
-                      <span className="lab-pro-tag">100 TOKENS</span>
+                      <span className="lab-pro-tag">USES TOKENS</span>
                     </div>
                     <p className="lab-subtitle">
                       {r && scanPath
@@ -2852,7 +2856,7 @@ export default function App() {
                         onClick={runThreatLab}
                         disabled={isLabRunning}
                       >
-                        {isLabRunning ? <><span className="lab-spinner" /> Analysing…</> : r ? "Re-generate" : "Generate report"}
+                        {isLabRunning ? <><span className="lab-spinner" /> Analyzing…</> : r ? "Re-generate" : "Generate report"}
                       </button>
                     )}
                   </div>
@@ -3039,7 +3043,7 @@ export default function App() {
                     <p className="page-header-desc">
                       {simple
                         ? "Connect the AI tool you build with. It can then read what Trojan found and fix it for you. Just ask it to \"fix the issues Trojan found\"."
-                        : "Connect your editor so Trojan can hand off findings as ready-to-run fix prompts, all local via MCP."}
+                        : "Connect your editor so Trojan can hand off findings as ready-to-run fix prompts over a local MCP connection."}
                     </p>
                     <div className="page-header-actions">
                       <div className="overview-status-badge">

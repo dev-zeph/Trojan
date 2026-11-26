@@ -70,7 +70,7 @@ export function ContextChangeBanner({
             {kind === "learn" ? (
               <>
                 <strong>Help Trojan learn about your app.</strong>
-                <span>Its checks fit better when it knows what you built. The first time is free.</span>
+                <span>Its checks fit better when it knows what you built. The first look at each project is free.</span>
               </>
             ) : (
               <>
