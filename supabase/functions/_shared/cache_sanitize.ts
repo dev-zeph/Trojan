@@ -188,6 +188,15 @@ function hasHighEntropyToken(text: string): boolean {
     // (lower, upper, digit), so long CamelCase words (SecurityConfiguration) pass.
     if (t.length >= 32 && classes >= 2 && shannonEntropy(t) >= 4.0) return true
     if (classes === 3 && shannonEntropy(t) >= 3.5) return true
+    // Base64 with no digit: + or / counts as the third class. Header names and
+    // slugs use - and _, so they are not affected.
+    if (classes === 2 && /[+/]/.test(t) && shannonEntropy(t) >= 3.5) return true
+    // Random letters only: about half upper case. A CamelCase word has a few
+    // capitals (SecurityConfiguration), so it stays below the ratio.
+    if (classes === 2 && /^[A-Za-z]+$/.test(t)) {
+      const upper = t.replace(/[^A-Z]/g, '').length / t.length
+      if (upper >= 0.32 && upper <= 0.68 && shannonEntropy(t) >= 3.6) return true
+    }
   }
   return false
 }

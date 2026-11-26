@@ -68,6 +68,7 @@ func semgrepArgs(projectPath string, extraConfigs []string) []string {
 		"--exclude", "__pycache__",
 		"--exclude", "coverage",
 		"--exclude", "*.min.js",
+		"--exclude", ".trojan",
 		projectPath,
 	)
 	return args
@@ -75,6 +76,13 @@ func semgrepArgs(projectPath string, extraConfigs []string) []string {
 
 // writeTrojanRules copies the embedded rules into a fresh temp directory for
 // semgrep to read. The caller removes the directory when the run is done.
+// isTrojanRuleFile skips macOS AppleDouble files ("._name.yaml"). A source tree
+// copied off a Mac can carry them; go:embed's *.yaml picks them up, and semgrep
+// then fails on their binary content (UnicodeDecodeError), dropping every finding.
+func isTrojanRuleFile(name string) bool {
+	return strings.HasSuffix(name, ".yaml") && !strings.HasPrefix(name, "._") && !strings.HasPrefix(name, ".")
+}
+
 func writeTrojanRules() (string, error) {
 	dir, err := os.MkdirTemp("", "trojan-semgrep-rules-")
 	if err != nil {
@@ -86,6 +94,9 @@ func writeTrojanRules() (string, error) {
 		return "", err
 	}
 	for _, e := range entries {
+		if !isTrojanRuleFile(e.Name()) {
+			continue
+		}
 		data, err := trojanRulesFS.ReadFile("semgreprules/" + e.Name())
 		if err != nil {
 			os.RemoveAll(dir)
@@ -158,7 +169,7 @@ func (s Semgrep) Run(projectPath string) ([]normalizer.Finding, error) {
 			Severity:    semgrepFindingSeverity(r),
 			Title:       title,
 			RawMessage:  r.Extra.Message,
-			FilePath:    r.Path,
+			FilePath:    relToProject(projectPath, r.Path),
 			LineNumber:  r.Start.Line,
 			CodeSnippet: strings.TrimSpace(r.Extra.Lines),
 			RuleID:      ruleID,

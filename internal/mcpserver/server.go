@@ -525,7 +525,7 @@ type findingContext struct {
 
 // signInHint is added to get_finding when the finding has no explanation and
 // the user is signed out: explanations come from the signed-in service.
-const signInHint = "Sign in to get a plain-English explanation and fix steps."
+const signInHint = "Sign in to get a plain-English explanation and fix steps. Run trojan login in a terminal or sign in from the Trojan desktop app."
 
 // isSignedIn reports whether a Trojan login is saved. A variable so tests can
 // replace it.
@@ -681,7 +681,7 @@ func handleGetFixableFindings(project projectFunc) server.ToolHandlerFunc {
 // noScanResultsMsg is shown to the user (via their AI assistant) when a folder
 // has not been scanned yet. Plain words, no em dash, and it names both ways to
 // fix it.
-const noScanResultsMsg = "No scan results yet for this folder. Ask me to run a scan (run_scan), or run trojan scan in a terminal."
+const noScanResultsMsg = "No scan results for this folder yet. Run a scan with run_scan, or run trojan scan in a terminal."
 
 func loadLatestScan(projectPath string) (*normalizer.ScanResult, error) {
 	scansDir := filepath.Join(projectPath, ".trojan", "scans")

@@ -147,7 +147,7 @@ func (n Nuclei) Run(targetURL string) ([]normalizer.Finding, error) {
 
 		title := result.Info.Name
 		if result.MatcherName != "" {
-			title = fmt.Sprintf("%s — %s", result.Info.Name, result.MatcherName)
+			title = fmt.Sprintf("%s: %s", result.Info.Name, result.MatcherName)
 		}
 
 		findings = append(findings, normalizer.Finding{

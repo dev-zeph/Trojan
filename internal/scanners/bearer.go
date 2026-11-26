@@ -3,11 +3,20 @@ package scanners
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/dev-zeph/trojan/internal/normalizer"
+	"gopkg.in/yaml.v3"
 )
+
+// CustomRulePrefix marks a rule id that the scanned project defines itself
+// (for example a rule in its own bearer.yml external-rule-dir). Such ids can
+// name the project's internals, so the server never puts them in the shared
+// explanation cache; it treats them as personal.
+const CustomRulePrefix = "custom:"
 
 // Bearer implements the Scanner interface for SAST using Bearer CLI.
 // Acts as a standalone-binary SAST scanner alongside Semgrep.
@@ -39,6 +48,10 @@ func (b Bearer) Run(projectPath string) ([]normalizer.Finding, error) {
 		projectPath,
 	}
 	cmd := exec.Command(ManagedBinary("bearer"), args...)
+	// Bearer reads bearer.yml from its working directory. Run it in the project,
+	// so the config it uses is always the one customRuleIDs reads below.
+	cmd.Dir = projectPath
+	custom := bearerCustomRuleIDs(projectPath)
 	output, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
@@ -76,7 +89,7 @@ func (b Bearer) Run(projectPath string) ([]normalizer.Finding, error) {
 				FilePath:    f.Filename,
 				LineNumber:  f.LineNumber,
 				CodeSnippet: strings.TrimSpace(f.CodeExtract),
-				RuleID:      f.ID,
+				RuleID:      markCustomRule(f.ID, custom),
 				Status:      normalizer.StatusOpen,
 				CWEIDs:      cweIDs,
 			})
@@ -125,4 +138,71 @@ func normalizeBearerSeverity(s string) normalizer.Severity {
 	default:
 		return normalizer.SeverityLow
 	}
+}
+
+// markCustomRule prefixes a rule id the project defines itself with "custom:".
+func markCustomRule(id string, custom map[string]bool) string {
+	if custom[id] && !strings.HasPrefix(id, CustomRulePrefix) {
+		return CustomRulePrefix + id
+	}
+	return id
+}
+
+// bearerCustomRuleIDs returns the ids of rules the project defines in its own
+// bearer.yml (scan.external-rule-dir). Their findings still show to the user;
+// only the id is marked custom so it stays out of shared caches. Unreadable or
+// missing config means no custom rules.
+func bearerCustomRuleIDs(projectPath string) map[string]bool {
+	ids := map[string]bool{}
+	cfgPath := filepath.Join(projectPath, "bearer.yml")
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		return ids
+	}
+	var cfg struct {
+		Scan struct {
+			ExternalRuleDir yaml.Node `yaml:"external-rule-dir"`
+		} `yaml:"scan"`
+	}
+	if yaml.Unmarshal(data, &cfg) != nil {
+		return ids
+	}
+	var dirs []string
+	switch cfg.Scan.ExternalRuleDir.Kind {
+	case yaml.ScalarNode:
+		dirs = []string{cfg.Scan.ExternalRuleDir.Value}
+	case yaml.SequenceNode:
+		_ = cfg.Scan.ExternalRuleDir.Decode(&dirs)
+	}
+	for _, d := range dirs {
+		if strings.TrimSpace(d) == "" {
+			continue
+		}
+		if !filepath.IsAbs(d) {
+			d = filepath.Join(projectPath, d)
+		}
+		_ = filepath.WalkDir(d, func(path string, e os.DirEntry, err error) error {
+			if err != nil || e.IsDir() {
+				return nil
+			}
+			ext := strings.ToLower(filepath.Ext(path))
+			if ext != ".yml" && ext != ".yaml" {
+				return nil
+			}
+			body, rerr := os.ReadFile(path)
+			if rerr != nil {
+				return nil
+			}
+			var rule struct {
+				Metadata struct {
+					ID string `yaml:"id"`
+				} `yaml:"metadata"`
+			}
+			if yaml.Unmarshal(body, &rule) == nil && rule.Metadata.ID != "" {
+				ids[rule.Metadata.ID] = true
+			}
+			return nil
+		})
+	}
+	return ids
 }

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"time"
 )
@@ -91,6 +92,7 @@ func WriteTemplatesToDir(resp *TemplateResponse, dir string) error {
 	}
 	for i, yaml := range resp.Templates {
 		path := filepath.Join(dir, fmt.Sprintf("template_%03d.yaml", i))
+		yaml = SetTemplateID(yaml, i+1)
 		if err := os.WriteFile(path, []byte(yaml), 0600); err != nil {
 			return fmt.Errorf("writing template %d: %w", i, err)
 		}
@@ -150,4 +152,20 @@ func saveTemplateCache(hash string, resp *TemplateResponse) {
 		return
 	}
 	os.WriteFile(filepath.Join(dir, "meta.json"), data, 0600) //nolint:errcheck
+}
+
+// templateIDLine matches the top-level id of a nuclei template.
+var templateIDLine = regexp.MustCompile(`(?m)^id:[^\n]*$`)
+
+// SetTemplateID gives an AI-written website test the id trojan-custom-NNN.
+// The model names templates after the site ("alphapets-loyalty-api-idor"), and
+// nuclei reports that id as the finding's rule id, which would carry the site's
+// name into rule-keyed places such as the shared explanation cache. The server
+// (dast-templates) does the same rewrite, so either side alone is enough.
+func SetTemplateID(template string, n int) string {
+	id := fmt.Sprintf("id: trojan-custom-%03d", n)
+	if loc := templateIDLine.FindStringIndex(template); loc != nil {
+		return template[:loc[0]] + id + template[loc[1]:]
+	}
+	return id + "\n" + template
 }

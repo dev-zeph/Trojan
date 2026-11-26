@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"github.com/dev-zeph/trojan/internal/normalizer"
@@ -137,6 +136,9 @@ func runGitleaks(projectPath, cfgPath string, history bool) ([]gitleaksResult, e
 	var results []gitleaksResult
 	if err := json.Unmarshal(output, &results); err != nil {
 		return nil, fmt.Errorf("failed to parse gitleaks output: %w", err)
+	}
+	for i := range results {
+		results[i].File = relToProject(projectPath, results[i].File)
 	}
 	return results, nil
 }
@@ -299,27 +301,81 @@ type gitleaksResult struct {
 	RuleID      string `json:"RuleID"`
 }
 
-// gitleaksDescLead matches the sentence openers in gitleaks' default rule
-// descriptions ("Uncovered a GitHub Personal Access Token, potentially ...").
-var gitleaksDescLead = regexp.MustCompile(`(?i)^(?:uncovered|found|discovered|identified|detected|exposed)(?:\s+(?:an|a|the))?(?:\s+(?:possible|potential))?\s*`)
+// gitleaksSecretNames names a few rules whose id alone reads badly.
+var gitleaksSecretNames = map[string]string{
+	"jwt":             "login token (JWT)",
+	"jwt-base64":      "login token (JWT)",
+	"generic-api-key": "API key",
+	"private-key":     "private key",
+}
 
-// gitleaksDescTail cuts the consequence clause that follows the secret's name.
-var gitleaksDescTail = regexp.MustCompile(`(?i)(?:,|;|\s+-\s+|\s+(?:which|that|potentially|possibly|risking|allowing|enabling|leading)\b).*$`)
+// gitleaksWordCase gives the house spelling of brand names and acronyms that
+// appear in gitleaks rule ids. Other words stay lower case (sentence case).
+var gitleaksWordCase = map[string]string{
+	"api": "API", "aws": "AWS", "gcp": "GCP", "id": "ID", "jwt": "JWT", "url": "URL", "ssh": "SSH",
+	"pat": "personal access token", "oauth": "OAuth", "sdk": "SDK", "npm": "npm", "pypi": "PyPI",
+	"github": "GitHub", "gitlab": "GitLab", "openai": "OpenAI", "sendgrid": "SendGrid",
+	"digitalocean": "DigitalOcean", "hubspot": "HubSpot", "jfrog": "JFrog", "rubygems": "RubyGems",
+	"hashicorp": "HashiCorp", "linkedin": "LinkedIn", "mailchimp": "Mailchimp", "pagerduty": "PagerDuty",
+	"planetscale": "PlanetScale", "sourcegraph": "Sourcegraph", "huggingface": "Hugging Face",
+	"cloudflare": "Cloudflare", "dockerhub": "Docker Hub", "newrelic": "New Relic", "launchdarkly": "LaunchDarkly",
+	"sendinblue": "Sendinblue", "readme": "ReadMe", "vault": "Vault", "azure": "Azure",
+}
 
-// gitleaksTitle turns a gitleaks rule description into a short finding title:
-// "Uncovered a GitHub Personal Access Token, potentially leading to ..." becomes
-// "Leaked GitHub Personal Access Token". Falls back to the rule id when the
-// description is empty or reduces to nothing.
+// gitleaksGenericWords are leading words that are not a provider name.
+var gitleaksGenericWords = map[string]bool{"generic": true, "private": true, "secret": true, "access": true}
+
+// gitleaksTitle builds a sentence-case title from the gitleaks rule id:
+// "stripe-access-token" becomes "Leaked Stripe access token", "github-pat"
+// becomes "Leaked GitHub personal access token", "jwt" becomes "Leaked login
+// token (JWT)". The first word of an id is the provider, so it is capitalised.
+// The description is used only when there is no rule id.
 func gitleaksTitle(description, ruleID string) string {
-	name := strings.TrimSpace(description)
-	name = gitleaksDescLead.ReplaceAllString(name, "")
-	name = gitleaksDescTail.ReplaceAllString(name, "")
-	name = strings.TrimRight(strings.TrimSpace(name), ".")
-	if name == "" {
-		name = strings.ReplaceAll(strings.TrimSpace(ruleID), "-", " ")
+	id := strings.ToLower(strings.TrimSpace(ruleID))
+	_ = description // kept in the signature for callers; titles come from the id
+	if id == "" {
+		return "Leaked secret"
 	}
-	if name == "" {
-		name = "secret"
+	if name, ok := gitleaksSecretNames[id]; ok {
+		return "Leaked " + name
 	}
-	return "Leaked " + name
+	words := strings.FieldsFunc(id, func(r rune) bool { return r == '-' || r == '_' || r == ' ' })
+	for i, w := range words {
+		if c, ok := gitleaksWordCase[w]; ok {
+			words[i] = c
+		} else if i == 0 && !gitleaksGenericWords[w] && w != "" {
+			words[i] = strings.ToUpper(w[:1]) + w[1:]
+		}
+	}
+	if len(words) == 0 {
+		return "Leaked secret"
+	}
+	return "Leaked " + strings.Join(words, " ")
+}
+
+// relToProject makes a gitleaks file path relative to the scanned folder.
+// Gitleaks echoes --source back, so an absolute project path (MCP run_scan
+// passes one) gave absolute locations such as /Users/alice/app/src/a.ts.
+// Paths outside the project, or already relative ones, are returned as-is.
+func relToProject(projectPath, file string) string {
+	if file == "" {
+		return file
+	}
+	absProj, err := filepath.Abs(projectPath)
+	if err != nil {
+		return file
+	}
+	absFile := file
+	if !filepath.IsAbs(file) {
+		clean := filepath.Clean(projectPath)
+		if clean == "." || !strings.HasPrefix(filepath.Clean(file), clean+string(filepath.Separator)) {
+			return file
+		}
+		absFile = filepath.Join(absProj, strings.TrimPrefix(filepath.Clean(file), clean+string(filepath.Separator)))
+	}
+	rel, err := filepath.Rel(absProj, absFile)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return file
+	}
+	return filepath.ToSlash(rel)
 }

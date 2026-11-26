@@ -309,3 +309,26 @@ Deno.test('normal security prose is not blocked by the tighter checks', () => {
     assertEquals(checkSharedExplanation({ simply: t, actions: [] }).reasons, [], t)
   }
 })
+
+Deno.test('random base64 and mixed-case letter keys without digits are rejected; words and header names are not', () => {
+  const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
+  const pick = (abc: string, n: number) => Array.from({ length: n }, () => abc[Math.floor(Math.random() * abc.length)]).join('')
+  // Built at runtime: no key-shaped literal in this file.
+  let missed = 0
+  for (let i = 0; i < 200; i++) {
+    const b64 = pick(LETTERS, 11) + '+' + pick(LETTERS, 6) + '/' + pick(LETTERS, 5)
+    if (checkSharedExplanation({ simply: `The key ${b64} is exposed.`, actions: [] }).ok) missed++
+  }
+  assertEquals(missed, 0, 'base64 key with + or / and no digits passed')
+  let missedLetters = 0
+  for (let i = 0; i < 200; i++) {
+    const half = pick('ABCDEFGHIJKLMNOPQRSTUVWXYZ', 12) + pick('abcdefghijklmnopqrstuvwxyz', 12)
+    const key = [...half].sort(() => Math.random() - 0.5).join('')
+    if (checkSharedExplanation({ simply: `The key ${key} is exposed.`, actions: [] }).ok) missedLetters++
+  }
+  assert(missedLetters <= 2, `mixed-case letter keys passed ${missedLetters}/200`)
+  for (const ok of ['SecurityConfiguration', 'AuthenticationMiddleware', 'Content-Security-Policy-Report-Only',
+    'X-Content-Type-Options', 'Strict-Transport-Security', 'XMLHttpRequestUpload', 'HTTPSRedirectMiddleware', 'DOMContentLoadedEvent']) {
+    assert(checkSharedExplanation({ simply: `Set ${ok} correctly.`, actions: [] }).ok, ok)
+  }
+})
